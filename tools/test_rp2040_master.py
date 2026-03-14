@@ -57,7 +57,7 @@ MODE_COLOR = {
 # ── State ────────────────────────────────────────────────────────────────────
 
 state = {
-    "channels":   [1500] * 9,
+    "channels":   [1500] * 16,
     "mode":       "UNKNOWN",
     "sbus_ok":    False,
     "sx_ok":      None,      # None = not yet seen, True/False = detected
@@ -123,7 +123,7 @@ def process_line(line):
             try:
                 ch_part, mode_str = line.split(" MODE:")
                 chs = [int(x) for x in ch_part[3:].split(",")]
-                if len(chs) == 9:
+                if len(chs) == 16:
                     state["channels"] = chs
                     state["mode"]     = mode_str.strip()
                     state["frame_count"] += 1
@@ -163,7 +163,8 @@ def heartbeat_sender(ser):
 
 # ── Display ───────────────────────────────────────────────────────────────────
 
-CH_NAMES = ["THR", "STR", "CH3", "CH4", "SWA", "SWB", "CH7", "CH8", "CH9"]
+CH_NAMES = ["THR", "STR", "CH3", "CH4", "SWA", "SWB", "CH7", "CH8",
+            "CH9", "C10", "C11", "C12", "C13", "C14", "C15", "C16"]
 
 def display():
     while state["running"]:

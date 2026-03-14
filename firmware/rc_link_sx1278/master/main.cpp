@@ -14,13 +14,13 @@
  *   - Zero CPU jitter on PPM output
  *
  * Jetson protocol (USB CDC, 50 Hz status + commands):
- *   TX: "CH:c0,...,c8 MODE:MANUAL\n"   every PPM frame
+ *   TX: "CH:c0,...,c15 MODE:MANUAL\n"  every PPM frame
  *       "[SBUS_OK]" / "[SBUS_LOST]"    on state change
  *   RX: "<HB:N>"                       heartbeat (must arrive < 300 ms)
  *       "<J:c0,...,c7>"                8-channel autonomous override
  *
  * SX1278 TX: every other PPM frame (25 Hz) to respect LoRa duty cycle.
- *   Payload: 9 × uint16_t = 18 bytes (PPM channels in µs, little-endian)
+ *   Payload: 16 × uint16_t = 32 bytes (PPM channels in µs, little-endian)
  */
 
 #include <stdio.h>
@@ -51,13 +51,14 @@
 
 // ── Timing constants ──────────────────────────────────────────────────────────
 
-#define CHANNELS        9
+#define CHANNELS        16
 #define PPM_FRAME_US    20000U   // 20 ms frame period
 #define PPM_HIGH_US     300U     // separator pulse width
 #define PPM_HIGH_COUNT  (PPM_HIGH_US - 2U)  // subtract pull(1)+mov(1) overhead
 
-// DMA buffer: [HIGH, LOW_CH0, HIGH, LOW_CH1, ..., HIGH, LOW_SYNC] = 20 words
-#define PPM_BUF_LEN     20
+// DMA buffer: [HIGH, LOW_CH0, HIGH, LOW_CH1, ..., HIGH, LOW_SYNC] = 34 words
+// 16 channels × 2 words + 2 words sync = 34
+#define PPM_BUF_LEN     34
 
 #define SBUS_FRAME_LEN  25
 
@@ -96,9 +97,12 @@ static const char *const MODE_STR[] = {
 
 // ── State (shared between main loop and DMA IRQ) ──────────────────────────────
 
-static volatile uint16_t sbus_ch[CHANNELS]  = {1500,1500,1500,1500,1500,1500,1500,1500,1500};
-static volatile uint16_t auto_ch[CHANNELS]  = {1500,1500,1500,1500,1500,1500,1500,1500,1500};
-static volatile uint16_t out_ch[CHANNELS]   = {1500,1500,1500,1500,1500,1500,1500,1500,1500};
+static volatile uint16_t sbus_ch[CHANNELS]  = {1500,1500,1500,1500,1500,1500,1500,1500,
+                                               1500,1500,1500,1500,1500,1500,1500,1500};
+static volatile uint16_t auto_ch[CHANNELS]  = {1500,1500,1500,1500,1500,1500,1500,1500,
+                                               1500,1500,1500,1500,1500,1500,1500,1500};
+static volatile uint16_t out_ch[CHANNELS]   = {1500,1500,1500,1500,1500,1500,1500,1500,
+                                               1500,1500,1500,1500,1500,1500,1500,1500};
 
 static volatile Mode mode     = MODE_EMERGENCY;
 static volatile bool sbus_ok  = false;
@@ -156,17 +160,26 @@ static int     sbus_idx = 0;
 static bool sbus_decode(const uint8_t *f, volatile uint16_t *ch) {
     if (f[0] != 0x0F || f[24] != 0x00) return false;
 
-    // Unpack 11-bit channels from 22 bytes of data (f[1]..f[22])
+    // Unpack all 16 × 11-bit channels from 22 bytes of data (f[1]..f[22]).
+    // Each channel occupies 11 bits LSB-first; the pattern repeats every 8 channels
+    // (every 11 bytes, same bit offsets within the shifted window).
     uint16_t raw[CHANNELS];
-    raw[0] = ((uint16_t)(f[1])       | (uint16_t)(f[2])  << 8) & 0x7FF;
-    raw[1] = ((uint16_t)(f[2])  >> 3 | (uint16_t)(f[3])  << 5) & 0x7FF;
-    raw[2] = ((uint16_t)(f[3])  >> 6 | (uint16_t)(f[4])  << 2 | (uint16_t)(f[5]) << 10) & 0x7FF;
-    raw[3] = ((uint16_t)(f[5])  >> 1 | (uint16_t)(f[6])  << 7) & 0x7FF;
-    raw[4] = ((uint16_t)(f[6])  >> 4 | (uint16_t)(f[7])  << 4) & 0x7FF;
-    raw[5] = ((uint16_t)(f[7])  >> 7 | (uint16_t)(f[8])  << 1 | (uint16_t)(f[9]) << 9) & 0x7FF;
-    raw[6] = ((uint16_t)(f[9])  >> 2 | (uint16_t)(f[10]) << 6) & 0x7FF;
-    raw[7] = ((uint16_t)(f[10]) >> 5 | (uint16_t)(f[11]) << 3) & 0x7FF;
-    raw[8] = ((uint16_t)(f[12])      | (uint16_t)(f[13]) << 8) & 0x7FF;
+    raw[0]  = ((uint16_t)(f[1])       | (uint16_t)(f[2])  << 8)  & 0x7FF;
+    raw[1]  = ((uint16_t)(f[2])  >> 3 | (uint16_t)(f[3])  << 5)  & 0x7FF;
+    raw[2]  = ((uint16_t)(f[3])  >> 6 | (uint16_t)(f[4])  << 2  | (uint16_t)(f[5])  << 10) & 0x7FF;
+    raw[3]  = ((uint16_t)(f[5])  >> 1 | (uint16_t)(f[6])  << 7)  & 0x7FF;
+    raw[4]  = ((uint16_t)(f[6])  >> 4 | (uint16_t)(f[7])  << 4)  & 0x7FF;
+    raw[5]  = ((uint16_t)(f[7])  >> 7 | (uint16_t)(f[8])  << 1  | (uint16_t)(f[9])  << 9)  & 0x7FF;
+    raw[6]  = ((uint16_t)(f[9])  >> 2 | (uint16_t)(f[10]) << 6)  & 0x7FF;
+    raw[7]  = ((uint16_t)(f[10]) >> 5 | (uint16_t)(f[11]) << 3)  & 0x7FF;
+    raw[8]  = ((uint16_t)(f[12])      | (uint16_t)(f[13]) << 8)  & 0x7FF;
+    raw[9]  = ((uint16_t)(f[13]) >> 3 | (uint16_t)(f[14]) << 5)  & 0x7FF;
+    raw[10] = ((uint16_t)(f[14]) >> 6 | (uint16_t)(f[15]) << 2  | (uint16_t)(f[16]) << 10) & 0x7FF;
+    raw[11] = ((uint16_t)(f[16]) >> 1 | (uint16_t)(f[17]) << 7)  & 0x7FF;
+    raw[12] = ((uint16_t)(f[17]) >> 4 | (uint16_t)(f[18]) << 4)  & 0x7FF;
+    raw[13] = ((uint16_t)(f[18]) >> 7 | (uint16_t)(f[19]) << 1  | (uint16_t)(f[20]) << 9)  & 0x7FF;
+    raw[14] = ((uint16_t)(f[20]) >> 2 | (uint16_t)(f[21]) << 6)  & 0x7FF;
+    raw[15] = ((uint16_t)(f[21]) >> 5 | (uint16_t)(f[22]) << 3)  & 0x7FF;
 
     // Scale 172–1811 (SBUS range) → 1000–2000 µs (PPM range)
     for (int i = 0; i < CHANNELS; i++)
@@ -241,7 +254,7 @@ static void apply_mode(Mode m) {
 
 // ── Jetson serial ─────────────────────────────────────────────────────────────
 
-static char jetson_linebuf[64];
+static char jetson_linebuf[128];  // 16 channels × 5 chars + " MODE:AUTONOMOUS" ≈ 98 chars
 static int  jetson_lineidx = 0;
 
 static void jetson_parse_line(const char *line) {
@@ -277,10 +290,11 @@ static void jetson_poll_rx(void) {
 }
 
 static void jetson_send_status(void) {
-    printf("CH:%d,%d,%d,%d,%d,%d,%d,%d,%d MODE:%s\n",
-           out_ch[0], out_ch[1], out_ch[2],
-           out_ch[3], out_ch[4], out_ch[5],
-           out_ch[6], out_ch[7], out_ch[8],
+    printf("CH:%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d MODE:%s\n",
+           out_ch[0],  out_ch[1],  out_ch[2],  out_ch[3],
+           out_ch[4],  out_ch[5],  out_ch[6],  out_ch[7],
+           out_ch[8],  out_ch[9],  out_ch[10], out_ch[11],
+           out_ch[12], out_ch[13], out_ch[14], out_ch[15],
            MODE_STR[mode]);
 }
 

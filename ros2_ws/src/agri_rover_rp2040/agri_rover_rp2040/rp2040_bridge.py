@@ -4,7 +4,7 @@ agri_rover_rp2040 — rp2040_bridge node
 Bridges RP2040 USB serial ↔ ROS2 topics.
 
 Serial protocol (RP2040 → Jetson):
-  CH:1500,1500,1700,1500,1500,1500,1500,1500,1500 MODE:MANUAL
+  CH:1500,1500,1700,1500,1500,1500,1500,1500,1500,1500,1500,1500,1500,1500,1500,1500 MODE:MANUAL
   [SBUS_OK] / [SBUS_LOST]
   [RF_LINK_OK] / [RF_LINK_LOST]   (master only)
   <HB:N+1>                         (heartbeat echo)
@@ -33,7 +33,7 @@ from agri_rover_interfaces.msg import RCInput
 
 
 PPM_CENTER = 1500
-CHANNELS   = 9
+CHANNELS   = 16
 
 
 class Rp2040BridgeNode(Node):

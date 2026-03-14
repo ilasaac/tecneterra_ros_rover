@@ -7,11 +7,11 @@
  *   USB CDC   ↔ Jetson Nano
  *
  * SX1278 runs in continuous RX mode. Main loop polls sx1278_recv():
- *   - On packet received → decode 9 channels → apply mode → update PPM DMA buffer
+ *   - On packet received → decode 16 channels → apply mode → update PPM DMA buffer
  *   - On RF timeout (500 ms no packet) → MODE_EMERGENCY → PPM neutral
  *
  * Jetson protocol (USB CDC):
- *   TX: "CH:c0,...,c8 MODE:...\n"  at 10 Hz
+ *   TX: "CH:c0,...,c15 MODE:...\n" at 10 Hz
  *       "[RF_LINK_OK]" / "[RF_LINK_LOST]"  on state change
  *   RX: "<HB:N>"                   heartbeat → enables autonomous mode
  *       "<J:c0,...,c7>"            8-channel autonomous override (bypasses RF)
@@ -41,11 +41,11 @@
 
 // ── Timing ───────────────────────────────────────────────────────────────────
 
-#define CHANNELS        9
+#define CHANNELS        16
 #define PPM_FRAME_US    20000U
 #define PPM_HIGH_US     300U
 #define PPM_HIGH_COUNT  (PPM_HIGH_US - 2U)
-#define PPM_BUF_LEN     20
+#define PPM_BUF_LEN     34   // 16 channels × 2 words + 2 words sync
 
 #define RF_TIMEOUT_MS   500
 #define HB_TIMEOUT_MS   300
@@ -73,9 +73,12 @@ static const char *const MODE_STR[] = { "MANUAL", "AUTONOMOUS", "EMERGENCY" };
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
-static volatile uint16_t rf_ch[CHANNELS]    = {1500,1500,1500,1500,1500,1500,1500,1500,1500};
-static volatile uint16_t auto_ch[CHANNELS]  = {1500,1500,1500,1500,1500,1500,1500,1500,1500};
-static volatile uint16_t out_ch[CHANNELS]   = {1500,1500,1500,1500,1500,1500,1500,1500,1500};
+static volatile uint16_t rf_ch[CHANNELS]    = {1500,1500,1500,1500,1500,1500,1500,1500,
+                                               1500,1500,1500,1500,1500,1500,1500,1500};
+static volatile uint16_t auto_ch[CHANNELS]  = {1500,1500,1500,1500,1500,1500,1500,1500,
+                                               1500,1500,1500,1500,1500,1500,1500,1500};
+static volatile uint16_t out_ch[CHANNELS]   = {1500,1500,1500,1500,1500,1500,1500,1500,
+                                               1500,1500,1500,1500,1500,1500,1500,1500};
 
 static volatile Mode     mode       = MODE_EMERGENCY;
 static volatile bool     rf_ok      = false;
@@ -267,10 +270,11 @@ int main(void) {
         uint64_t now = time_us_64();
         if ((now - t_last_status) >= (uint64_t)STATUS_INTERVAL_MS * 1000) {
             t_last_status = now;
-            printf("CH:%d,%d,%d,%d,%d,%d,%d,%d,%d MODE:%s\n",
-                   out_ch[0], out_ch[1], out_ch[2],
-                   out_ch[3], out_ch[4], out_ch[5],
-                   out_ch[6], out_ch[7], out_ch[8],
+            printf("CH:%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d MODE:%s\n",
+                   out_ch[0],  out_ch[1],  out_ch[2],  out_ch[3],
+                   out_ch[4],  out_ch[5],  out_ch[6],  out_ch[7],
+                   out_ch[8],  out_ch[9],  out_ch[10], out_ch[11],
+                   out_ch[12], out_ch[13], out_ch[14], out_ch[15],
                    MODE_STR[mode]);
         }
     }

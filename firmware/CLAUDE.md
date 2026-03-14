@@ -93,3 +93,5 @@ cmake --build build -j4
 - `sx1278_send()` returns `false` if previous TX still running — main loop skips that frame silently.
 - SBUS re-syncs on every `0x0F` byte. This can cause a spurious frame if a data byte happens to be `0x0F` and the next 24 bytes validate. Unlikely but possible — the real guard is the end byte `0x00`.
 - SX1278 `RegVersion` must read `0x12` on startup. If it doesn't, check SPI wiring and pull-ups on NSS.
+- **PIO parity bit fix (applied)**: `push noblock [10]` delays the `wait 1 pin 0` instruction by 10 SM cycles (12.5 µs) past the last data bit sample. This lands the wait safely in stop bit 2 (always LOW on inverted SBUS), preventing false re-triggers on bytes with HIGH parity bits.
+- **16 channels**: `CHANNELS=16`, `PPM_BUF_LEN=34` (16×2+2). SX1278 payload is 32 bytes (16×uint16_t). Serial format is `CH:c0,...,c15 MODE:...`.

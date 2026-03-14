@@ -31,7 +31,10 @@ bitloop:
     in pins, 1          ; sample one bit into ISR (shift right; bit goes to ISR[31])
     jmp x-- bitloop [6] ; 8-cycle loop body: 1(in) + 6(delay) + 1(jmp) = 8 cycles per bit
 
-    push noblock        ; push to RX FIFO without stalling (prevents overrun if CPU is busy)
+    push noblock [10]   ; push byte, then stall 10 SM cycles (12.5 µs) before returning to
+                        ; 'wait 1 pin 0'.  This skips past the parity bit window (T+10..T+20 µs)
+                        ; and lands in stop bit 2 (LOW on inverted SBUS) so wait cannot
+                        ; false-trigger on a HIGH parity bit.
     jmp start           ; wait for next frame's start bit
 
 % c-sdk {

@@ -1,0 +1,68 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# ROS2 colcon workspace
+# ros2_ws/src/ is tracked; build/, install/, log/ are generated outputs
+# ──────────────────────────────────────────────────────────────────────────────
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pico SDK / CMake firmware builds
+# firmware/rc_link_sx1278/master/build/
+# firmware/rc_link_sx1278/slave/build/
+# ──────────────────────────────────────────────────────────────────────────────
+firmware/**/build/
+
+# pico_sdk_import.cmake is copied from the local SDK install — not part of source
+firmware/**/pico_sdk_import.cmake
+
+# Compiled firmware outputs (kept in build/ above, but catch any stray files)
+*.elf
+*.uf2
+*.bin
+*.hex
+*.map
+*.dis
+*.pio.h
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Android / Gradle
+# android/AgriRoverGQC/ scaffold is tracked; build outputs are not
+# ──────────────────────────────────────────────────────────────────────────────
+android/**/.gradle/
+android/**/build/
+android/**/local.properties
+android/**/*.apk
+android/**/*.aab
+android/**/*.keystore
+android/**/*.jks
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Python
+# ──────────────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# ──────────────────────────────────────────────────────────────────────────────
+# OS / editor
+# ──────────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Misc
+# ──────────────────────────────────────────────────────────────────────────────
+*.log
+*.bag
+*.db3

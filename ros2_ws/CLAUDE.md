@@ -18,7 +18,7 @@ See root CLAUDE.md for system-wide context. This file covers ROS2-specific detai
 ## Interface definitions
 
 **Messages:**
-- `RCInput`: `uint16[9] channels`, `string mode`, `bool sbus_ok`, `bool rf_link_ok`, `Time stamp`
+- `RCInput`: `uint16[16] channels`, `string mode`, `bool sbus_ok`, `bool rf_link_ok`, `Time stamp`
 - `RoverStatus`: `uint8 rover_id`, `bool armed`, `string mode`, `string gps_fix_type`, `float32 battery_voltage/remaining`, `string rc/rf_link_status`, `Time stamp`
 - `SensorData`: `float32 tank_level/temperature/humidity/pressure`, `Time stamp`
 - `MissionWaypoint`: `uint16 seq`, `float64 latitude/longitude`, `float32 speed`, `float32 acceptance_radius`, `bool hold`
@@ -58,9 +58,9 @@ def main(args=None):
 ```python
 # Read from RP2040:
 line = ser.readline().decode('ascii', errors='ignore').strip()
-# Parse: "CH:1500,1500,... MODE:MANUAL"
+# Parse: "CH:1500,1500,...,1500 MODE:MANUAL"  (16 channels)
 ch_part, mode_str = line.split(' MODE:')
-channels = [int(x) for x in ch_part[3:].split(',')]
+channels = [int(x) for x in ch_part[3:].split(',')]  # len == 16
 
 # Write heartbeat to RP2040:
 ser.write(f'<HB:{seq}>\n'.encode())
