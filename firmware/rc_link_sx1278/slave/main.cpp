@@ -41,11 +41,12 @@
 
 // ── Timing ───────────────────────────────────────────────────────────────────
 
-#define CHANNELS        16
+#define CHANNELS        16   // total channels decoded from LoRa packet
+#define PPM_CHANNELS     8   // channels output on PPM wire
 #define PPM_FRAME_US    20000U
 #define PPM_HIGH_US     300U
 #define PPM_HIGH_COUNT  (PPM_HIGH_US - 2U)
-#define PPM_BUF_LEN     34   // 16 channels × 2 words + 2 words sync
+#define PPM_BUF_LEN     (PPM_CHANNELS * 2 + 2)   // = 20
 
 #define RF_TIMEOUT_MS   500
 #define HB_TIMEOUT_MS   300
@@ -97,7 +98,7 @@ static volatile int frame_count = 0;
 
 static void ppm_buf_update(void) {
     uint32_t sum = 0;
-    for (int i = 0; i < CHANNELS; i++) {
+    for (int i = 0; i < PPM_CHANNELS; i++) {
         uint16_t ch = out_ch[i];
         if (ch < 1000) ch = 1000;
         if (ch > 2000) ch = 2000;
@@ -133,6 +134,32 @@ static void dma_ppm_init(void) {
     dma_channel_start(dma_chan);
 }
 
+// ── PPM channel mapping (wFly RF209S layout from SIYI MK32 SBUS) ─────────────
+//
+// Hardware PPM output follows wFly channel order. USB serial always sends the
+// raw 16 RF channels (rf_ch[]) unchanged so the Jetson sees the original.
+//
+// PPM (1-indexed) = RF/SBUS source (1-indexed)
+//   CH1  = CH3           CH5  = CH11
+//   CH2  = CH1 inverted  CH6  = CH12
+//   CH3  = CH5 inverted  CH7  = CH7  inverted
+//   CH4  = CH6 inverted  CH8  = CH8  inverted
+//
+// Inversion: 3000 − value  maps 1000↔2000, keeps 1500 at centre.
+
+#define PPM_INV(v)  ((uint16_t)(3000u - (v)))
+
+static void apply_ppm_map(const volatile uint16_t *src, volatile uint16_t *dst) {
+    dst[0] = src[2];           // CH1 = RF CH3
+    dst[1] = PPM_INV(src[0]);  // CH2 = RF CH1 inverted
+    dst[2] = PPM_INV(src[4]);  // CH3 = RF CH5 inverted
+    dst[3] = PPM_INV(src[5]);  // CH4 = RF CH6 inverted
+    dst[4] = src[10];          // CH5 = RF CH11
+    dst[5] = src[11];          // CH6 = RF CH12
+    dst[6] = PPM_INV(src[6]);  // CH7 = RF CH7 inverted
+    dst[7] = PPM_INV(src[7]);  // CH8 = RF CH8 inverted
+}
+
 // ── Mode logic ────────────────────────────────────────────────────────────────
 
 static Mode compute_mode(void) {
@@ -158,7 +185,7 @@ static void apply_mode(Mode m) {
     mode = m;
     switch (m) {
         case MODE_RF:
-            for (int i = 0; i < CHANNELS; i++) out_ch[i] = rf_ch[i];
+            apply_ppm_map(rf_ch, out_ch);
             break;
         case MODE_AUTONOMOUS:
             for (int i = 0; i < CHANNELS; i++) out_ch[i] = auto_ch[i];
@@ -270,11 +297,13 @@ int main(void) {
         uint64_t now = time_us_64();
         if ((now - t_last_status) >= (uint64_t)STATUS_INTERVAL_MS * 1000) {
             t_last_status = now;
+            // Raw RF channels — Jetson always receives the original 16 channels
+            // regardless of PPM remapping or current mode.
             printf("CH:%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d MODE:%s\n",
-                   out_ch[0],  out_ch[1],  out_ch[2],  out_ch[3],
-                   out_ch[4],  out_ch[5],  out_ch[6],  out_ch[7],
-                   out_ch[8],  out_ch[9],  out_ch[10], out_ch[11],
-                   out_ch[12], out_ch[13], out_ch[14], out_ch[15],
+                   rf_ch[0],  rf_ch[1],  rf_ch[2],  rf_ch[3],
+                   rf_ch[4],  rf_ch[5],  rf_ch[6],  rf_ch[7],
+                   rf_ch[8],  rf_ch[9],  rf_ch[10], rf_ch[11],
+                   rf_ch[12], rf_ch[13], rf_ch[14], rf_ch[15],
                    MODE_STR[mode]);
         }
     }

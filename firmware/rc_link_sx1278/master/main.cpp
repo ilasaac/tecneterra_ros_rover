@@ -51,14 +51,14 @@
 
 // ── Timing constants ──────────────────────────────────────────────────────────
 
-#define CHANNELS        16
+#define CHANNELS        16   // total SBUS channels decoded; carried over LoRa and Jetson serial
+#define PPM_CHANNELS     8   // channels on the PPM wire — 8 × 1500 µs = 12000 µs, fits in 20 ms
 #define PPM_FRAME_US    20000U   // 20 ms frame period
 #define PPM_HIGH_US     300U     // separator pulse width
 #define PPM_HIGH_COUNT  (PPM_HIGH_US - 2U)  // subtract pull(1)+mov(1) overhead
 
-// DMA buffer: [HIGH, LOW_CH0, HIGH, LOW_CH1, ..., HIGH, LOW_SYNC] = 34 words
-// 16 channels × 2 words + 2 words sync = 34
-#define PPM_BUF_LEN     34
+// DMA buffer: [HIGH, LOW_CH0, ..., HIGH, LOW_SYNC] = PPM_CHANNELS*2+2 words = 20
+#define PPM_BUF_LEN     (PPM_CHANNELS * 2 + 2)
 
 #define SBUS_FRAME_LEN  25
 
@@ -79,6 +79,32 @@
 // SX1278 TX every 2nd PPM frame (25 Hz = 40 ms inter-packet gap)
 // LoRa SF7/BW500 ToA ≈ 12.9 ms, so 40 ms gives comfortable margin.
 #define SX_TX_DIVISOR   2
+
+// ── PPM channel mapping (wFly RF209S layout from SIYI MK32 SBUS) ─────────────
+//
+// Hardware PPM output follows wFly channel order. USB serial always sends the
+// raw 16 SBUS channels (sbus_ch[]) unchanged so the Jetson sees the original.
+//
+// PPM (1-indexed) = SBUS source (1-indexed)
+//   CH1  = CH3           CH5  = CH11
+//   CH2  = CH1 inverted  CH6  = CH12
+//   CH3  = CH5 inverted  CH7  = CH7  inverted
+//   CH4  = CH6 inverted  CH8  = CH8  inverted
+//
+// Inversion: 3000 − value  maps 1000↔2000, keeps 1500 at centre.
+
+#define PPM_INV(v)  ((uint16_t)(3000u - (v)))
+
+static void apply_ppm_map(const volatile uint16_t *src, volatile uint16_t *dst) {
+    dst[0] = src[2];           // CH1 = SBUS CH3
+    dst[1] = PPM_INV(src[0]);  // CH2 = SBUS CH1 inverted
+    dst[2] = PPM_INV(src[4]);  // CH3 = SBUS CH5 inverted
+    dst[3] = PPM_INV(src[5]);  // CH4 = SBUS CH6 inverted
+    dst[4] = src[10];          // CH5 = SBUS CH11
+    dst[5] = src[11];          // CH6 = SBUS CH12
+    dst[6] = PPM_INV(src[6]);  // CH7 = SBUS CH7 inverted
+    dst[7] = PPM_INV(src[7]);  // CH8 = SBUS CH8 inverted
+}
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
 
@@ -121,8 +147,10 @@ static volatile int frame_count = 0;   // incremented each DMA IRQ
 
 // Recompute ppm_buf from out_ch[]. Called only from DMA IRQ (no lock needed).
 static void ppm_buf_update(void) {
+    // Only the first PPM_CHANNELS channels go to the PPM wire.
+    // All 16 decoded channels are available via out_ch[] for LoRa / Jetson serial.
     uint32_t sum = 0;
-    for (int i = 0; i < CHANNELS; i++) {
+    for (int i = 0; i < PPM_CHANNELS; i++) {
         uint16_t ch = out_ch[i];
         if (ch < 1000) ch = 1000;
         if (ch > 2000) ch = 2000;
@@ -190,11 +218,20 @@ static bool sbus_decode(const uint8_t *f, volatile uint16_t *ch) {
 
 // Feed one byte from the PIO SBUS FIFO into the frame assembler.
 static void sbus_feed_byte(uint8_t b) {
-    // Re-sync: if we see 0x0F, start a new frame regardless of position.
-    if (b == 0x0F) sbus_idx = 0;
+    static uint64_t t_prev = 0;
+    uint64_t now = time_us_64();
 
-    if (sbus_idx < SBUS_FRAME_LEN)
-        sbus_buf[sbus_idx++] = b;
+    // Inter-frame gap detection: SBUS has a mandatory silence of >4 ms between frames.
+    // After such a gap the very next byte on the wire is guaranteed to be the 0x0F header.
+    // This is the only reliable way to find f[0] — 0x0F can also appear as a data byte
+    // at positions f[8], f[14], f[22] etc. depending on channel values, so searching
+    // for 0x0F alone is not sufficient.
+    if ((now - t_prev) > 3500) sbus_idx = 0;   // gap > 3.5 ms → reset, expect header next
+    t_prev = now;
+
+    if (sbus_idx == 0 && b != 0x0F) return;    // still hunting for header byte
+
+    sbus_buf[sbus_idx++] = b;
 
     if (sbus_idx == SBUS_FRAME_LEN) {
         if (sbus_decode(sbus_buf, sbus_ch)) {
@@ -235,7 +272,7 @@ static void apply_mode(Mode m) {
     mode = m;
     switch (m) {
         case MODE_MANUAL:
-            for (int i = 0; i < CHANNELS; i++) out_ch[i] = sbus_ch[i];
+            apply_ppm_map(sbus_ch, out_ch);
             break;
         case MODE_AUTONOMOUS:
             for (int i = 0; i < CHANNELS; i++) out_ch[i] = auto_ch[i];
@@ -290,11 +327,13 @@ static void jetson_poll_rx(void) {
 }
 
 static void jetson_send_status(void) {
+    // Raw SBUS channels — Jetson always receives the original 16 channels
+    // regardless of PPM remapping or current mode.
     printf("CH:%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d MODE:%s\n",
-           out_ch[0],  out_ch[1],  out_ch[2],  out_ch[3],
-           out_ch[4],  out_ch[5],  out_ch[6],  out_ch[7],
-           out_ch[8],  out_ch[9],  out_ch[10], out_ch[11],
-           out_ch[12], out_ch[13], out_ch[14], out_ch[15],
+           sbus_ch[0],  sbus_ch[1],  sbus_ch[2],  sbus_ch[3],
+           sbus_ch[4],  sbus_ch[5],  sbus_ch[6],  sbus_ch[7],
+           sbus_ch[8],  sbus_ch[9],  sbus_ch[10], sbus_ch[11],
+           sbus_ch[12], sbus_ch[13], sbus_ch[14], sbus_ch[15],
            MODE_STR[mode]);
 }
 
@@ -343,7 +382,8 @@ int main(void) {
     dma_ppm_init();
 
     // SX1278: LoRa 433 MHz
-    if (!sx1278_init()) {
+    bool sx_ok = sx1278_init();
+    if (!sx_ok) {
         printf("[SX1278_ERROR] chip not found — check wiring\n");
         // Continue without LoRa rather than halting (PPM and SBUS still work)
     }
@@ -363,6 +403,9 @@ int main(void) {
             uint32_t raw = pio_sm_get(PIO_INST, SM_SBUS);
             // Byte is in bits [31:24], inverted — XOR corrects SBUS inversion
             uint8_t byte = (uint8_t)((raw >> 24) ^ 0xFF);
+#ifdef SBUS_DEBUG
+            printf("RX:%02X\n", byte);   // remove after diagnosis
+#endif
             sbus_feed_byte(byte);
         }
 
@@ -385,8 +428,8 @@ int main(void) {
         //      the next IRQ fires — we have ~20 ms which is plenty)
         apply_mode(compute_mode());
 
-        // 4b. SX1278 TX every SX_TX_DIVISOR frames (25 Hz)
-        if (++sx_frame_div >= SX_TX_DIVISOR) {
+        // 4b. SX1278 TX every SX_TX_DIVISOR frames (25 Hz) — skip if not present
+        if (sx_ok && ++sx_frame_div >= SX_TX_DIVISOR) {
             sx_frame_div = 0;
             // Payload: relay the same channels that go to local PPM
             uint8_t payload[CHANNELS * 2];

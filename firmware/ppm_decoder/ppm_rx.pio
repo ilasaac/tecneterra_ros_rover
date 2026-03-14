@@ -1,0 +1,60 @@
+; ppm_rx.pio — PPM HIGH-gap duration decoder (wFly style)
+;
+; Measures the HIGH gap between each LOW separator pulse.
+; Each push sends one 32-bit value = HIGH gap duration in µs.
+;
+; Signal format (wFly RF209S / ppm_tx.pio wFly style):
+;   idle HIGH, [LOW ~300µs separator][HIGH ch-300µs gap] × 8 + sync gap
+;
+;   channel_µs  = HIGH_gap_µs + 300
+;   sync gap    = 20000 − Σ(channels) − 300  (≥ 1700 µs even at full stick)
+;
+; Clock divider: 62.5  →  SM clock = 2 MHz  →  0.5 µs per SM cycle.
+; Count loop = 2 SM cycles = 1 µs per count.
+;
+; Loop structure for HIGH-gap measurement:
+;   jmp x-- / jmp pin  = 2 instructions = 1 µs per iteration.
+;   'jmp pin' jumps if pin is HIGH (keep counting); falls through when LOW (gap ended).
+
+.program ppm_rx
+
+.wrap_target
+    wait 0 pin 0        ; wait for LOW separator
+    wait 1 pin 0        ; wait for rising edge → HIGH gap begins
+    mov x, ~null        ; x = 0xFFFFFFFF, start count-down
+
+count:
+    jmp x-- check       ; always decrement x  (1 SM cycle)
+check:
+    jmp pin count       ; pin still HIGH: keep counting  (1 SM cycle)
+                        ; pin went LOW: fall through → gap ended
+
+    mov isr, ~x         ; isr = elapsed count ≈ HIGH gap in µs
+    push noblock        ; send to FIFO (drop if CPU too slow — rare)
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+// Install the PPM RX program on one state machine.
+// Multiple SMs can share the same program offset with different pins.
+static inline void ppm_rx_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_sm_config c = ppm_rx_program_get_default_config(offset);
+
+    // IN base = PPM pin  (used by 'wait pin' instructions)
+    sm_config_set_in_pins(&c, pin);
+
+    // JMP pin = PPM pin  (used by 'jmp pin' instruction)
+    sm_config_set_jmp_pin(&c, pin);
+
+    // clkdiv = 62.5  →  2 MHz SM clock  →  0.5 µs/cycle  →  1 µs per 2-cycle loop
+    sm_config_set_clkdiv(&c, (float)clock_get_hz(clk_sys) / 2000000.0f);
+
+    // Configure GPIO as input (no pull — PPM is driven)
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+    pio_gpio_init(pio, pin);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
