@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agri_rover_video</name>
+  <version>0.1.0</version>
+  <description>Video streaming node — GStreamer RTSP server for camera feeds</description>
+  <maintainer email="dev@agrirover.com">AgriRover</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

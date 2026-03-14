@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agri_rover_gps</name>
+  <version>0.1.0</version>
+  <description>Dual-GPS NMEA driver — RTK fix, heading via baseline, fix quality</description>
+  <maintainer email="dev@agrirover.com">AgriRover</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

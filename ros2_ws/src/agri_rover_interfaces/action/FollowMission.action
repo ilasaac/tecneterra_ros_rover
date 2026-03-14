@@ -1,0 +1,14 @@
+# Goal
+MissionWaypoint[] waypoints
+float32 default_speed    # m/s, used when waypoint.speed == 0
+---
+# Result
+bool success
+uint32 waypoints_completed
+string message
+---
+# Feedback
+uint32 current_waypoint_seq
+float32 distance_to_next    # metres
+float32 heading_error       # radians
+float32 cross_track_error   # metres

@@ -1,0 +1,140 @@
+# ROS2 Workspace — CLAUDE.md
+
+See root CLAUDE.md for system-wide context. This file covers ROS2-specific details.
+
+## Package entry points
+
+| Package                 | Main file                                        |
+|-------------------------|--------------------------------------------------|
+| agri_rover_interfaces   | msg/, srv/, action/ — interface definitions only |
+| agri_rover_rp2040       | agri_rover_rp2040/rp2040_bridge.py               |
+| agri_rover_gps          | agri_rover_gps/gps_driver.py                     |
+| agri_rover_mavlink      | agri_rover_mavlink/mavlink_bridge.py             |
+| agri_rover_navigator    | agri_rover_navigator/navigator.py                |
+| agri_rover_sensors      | agri_rover_sensors/sensor_node.py                |
+| agri_rover_video        | agri_rover_video/video_streamer.py               |
+| agri_rover_bringup      | launch/rover1.launch.py, launch/rover2.launch.py |
+
+## Interface definitions
+
+**Messages:**
+- `RCInput`: `uint16[9] channels`, `string mode`, `bool sbus_ok`, `bool rf_link_ok`, `Time stamp`
+- `RoverStatus`: `uint8 rover_id`, `bool armed`, `string mode`, `string gps_fix_type`, `float32 battery_voltage/remaining`, `string rc/rf_link_status`, `Time stamp`
+- `SensorData`: `float32 tank_level/temperature/humidity/pressure`, `Time stamp`
+- `MissionWaypoint`: `uint16 seq`, `float64 latitude/longitude`, `float32 speed`, `float32 acceptance_radius`, `bool hold`
+
+**Services:**
+- `SetMode`: request `uint8 mode` (0=MANUAL,1=AUTO,2=EMERGENCY) → response `bool success, string message`
+- `ArmDisarm`: request `bool arm` → response `bool success, string message`
+
+**Action:**
+- `FollowMission`: goal `MissionWaypoint[] waypoints, float32 default_speed` → result `bool success, uint32 waypoints_completed` → feedback `uint32 current_waypoint_seq, float32 distance_to_next/heading_error/cross_track_error`
+
+## Node patterns
+
+All nodes follow this structure:
+```python
+class XxxNode(Node):
+    def __init__(self):
+        super().__init__('node_name')
+        self.declare_parameter('key', default)   # always declare before use
+        # publishers, subscribers, timers
+        # NO blocking calls in __init__
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = XxxNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+```
+
+## rp2040_bridge — serial parsing
+
+```python
+# Read from RP2040:
+line = ser.readline().decode('ascii', errors='ignore').strip()
+# Parse: "CH:1500,1500,... MODE:MANUAL"
+ch_part, mode_str = line.split(' MODE:')
+channels = [int(x) for x in ch_part[3:].split(',')]
+
+# Write heartbeat to RP2040:
+ser.write(f'<HB:{seq}>\n'.encode())
+
+# Write autonomous command:
+ser.write(f'<J:{",".join(str(c) for c in channels[:8])}>\n'.encode())
+```
+
+Lock `self._lock` around all `ser.write()` calls (called from both timer and subscription callbacks).
+
+## mavlink_bridge — key patterns
+
+```python
+os.environ['MAVLINK20'] = '1'          # must be set before pymavlink import
+from pymavlink import mavutil
+
+# Connection: listen for inbound + sendto for outbound
+self._mav = mavutil.mavlink_connection(f'udpin:0.0.0.0:{bind_port}', ...)
+self._gqc_addr = (gqc_host, gqc_port)
+
+# Send (do NOT use mav.write() — swallows socket.error silently):
+buf = msg.pack(self._mav.mav)
+self._mav.mav.socket.sendto(buf, self._gqc_addr)
+
+# Receive loop (runs in daemon thread):
+msg = self._mav.recv_match(blocking=True, timeout=1.0)
+```
+
+## navigator — pure pursuit
+
+Key parameters (in `config/navigator_params.yaml`):
+- `lookahead_distance: 3.0`  metres ahead to target
+- `max_speed: 1.5`           m/s → PPM throttle range 1500–2000
+- `max_steering: 0.8`        fraction of full deflection (0.0–1.0)
+- `control_rate: 10.0`       Hz (control loop timer)
+- `gps_timeout: 2.0`         seconds before halt
+
+Coordinate math:
+```python
+def haversine(lat1, lon1, lat2, lon2) -> float   # distance in metres
+def bearing_to(lat1, lon1, lat2, lon2) -> float  # degrees 0-360
+```
+
+PPM mapping:
+- Throttle: `PPM_CENTER + speed_frac * 500`  (1500 neutral, 2000 = max forward)
+- Steering: `PPM_CENTER + steer_frac * 500`  (1500 straight, 1000/2000 = full turn)
+- Heading error → steering: `steer_frac = clamp(heading_error_deg / 45, -max, +max)`
+
+## gps_driver — NMEA parsing
+
+Reads two serial ports in background threads. Publishes at 5 Hz via timer.
+- **Primary** (USB0): position, fix quality from GGA sentences
+- **Secondary** (USB1): position only — baseline vector → heading
+- Heading: `bearing = atan2(dlon, dlat)` (flat-earth approximation, fine for <1 km)
+- Fix quality map: `'0'→NO_FIX, '1'→GPS, '2'→DGPS, '4'→RTK_FIX, '5'→RTK_FLT`
+
+## bringup — launch conventions
+
+- **`rover1.launch.py`**: hardcodes namespace `'/rv1'`, loads `config/rover1_params.yaml`
+- **`rover2.launch.py`**: hardcodes namespace `'/rv2'`, loads `config/rover2_params.yaml`
+- All nodes receive parameters via `parameters=[config]` pointing to the YAML
+- YAML key must match `node_name.ros__parameters.param_name` (ROS2 YAML convention)
+
+## colcon tips
+
+```bash
+# Build only changed packages (faster):
+colcon build --symlink-install --packages-select agri_rover_mavlink
+
+# Check node is running:
+ros2 node list
+ros2 topic echo /rv1/rc_input
+
+# Inspect parameters at runtime:
+ros2 param list /rv1/rp2040_bridge
+ros2 param get /rv1/navigator lookahead_distance
+```

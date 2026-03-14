@@ -1,0 +1,68 @@
+; ppm_tx.pio — Hardware PPM generator (DMA-fed, zero CPU jitter)
+;
+; PPM frame format (50 Hz, 20 ms total):
+;   [HIGH 300µs][LOW ch0-300µs] × 9 channels + [HIGH 300µs][LOW sync_µs]
+;
+; This program reads alternating (HIGH_count, LOW_count) pairs from the TX FIFO.
+; DMA feeds the FIFO from a pre-computed 20-word buffer updated each frame.
+;
+; Clock divider: 125.0  → 1 SM cycle = 1 µs exactly (at 125 MHz sys clock).
+;
+; TIMING ACCOUNTING — each pull+mov+loop costs:
+;   pull (1 µs) + mov (1 µs) + loop-N (N µs) = (N+2) µs total
+;   So: store (desired_duration - 2) in the DMA buffer word.
+;
+; DMA buffer layout (20 × uint32_t, updated per frame):
+;   [HIGH_COUNT, LOW_CH0, HIGH_COUNT, LOW_CH1, ..., HIGH_COUNT, LOW_SYNC]
+;
+;   HIGH_COUNT  = PPM_HIGH_US - 2  = 298        (constant)
+;   LOW_CHn     = channel_value_µs - 302        (range 698–1698)
+;   LOW_SYNC    = (20000 - Σ channels - 302)    (range ~1698–10698)
+;
+; When the DMA IRQ fires (end of frame), firmware updates the buffer and
+; restarts DMA. PIO stalls on 'pull' during the inter-frame gap if DMA is
+; not yet restarted — this is safe (PPM sync pulse extends, no glitch).
+
+.program ppm_tx
+.side_set 1         ; PPM output pin controlled via side-set (no extra instructions)
+
+.wrap_target
+    pull        side 1  ; load HIGH count, set pin HIGH  [1 µs]
+    mov x, osr  side 1  ; copy count to X register        [1 µs]
+high_loop:
+    jmp x-- high_loop side 1   ; count down, hold HIGH        [1 µs each]
+
+    pull        side 0  ; load LOW count, set pin LOW    [1 µs]
+    mov x, osr  side 0  ; copy count to X register        [1 µs]
+low_loop:
+    jmp x-- low_loop  side 0   ; count down, hold LOW          [1 µs each]
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+// Call once to install the PPM TX program and configure the state machine.
+// pin: GPIO number of the PPM output signal.
+static inline void ppm_tx_program_init(PIO pio, uint sm, uint pin) {
+    uint offset = pio_add_program(pio, &ppm_tx_program);
+    pio_sm_config c = ppm_tx_program_get_default_config(offset);
+
+    // Map side-set to the PPM output pin.
+    sm_config_set_sideset_pins(&c, pin);
+
+    // Shift OSR left (pull from TX FIFO into OSR, MSB first — direction
+    // doesn't matter here since we use the full 32-bit word as a count).
+    sm_config_set_out_shift(&c, false, false, 32);
+
+    // 1 µs per SM cycle: clkdiv = sys_clk / 1 MHz.
+    float clkdiv = (float)clock_get_hz(clk_sys) / 1000000.0f;
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    // Configure pin as output, start LOW (idle between frames).
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+    pio_gpio_init(pio, pin);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

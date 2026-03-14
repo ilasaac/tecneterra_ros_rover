@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agri_rover_rp2040</name>
+  <version>0.1.0</version>
+  <description>RP2040 USB serial bridge — reads CH: lines, sends heartbeat and autonomous commands</description>
+  <maintainer email="dev@agrirover.com">AgriRover</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>agri_rover_interfaces</depend>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

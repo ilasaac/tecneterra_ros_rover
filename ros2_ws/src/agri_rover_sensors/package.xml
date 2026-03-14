@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agri_rover_sensors</name>
+  <version>0.1.0</version>
+  <description>Agricultural sensor node — tank level, temperature, humidity, pressure</description>
+  <maintainer email="dev@agrirover.com">AgriRover</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>agri_rover_interfaces</depend>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agri_rover_bringup</name>
+  <version>0.1.0</version>
+  <description>Top-level launch files and configuration for AgriRover system</description>
+  <maintainer email="dev@agrirover.com">AgriRover</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>agri_rover_rp2040</exec_depend>
+  <exec_depend>agri_rover_gps</exec_depend>
+  <exec_depend>agri_rover_mavlink</exec_depend>
+  <exec_depend>agri_rover_navigator</exec_depend>
+  <exec_depend>agri_rover_sensors</exec_depend>
+  <exec_depend>agri_rover_video</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

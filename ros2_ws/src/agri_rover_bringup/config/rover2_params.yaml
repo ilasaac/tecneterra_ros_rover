@@ -1,0 +1,48 @@
+# ── Rover 2 (Slave) parameters ────────────────────────────────────────────────
+# Deploy on: Jetson on slave rover (receives RC via SX1278 → RP2040)
+
+rp2040_bridge:
+  ros__parameters:
+    uart_port:          /dev/ttyACM0
+    uart_baud:          115200
+    heartbeat_interval: 0.2
+
+gps_driver:
+  ros__parameters:
+    primary_port:   /dev/ttyUSB0
+    secondary_port: /dev/ttyUSB1
+    baud:           115200
+
+mavlink_bridge:
+  ros__parameters:
+    rover_id:  2
+    gqc_host:  192.168.1.255
+    gqc_port:  14550            # GQC identifies rovers by sysid, not port
+    bind_port: 14551            # RV2 listens on :14551
+
+sensor_node:
+  ros__parameters:
+    publish_rate: 1.0
+
+video_streamer:
+  ros__parameters:
+    rtsp_port:     8555          # different port from RV1
+    mount_point:   /stream
+    camera_source: csi
+    csi_sensor_id: 0
+    width:         1280
+    height:        720
+    framerate:     30
+    bitrate:       2000
+    flip_method:   0
+
+navigator:
+  ros__parameters:
+    lookahead_distance:       3.0
+    default_acceptance_radius: 1.5
+    max_speed:                1.5
+    min_speed:                0.3
+    max_steering:             0.8
+    control_rate:             10.0
+    gps_timeout:              2.0
+    heading_deadband:         3.0

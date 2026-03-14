@@ -1,0 +1,277 @@
+/**
+ * rc_link_sx1278_slave — RP2040 firmware
+ *
+ * Hardware map:
+ *   PIO0 SM0  → PPM TX  (DMA-fed, 50 Hz, 20 ms frame)   GP15
+ *   SPI0      ↔ SX1278 LoRa RX (433 MHz, continuous)    GP16-21
+ *   USB CDC   ↔ Jetson Nano
+ *
+ * SX1278 runs in continuous RX mode. Main loop polls sx1278_recv():
+ *   - On packet received → decode 9 channels → apply mode → update PPM DMA buffer
+ *   - On RF timeout (500 ms no packet) → MODE_EMERGENCY → PPM neutral
+ *
+ * Jetson protocol (USB CDC):
+ *   TX: "CH:c0,...,c8 MODE:...\n"  at 10 Hz
+ *       "[RF_LINK_OK]" / "[RF_LINK_LOST]"  on state change
+ *   RX: "<HB:N>"                   heartbeat → enables autonomous mode
+ *       "<J:c0,...,c7>"            8-channel autonomous override (bypasses RF)
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include "pico/stdlib.h"
+#include "hardware/pio.h"
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+#include "hardware/clocks.h"
+
+#include "ppm_tx.pio.h"
+#include "sx1278.h"
+
+// ── Pin assignments ───────────────────────────────────────────────────────────
+
+#define PPM_PIN     15   // PPM output → motor controllers / ESC
+// SX1278 pins defined in sx1278.h
+
+// ── PIO assignments ───────────────────────────────────────────────────────────
+
+#define PIO_INST    pio0
+#define SM_PPM      0    // only one SM needed on slave
+
+// ── Timing ───────────────────────────────────────────────────────────────────
+
+#define CHANNELS        9
+#define PPM_FRAME_US    20000U
+#define PPM_HIGH_US     300U
+#define PPM_HIGH_COUNT  (PPM_HIGH_US - 2U)
+#define PPM_BUF_LEN     20
+
+#define RF_TIMEOUT_MS   500
+#define HB_TIMEOUT_MS   300
+#define CMD_TIMEOUT_MS  500
+
+// Channel gating thresholds (same as master)
+#define CH_ROVER_SEL    8
+#define RELAY_LOW       1250
+#define RELAY_HIGH      1750
+#define CH_AUTONOMOUS   5
+#define AUTO_THRESH     1700
+
+// Jetson status rate: 10 Hz = 100 ms
+#define STATUS_INTERVAL_MS  100
+
+// ── Mode ──────────────────────────────────────────────────────────────────────
+
+typedef enum {
+    MODE_RF = 0,          // channels come from SX1278 (master rover RF link)
+    MODE_AUTONOMOUS,      // channels from Jetson <J:...> command
+    MODE_EMERGENCY        // neutral (RF lost or channel gated)
+} Mode;
+
+static const char *const MODE_STR[] = { "MANUAL", "AUTONOMOUS", "EMERGENCY" };
+
+// ── State ─────────────────────────────────────────────────────────────────────
+
+static volatile uint16_t rf_ch[CHANNELS]    = {1500,1500,1500,1500,1500,1500,1500,1500,1500};
+static volatile uint16_t auto_ch[CHANNELS]  = {1500,1500,1500,1500,1500,1500,1500,1500,1500};
+static volatile uint16_t out_ch[CHANNELS]   = {1500,1500,1500,1500,1500,1500,1500,1500,1500};
+
+static volatile Mode     mode       = MODE_EMERGENCY;
+static volatile bool     rf_ok      = false;
+static volatile bool     hb_alive   = false;
+static volatile bool     cmd_fresh  = false;
+
+static volatile uint64_t t_last_rf  = 0;
+static volatile uint64_t t_last_hb  = 0;
+static volatile uint64_t t_last_cmd = 0;
+
+// ── PPM DMA (identical to master) ────────────────────────────────────────────
+
+static uint32_t ppm_buf[PPM_BUF_LEN];
+static int      dma_chan  = -1;
+static volatile int frame_count = 0;
+
+static void ppm_buf_update(void) {
+    uint32_t sum = 0;
+    for (int i = 0; i < CHANNELS; i++) {
+        uint16_t ch = out_ch[i];
+        if (ch < 1000) ch = 1000;
+        if (ch > 2000) ch = 2000;
+        ppm_buf[i * 2]     = PPM_HIGH_COUNT;
+        ppm_buf[i * 2 + 1] = (uint32_t)(ch - 302);
+        sum += ch;
+    }
+    uint32_t sync_low = PPM_FRAME_US - sum - PPM_HIGH_US;
+    ppm_buf[PPM_BUF_LEN - 2] = PPM_HIGH_COUNT;
+    ppm_buf[PPM_BUF_LEN - 1] = (sync_low > 2) ? (sync_low - 2) : 0;
+}
+
+static void __isr dma_irq_handler(void) {
+    if (!dma_channel_get_irq0_status(dma_chan)) return;
+    dma_channel_acknowledge_irq0(dma_chan);
+    frame_count++;
+    ppm_buf_update();
+    dma_channel_set_read_addr(dma_chan, ppm_buf, true);
+}
+
+static void dma_ppm_init(void) {
+    dma_chan = dma_claim_unused_channel(true);
+    dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
+    channel_config_set_dreq(&cfg, pio_get_dreq(PIO_INST, SM_PPM, true));
+    channel_config_set_read_increment(&cfg, true);
+    channel_config_set_write_increment(&cfg, false);
+    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
+    dma_channel_configure(dma_chan, &cfg, &PIO_INST->txf[SM_PPM], ppm_buf, PPM_BUF_LEN, false);
+    dma_channel_set_irq0_enabled(dma_chan, true);
+    irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
+    irq_set_enabled(DMA_IRQ_0, true);
+    ppm_buf_update();
+    dma_channel_start(dma_chan);
+}
+
+// ── Mode logic ────────────────────────────────────────────────────────────────
+
+static Mode compute_mode(void) {
+    uint64_t now = time_us_64();
+
+    if (rf_ok  && (now - t_last_rf)  > (uint64_t)RF_TIMEOUT_MS  * 1000) rf_ok    = false;
+    if (hb_alive && (now - t_last_hb) > (uint64_t)HB_TIMEOUT_MS  * 1000) hb_alive = false;
+    if (cmd_fresh && (now - t_last_cmd) > (uint64_t)CMD_TIMEOUT_MS * 1000) cmd_fresh = false;
+
+    // Autonomous override from Jetson takes priority (local intelligence)
+    if (cmd_fresh && hb_alive) return MODE_AUTONOMOUS;
+
+    if (!rf_ok) return MODE_EMERGENCY;
+
+    // CH9 rover-select gating: slave only responds when its window is active
+    uint16_t ch9 = rf_ch[CH_ROVER_SEL];
+    if (ch9 < RELAY_LOW || ch9 > RELAY_HIGH) return MODE_EMERGENCY;
+
+    return MODE_RF;
+}
+
+static void apply_mode(Mode m) {
+    mode = m;
+    switch (m) {
+        case MODE_RF:
+            for (int i = 0; i < CHANNELS; i++) out_ch[i] = rf_ch[i];
+            break;
+        case MODE_AUTONOMOUS:
+            for (int i = 0; i < CHANNELS; i++) out_ch[i] = auto_ch[i];
+            break;
+        case MODE_EMERGENCY:
+            for (int i = 0; i < CHANNELS; i++) out_ch[i] = 1500;
+            break;
+    }
+}
+
+// ── Jetson serial ─────────────────────────────────────────────────────────────
+
+static char jetson_linebuf[64];
+static int  jetson_lineidx = 0;
+
+static void jetson_parse_line(const char *line) {
+    int seq;
+    if (sscanf(line, "<HB:%d>", &seq) == 1) {
+        hb_alive  = true;
+        t_last_hb = time_us_64();
+        printf("<HB:%d>\n", seq + 1);
+        return;
+    }
+    uint16_t tmp[8];
+    if (sscanf(line, "<J:%hu,%hu,%hu,%hu,%hu,%hu,%hu,%hu>",
+               &tmp[0], &tmp[1], &tmp[2], &tmp[3],
+               &tmp[4], &tmp[5], &tmp[6], &tmp[7]) == 8) {
+        for (int i = 0; i < 8; i++) auto_ch[i] = tmp[i];
+        cmd_fresh  = true;
+        t_last_cmd = time_us_64();
+    }
+}
+
+static void jetson_poll_rx(void) {
+    int c;
+    while ((c = getchar_timeout_us(0)) != PICO_ERROR_TIMEOUT) {
+        if (c == '\n' || c == '\r') {
+            jetson_linebuf[jetson_lineidx] = '\0';
+            if (jetson_lineidx > 0) jetson_parse_line(jetson_linebuf);
+            jetson_lineidx = 0;
+        } else if (jetson_lineidx < (int)sizeof(jetson_linebuf) - 1) {
+            jetson_linebuf[jetson_lineidx++] = (char)c;
+        }
+    }
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+int main(void) {
+    stdio_usb_init();
+    sleep_ms(500);
+
+    // PIO: PPM TX on SM0
+    ppm_tx_program_init(PIO_INST, SM_PPM, PPM_PIN);
+
+    // DMA for PPM
+    dma_ppm_init();
+
+    // SX1278: continuous RX
+    bool sx_ok = sx1278_init();
+    if (!sx_ok) {
+        printf("[SX1278_ERROR] chip not found\n");
+    } else {
+        sx1278_start_rx();
+    }
+
+    printf("[BOOT] RC link slave ready\n");
+
+    bool     prev_rf_ok     = false;
+    int      last_frame     = 0;
+    uint64_t t_last_status  = 0;
+
+    while (true) {
+
+        // 1. SX1278 RX — poll DIO0 (HIGH when RxDone)
+        //    sx1278_recv() also checks CRC error flag and discards bad packets
+        if (gpio_get(SX_DIO0)) {
+            uint8_t pkt[CHANNELS * 2];
+            uint8_t pkt_len = 0;
+            if (sx1278_recv(pkt, &pkt_len) && pkt_len == CHANNELS * 2) {
+                for (int i = 0; i < CHANNELS; i++) {
+                    rf_ch[i] = (uint16_t)(pkt[i * 2] | ((uint16_t)pkt[i * 2 + 1] << 8));
+                    // Clamp to valid PPM range
+                    if (rf_ch[i] < 1000) rf_ch[i] = 1000;
+                    if (rf_ch[i] > 2000) rf_ch[i] = 2000;
+                }
+                rf_ok    = true;
+                t_last_rf = time_us_64();
+            }
+        }
+
+        // 2. Jetson serial RX
+        jetson_poll_rx();
+
+        // 3. RF link state change notification to Jetson
+        if (rf_ok != prev_rf_ok) {
+            printf(rf_ok ? "[RF_LINK_OK]\n" : "[RF_LINK_LOST]\n");
+            prev_rf_ok = rf_ok;
+        }
+
+        // 4. Per-frame mode update (triggered by DMA IRQ)
+        int current_frame = frame_count;
+        if (current_frame != last_frame) {
+            last_frame = current_frame;
+            apply_mode(compute_mode());
+        }
+
+        // 5. Periodic status to Jetson at 10 Hz
+        uint64_t now = time_us_64();
+        if ((now - t_last_status) >= (uint64_t)STATUS_INTERVAL_MS * 1000) {
+            t_last_status = now;
+            printf("CH:%d,%d,%d,%d,%d,%d,%d,%d,%d MODE:%s\n",
+                   out_ch[0], out_ch[1], out_ch[2],
+                   out_ch[3], out_ch[4], out_ch[5],
+                   out_ch[6], out_ch[7], out_ch[8],
+                   MODE_STR[mode]);
+        }
+    }
+}

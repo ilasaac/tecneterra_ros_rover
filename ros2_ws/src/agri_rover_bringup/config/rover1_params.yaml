@@ -1,0 +1,48 @@
+# ── Rover 1 (Master) parameters ───────────────────────────────────────────────
+# Deploy on: Jetson connected to HM30 air unit
+
+rp2040_bridge:
+  ros__parameters:
+    uart_port:          /dev/ttyACM0
+    uart_baud:          115200
+    heartbeat_interval: 0.2
+
+gps_driver:
+  ros__parameters:
+    primary_port:   /dev/ttyUSB0
+    secondary_port: /dev/ttyUSB1
+    baud:           115200
+
+mavlink_bridge:
+  ros__parameters:
+    rover_id:  1
+    gqc_host:  192.168.1.255   # WiFi broadcast — GQC receives regardless of IP
+    gqc_port:  14550
+    bind_port: 14550            # listen on :14550 for inbound MAVLink from GQC
+
+sensor_node:
+  ros__parameters:
+    publish_rate: 1.0
+
+video_streamer:
+  ros__parameters:
+    rtsp_port:     8554
+    mount_point:   /stream
+    camera_source: csi          # csi | usb | test
+    csi_sensor_id: 0
+    width:         1280
+    height:        720
+    framerate:     30
+    bitrate:       2000
+    flip_method:   0
+
+navigator:
+  ros__parameters:
+    lookahead_distance:       3.0
+    default_acceptance_radius: 1.5
+    max_speed:                1.5
+    min_speed:                0.3
+    max_steering:             0.8
+    control_rate:             10.0
+    gps_timeout:              2.0
+    heading_deadband:         3.0

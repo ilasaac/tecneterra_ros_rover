@@ -1,0 +1,26 @@
+video_streamer:
+  ros__parameters:
+    # RTSP server port (RV1=8554, RV2=8555 — differentiated in bringup)
+    rtsp_port: 8554
+
+    # Stream mount point — GQC connects to rtsp://<rover-ip>:<port>/stream
+    mount_point: /stream
+
+    # Camera source: "csi" (Jetson CSI), "usb" (/dev/video0), "test" (test pattern)
+    camera_source: csi
+
+    # CSI camera index (0 or 1)
+    csi_sensor_id: 0
+
+    # Resolution
+    width:  1280
+    height: 720
+
+    # Frame rate
+    framerate: 30
+
+    # H.264 encoder bitrate (kbps)
+    bitrate: 2000
+
+    # Flip method: 0=none, 1=counterclockwise, 2=rotate-180, 3=clockwise
+    flip_method: 0

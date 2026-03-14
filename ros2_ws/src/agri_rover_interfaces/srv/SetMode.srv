@@ -1,0 +1,8 @@
+uint8 MODE_MANUAL    = 0
+uint8 MODE_AUTO      = 1
+uint8 MODE_EMERGENCY = 2
+
+uint8 mode
+---
+bool success
+string message

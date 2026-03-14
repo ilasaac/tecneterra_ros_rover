@@ -1,0 +1,65 @@
+; sbus_rx.pio — SBUS inverted UART receiver
+;
+; SBUS electrical format: 100000 baud, 8 data bits, even parity, 2 stop bits, inverted.
+;   Normal UART:  idle=HIGH, start=LOW,  data 0=LOW,  data 1=HIGH
+;   SBUS inverted: idle=LOW,  start=HIGH, data 0=HIGH, data 1=LOW
+;
+; Strategy: wait for the HIGH start bit, then sample 8 data bits at 8x oversampling.
+; Parity and stop bits are IGNORED here — SBUS frame is validated in firmware by
+; checking the header byte (0x0F) and end byte (0x00).
+;
+; Clock divider:  float clkdiv = 125e6 / (8 * 100e3) = 156.25
+;   → 1 SM cycle = 1.25 µs = 1/8 of one SBUS bit period (8x oversampling)
+;
+; Bit timing:
+;   - 'wait' detects start bit (HIGH) at cycle 0
+;   - 'set x, 7 [10]' = 11 cycles → we arrive at cycle 11
+;   - 1.5 bit periods = 12 SM cycles → first sample at bit-0 center ✓
+;   - Loop: in(1) + [6](6) + jmp(1) = 8 cycles per bit ✓
+;
+; Push: 8-bit sample in ISR[31:24] (right-shift mode, LSB first).
+;   Firmware reads: byte = (pio_sm_get(pio, SM_SBUS) >> 24) ^ 0xFF
+;   The XOR inverts the bits back (SBUS data is logically inverted).
+
+.program sbus_rx
+
+start:
+    wait 1 pin 0        ; wait for inverted start bit (HIGH on SBUS line)
+    set x, 7 [10]       ; load bit counter (8 bits); delay 10 cycles to center on bit 0
+
+bitloop:
+    in pins, 1          ; sample one bit into ISR (shift right; bit goes to ISR[31])
+    jmp x-- bitloop [6] ; 8-cycle loop body: 1(in) + 6(delay) + 1(jmp) = 8 cycles per bit
+
+    push noblock        ; push to RX FIFO without stalling (prevents overrun if CPU is busy)
+    jmp start           ; wait for next frame's start bit
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+// Call once to install the SBUS RX program and start the state machine.
+// pin: GPIO number of the SBUS RX signal (inverted, from HM30 air unit).
+static inline void sbus_rx_program_init(PIO pio, uint sm, uint pin) {
+    uint offset = pio_add_program(pio, &sbus_rx_program);
+    pio_sm_config c = sbus_rx_program_get_default_config(offset);
+
+    // Map IN base to the SBUS pin.
+    sm_config_set_in_pins(&c, pin);
+
+    // Shift ISR right so bit 0 (first received, UART LSB) ends up in ISR[31].
+    // After 8 bits: ISR[31:24] = received byte, correct bit order.
+    // No autopush — we call push manually for precise timing.
+    sm_config_set_in_shift(&c, true, false, 32);
+
+    // 8× oversampling: 1 SM cycle = 1/8 bit period at 100 kbaud.
+    float clkdiv = (float)clock_get_hz(clk_sys) / (8.0f * 100000.0f);
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    // Configure pin as input with no pulls (HM30 drives it).
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+    pio_gpio_init(pio, pin);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
