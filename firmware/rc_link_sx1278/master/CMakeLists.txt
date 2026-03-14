@@ -20,8 +20,7 @@ pico_generate_pio_header(rc_link_sx1278_master ${CMAKE_CURRENT_LIST_DIR}/sbus_rx
 pico_generate_pio_header(rc_link_sx1278_master ${CMAKE_CURRENT_LIST_DIR}/ppm_tx.pio)
 
 target_link_libraries(rc_link_sx1278_master
-    pico_stdlib
-    pico_stdio_usb       # USB CDC for Jetson serial
+    pico_stdlib          # includes stdio framework; pico_enable_stdio_usb adds USB transport
     hardware_pio
     hardware_dma
     hardware_spi
