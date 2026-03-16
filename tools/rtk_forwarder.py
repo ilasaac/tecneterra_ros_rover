@@ -137,7 +137,8 @@ class NtripClient:
     def __init__(self, host: str, port: int, mountpoint: str,
                  user: str, password: str,
                  approx_lat: float = 0.0, approx_lon: float = 0.0,
-                 gga_interval: float = 30.0):
+                 gga_interval: float = 30.0,
+                 recv_timeout: float = 30.0):
         self._host         = host
         self._port         = port
         self._mountpoint   = mountpoint.lstrip('/')
@@ -146,6 +147,7 @@ class NtripClient:
         self._approx_lat   = approx_lat
         self._approx_lon   = approx_lon
         self._gga_interval = gga_interval
+        self._recv_timeout = recv_timeout
 
     def _build_request(self) -> bytes:
         creds = base64.b64encode(f'{self._user}:{self._password}'.encode()).decode()
@@ -194,7 +196,7 @@ class NtripClient:
 
         log(f'NTRIP connected  {self._host}:{self._port}/{self._mountpoint}')
 
-        sock.settimeout(5.0)
+        sock.settimeout(self._recv_timeout)
 
         # Send GGA immediately on connect — many casters (including Emlid) will not
         # start streaming RTCM3 until they receive the rover's position.
@@ -222,9 +224,13 @@ class NtripClient:
                 sock.sendall(gga)
                 last_gga = time.monotonic()
 
-            data = sock.recv(self.RECV_SIZE)
+            try:
+                data = sock.recv(self.RECV_SIZE)
+            except socket.timeout:
+                raise ConnectionError(
+                    f'NTRIP: no data for {self._recv_timeout:.0f} s — base station offline?')
             if not data:
-                raise ConnectionError('NTRIP: stream closed by caster')
+                raise ConnectionError('NTRIP: stream closed by caster (EOF)')
             yield data
 
         sock.close()
@@ -349,6 +355,8 @@ def parse_args():
                    help='Rover approx longitude for VRS casters (optional)')
     g.add_argument('--gga-interval', default=30.0,  type=float, metavar='S',
                    help='Seconds between GGA position reports to caster (0=off)')
+    g.add_argument('--recv-timeout', default=30.0,  type=float, metavar='S',
+                   help='Seconds without data before reconnecting (default 30)')
 
     # E610 options
     g2 = p.add_argument_group('E610 DTU options (--source e610)')
@@ -394,6 +402,7 @@ def main():
             approx_lat   = args.approx_lat,
             approx_lon   = args.approx_lon,
             gga_interval = args.gga_interval,
+            recv_timeout = args.recv_timeout,
         )
         source_str = f'NTRIP  {args.ntrip_host}:{args.ntrip_port}/{args.mountpoint}'
     else:
