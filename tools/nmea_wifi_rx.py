@@ -120,8 +120,6 @@ class UdpPtyBridge:
 
 # ── Status display ────────────────────────────────────────────────────────────
 
-ANSI_CLR  = '\033[2J\033[H'
-ANSI_BOLD = '\033[1m'
 ANSI_RST  = '\033[0m'
 ANSI_GRN  = '\033[32m'
 ANSI_YLW  = '\033[33m'
@@ -136,22 +134,11 @@ def _age_str(age: float) -> str:
 
 def _status(pri: UdpPtyBridge, sec: UdpPtyBridge,
             pri_pty: str, sec_pty: str, args) -> str:
-    lines = [
-        f'{ANSI_BOLD}AgriRover NMEA WiFi Receiver{ANSI_RST}',
-        f'  Listening : pri=:{args.pri_port}  sec=:{args.sec_port}',
-        '',
-        f'  {"Stream":<12} {"PTY path":<14} {"Last packet":<22} {"Packets":>8}',
-        f'  {"─"*12} {"─"*14} {"─"*22} {"─"*8}',
-        f'  {"primary":<12} {pri_pty:<14} {_age_str(pri.age):<30} {pri.rx_count:>8}',
-        f'  {"secondary":<12} {sec_pty:<14} {_age_str(sec.age):<30} {sec.rx_count:>8}',
-        '',
-        f'  Configure gps_driver:',
-        f'    primary_port:   {pri_pty}',
-        f'    secondary_port: {sec_pty}',
-        '',
-        '  Ctrl-C to stop',
-    ]
-    return ANSI_CLR + '\n'.join(lines) + '\n'
+    ts = time.strftime('%H:%M:%S')
+    pri_s = _age_str(pri.age)
+    sec_s = _age_str(sec.age)
+    return (f'[{ts}] pri={pri_pty} {pri_s} ({pri.rx_count} pkts)  '
+            f'sec={sec_pty} {sec_s} ({sec.rx_count} pkts)\n')
 
 
 # ── Args / main ───────────────────────────────────────────────────────────────
