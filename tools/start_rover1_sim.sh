@@ -21,7 +21,7 @@ SEC_SYMLINK=/tmp/rv1_gps_sec
 cleanup() {
     echo ""
     echo "[sim] Stopping..."
-    docker compose stop rover1 2>/dev/null || true
+    docker compose down rover1 2>/dev/null || true
     kill "$NMEA_PID" 2>/dev/null || true
     rm -f "$PRI_SYMLINK" "$SEC_SYMLINK"
     echo "[sim] Done."
@@ -55,4 +55,4 @@ fi
 
 # ── Step 3: start rover1 container ────────────────────────────────────────────
 echo "[sim] Starting rover1 Docker container (camera_source=test)..."
-CAMERA_SOURCE=test docker compose up rover1
+CAMERA_SOURCE=test docker compose up --force-recreate rover1
