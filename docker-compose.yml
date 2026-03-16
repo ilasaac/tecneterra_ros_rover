@@ -20,27 +20,19 @@ x-rover-base: &rover-base
     - NVIDIA_DRIVER_CAPABILITIES=all,graphics
     - ROS_DOMAIN_ID=0
   volumes:
-    - /dev:/dev             # serial ports, video devices
-    - /tmp/argus_socket:/tmp/argus_socket  # nvargus daemon socket (CSI camera)
+    - /dev:/dev             # serial ports, video devices (incl. /dev/pts PTY slaves)
+    - /tmp:/tmp             # PTY symlinks from nmea_wifi_rx.py + argus socket
   restart: unless-stopped
 
 services:
   rover1:
     <<: *rover-base
     container_name: agri_rover_rv1
-    devices:
-      - /dev/ttyACM0:/dev/ttyACM0   # RP2040 USB CDC
-      - /dev/ttyUSB0:/dev/ttyUSB0   # GPS primary
-      - /dev/ttyUSB1:/dev/ttyUSB1   # GPS secondary
     command: >
       ros2 launch agri_rover_bringup rover1.launch.py
 
   rover2:
     <<: *rover-base
     container_name: agri_rover_rv2
-    devices:
-      - /dev/ttyACM0:/dev/ttyACM0
-      - /dev/ttyUSB0:/dev/ttyUSB0
-      - /dev/ttyUSB1:/dev/ttyUSB1
     command: >
       ros2 launch agri_rover_bringup rover2.launch.py

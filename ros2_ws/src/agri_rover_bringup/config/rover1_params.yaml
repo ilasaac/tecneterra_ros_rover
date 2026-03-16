@@ -9,8 +9,8 @@ rp2040_bridge:
 
 gps_driver:
   ros__parameters:
-    primary_port:   /dev/ttyUSB0
-    secondary_port: /dev/ttyUSB1
+    primary_port:   /tmp/rv1_gps_pri   # real HW: /dev/ttyUSB0  sim: symlink from nmea_wifi_rx.py
+    secondary_port: /tmp/rv1_gps_sec   # real HW: /dev/ttyUSB1  sim: symlink from nmea_wifi_rx.py
     baud:           115200
 
 mavlink_bridge:
@@ -28,7 +28,7 @@ video_streamer:
   ros__parameters:
     rtsp_port:     8554
     mount_point:   /stream
-    camera_source: csi          # csi | usb | test
+    camera_source: test         # csi | usb | test
     csi_sensor_id: 0
     width:         1280
     height:        720

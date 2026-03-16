@@ -167,6 +167,11 @@ def parse_args():
                    help='UDP port for primary GPS stream')
     p.add_argument('--sec-port',  default=5001, type=int,
                    help='UDP port for secondary GPS stream')
+    p.add_argument('--pri-symlink', default='',
+                   help='Create a symlink at this path pointing to the primary PTY '
+                        '(e.g. /tmp/rv1_gps_pri) so callers can use a fixed path')
+    p.add_argument('--sec-symlink', default='',
+                   help='Create a symlink at this path pointing to the secondary PTY')
     return p.parse_args()
 
 
@@ -190,6 +195,20 @@ def main():
     print(f'        primary_port:   {pri_pty}')
     print(f'        secondary_port: {sec_pty}')
     print()
+
+    # Create fixed-path symlinks so other processes can use a predictable path
+    def _make_symlink(target: str, link: str):
+        if not link:
+            return
+        try:
+            os.unlink(link)
+        except FileNotFoundError:
+            pass
+        os.symlink(target, link)
+        print(f'    symlink: {link} -> {target}')
+
+    _make_symlink(pri_pty, args.pri_symlink)
+    _make_symlink(sec_pty, args.sec_symlink)
 
     pri_bridge = UdpPtyBridge(args.bind_ip, args.pri_port, pri_master, 'primary')
     sec_bridge = UdpPtyBridge(args.bind_ip, args.sec_port, sec_master, 'secondary')
