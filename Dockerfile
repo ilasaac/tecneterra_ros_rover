@@ -52,9 +52,11 @@ WORKDIR ${ISAAC_ROS_WS}
 # Copy project packages into the colcon workspace src tree
 COPY ros2_ws/src src/
 
-# Build (source Isaac ROS Humble overlay first)
+# Build — source whichever ROS distro the base image provides (humble or jazzy)
 RUN /bin/bash -c "\
-    source /opt/ros/humble/setup.bash && \
+    ROS_SETUP=\$(ls /opt/ros/*/setup.bash 2>/dev/null | head -1) && \
+    echo \"Sourcing \${ROS_SETUP}\" && \
+    source \${ROS_SETUP} && \
     colcon build --symlink-install \
                  --cmake-args -DCMAKE_BUILD_TYPE=Release \
     "
