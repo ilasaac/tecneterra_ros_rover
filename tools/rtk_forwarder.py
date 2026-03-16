@@ -138,7 +138,7 @@ class NtripClient:
                  user: str, password: str,
                  approx_lat: float = 0.0, approx_lon: float = 0.0,
                  gga_interval: float = 30.0,
-                 recv_timeout: float = 30.0):
+                 recv_timeout: float = 15.0):
         self._host         = host
         self._port         = port
         self._mountpoint   = mountpoint.lstrip('/')
@@ -164,6 +164,8 @@ class NtripClient:
     def stream(self):
         """Generator: yields chunks of raw RTCM3 bytes.  Raises on connection error."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # TCP keepalive: detect silently-dropped NAT sessions (router idle timeout)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         sock.settimeout(10.0)
         sock.connect((self._host, self._port))
         sock.sendall(self._build_request())
@@ -257,10 +259,11 @@ class E610Client:
     def stream(self):
         """Generator: yields chunks of raw RTCM3 bytes.  Raises on connection error."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         sock.settimeout(10.0)
         sock.connect((self._host, self._port))
         print(f'  [OK]  E610 DTU connected  {self._host}:{self._port}')
-        sock.settimeout(5.0)
+        sock.settimeout(15.0)
         while True:
             data = sock.recv(self.RECV_SIZE)
             if not data:
@@ -294,8 +297,13 @@ ANSI_RED  = '\033[31m'
 
 
 def _status(source: str, state: dict) -> str:
-    conn  = f'{ANSI_GRN}OK{ANSI_RST}' if state['connected'] else f'{ANSI_RED}RECONNECTING{ANSI_RST}'
-    age   = time.monotonic() - state['last_rx'] if state['last_rx'] else None
+    age = time.monotonic() - state['last_rx'] if state['last_rx'] else None
+    if not state['connected']:
+        conn = f'{ANSI_RED}RECONNECTING{ANSI_RST}'
+    elif age is None or age > 5.0:
+        conn = f'{ANSI_YLW}STALLED{ANSI_RST}'
+    else:
+        conn = f'{ANSI_GRN}OK{ANSI_RST}'
     rx    = (f'{ANSI_GRN}{age:.1f}s ago{ANSI_RST}' if age and age < 5.0
              else f'{ANSI_YLW}{age:.0f}s ago{ANSI_RST}' if age
              else f'{ANSI_RED}none{ANSI_RST}')
@@ -354,8 +362,8 @@ def parse_args():
                    help='Rover approx longitude for VRS casters (optional)')
     g.add_argument('--gga-interval', default=30.0,  type=float, metavar='S',
                    help='Seconds between GGA position reports to caster (0=off)')
-    g.add_argument('--recv-timeout', default=30.0,  type=float, metavar='S',
-                   help='Seconds without data before reconnecting (default 30)')
+    g.add_argument('--recv-timeout', default=15.0,  type=float, metavar='S',
+                   help='Seconds without data before reconnecting (default 15)')
 
     # E610 options
     g2 = p.add_argument_group('E610 DTU options (--source e610)')

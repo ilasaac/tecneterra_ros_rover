@@ -306,41 +306,36 @@ Planned stack: Kotlin, Jetpack Compose, java-mavlink, ExoPlayer (RTSP), OSMDroid
 
 ## Simulator — dead-reckoning GPS
 
-Runs on a **third Jetson Nano** (not RV1, not RV2). Replaces real u-blox ZED-X20P hardware during development.
+Runs on a **third Jetson Orin Nano** (not RV1, not RV2). Replaces real u-blox ZED-X20P hardware during development.
 
-### Hardware connections (via USB hub on simulator Jetson)
+### Hardware connections
 
-| USB port on sim Jetson | Cable destination                   | Purpose                        |
-|------------------------|-------------------------------------|--------------------------------|
-| `/dev/ttyACM0`         | ppm_decoder RP2040 USB-CDC          | Reads PPM state for both rovers |
-| `/dev/ttyUSB0`         | → RV1 Jetson `/dev/ttyUSB0`        | RV1 primary GPS   (GGA + VTG)  |
-| `/dev/ttyUSB1`         | → RV1 Jetson `/dev/ttyUSB1`        | RV1 secondary GPS (GGA only)   |
-| `/dev/ttyUSB2`         | → RV2 Jetson `/dev/ttyUSB0`        | RV2 primary GPS   (GGA + VTG)  |
-| `/dev/ttyUSB3`         | → RV2 Jetson `/dev/ttyUSB1`        | RV2 secondary GPS (GGA only)   |
+| Port on simulator Jetson | Purpose |
+|--------------------------|---------|
+| `/dev/ttyACM0` (USB)     | ppm_decoder RP2040 — reads `RV1:ch0..7 RV2:ch0..7\n` at 50 Hz |
 
-Total: 5 USB connections (use a powered USB hub — Jetson Nano has 4 USB-A ports).
+NMEA is sent over **WiFi (UDP)** — no USB serial connections to rover Jetsons needed.
 
-### How it works
+### Architecture
 
 ```
-ppm_decoder → "RV1:ch0..7 RV2:ch0..7\n"
-                        │
-              SimulatorNode (10 Hz timer)
-                        │
-          ┌─────────────┴─────────────┐
-        RoverState rv1              RoverState rv2
-          │ dead-reckoning             │ dead-reckoning
-          │ bicycle kinematic          │ (same model)
-          │
-          ├─ primary lat/lon  → $GNGGA (fix=4, RTK) + $GNVTG → /dev/ttyUSB0
-          └─ secondary lat/lon → $GNGGA (fix=4)               → /dev/ttyUSB1
-             (offset `antenna_baseline_m` ahead along heading)
+Simulator Jetson Orin Nano                 WiFi (UDP)          Rover Jetson Nano
+  tools/simulator.py                  ──────────────────►  tools/nmea_wifi_rx.py
+  reads ppm_decoder USB                rv1-ip:5000 (pri)        │
+  dead-reckoning physics               rv1-ip:5001 (sec)    /dev/pts/N  ← gps_driver primary
+  $GNGGA + $GNVTG @ 10 Hz             rv2-ip:5000 (pri)    /dev/pts/M  ← gps_driver secondary
+                                       rv2-ip:5001 (sec)
+
+  RTK corrections (real hardware only):
+  NTRIP caster (internet) ──────────────────────────────►  tools/rtk_forwarder.py
+  E610 DTU base station (Ethernet) ─────────────────────►       │
+                                                          /dev/ttyUSB0 → u-blox primary
+                                                          /dev/ttyUSB1 → u-blox secondary
 ```
 
-- `gps_driver.py` on each rover Jetson runs in default `heading_source: baseline` mode.
-- Secondary GGA position is offset `antenna_baseline_m` (default 0.30 m) ahead of primary along rover heading.
-- `gps_driver.py` recovers heading via `atan2(dlon, dlat)` between secondary and primary — same as with real hardware.
-- Primary port also sends `$GNVTG` (COG + speed) — unused by default but consumed if `heading_source: vtg`.
+- `nmea_wifi_rx.py` creates two PTY virtual serial ports on the rover Jetson.
+- `gps_driver.py` reads PTYs as if they were physical GPS modules — no code changes.
+- Secondary GGA is offset `antenna_baseline_m` (0.30 m) ahead along rover heading → `gps_driver` recovers heading via `atan2(dlon, dlat)`, identical to real hardware.
 
 ### Physics model (bicycle kinematic)
 
@@ -353,24 +348,70 @@ lat += speed * cos(heading) * dt / 111320
 lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))
 ```
 
-### Launch
+### Startup order (simulation)
 
 ```bash
-# On simulator Jetson — set start_lat/lon in simulator_params.yaml first
-ros2 launch agri_rover_simulator simulator.launch.py
+# ── Simulator Jetson ─────────────────────────────────────────────────────────
+python3 tools/simulator.py \
+  --rv1-ip 192.168.1.10 --rv2-ip 192.168.1.11 \
+  --rv1-lat -23.550520  --rv1-lon -46.633308   \
+  --rv2-lat -23.550620  --rv2-lon -46.633408
 
-# Monitor simulated positions
+# ── Each rover Jetson (run BEFORE gps_driver) ────────────────────────────────
+python3 tools/nmea_wifi_rx.py --pri-port 5000 --sec-port 5001
+# → prints: primary_port: /dev/pts/2   secondary_port: /dev/pts/3
+
+# Launch ROS2 with the printed PTY paths
+ros2 launch agri_rover_bringup rover1.launch.py \
+  primary_port:=/dev/pts/2 secondary_port:=/dev/pts/3
+```
+
+### Startup order (real hardware + RTK corrections)
+
+```bash
+# On each rover Jetson — forwards RTCM3 to u-blox modules on ttyUSB0/ttyUSB1
+# Source option 1: NTRIP internet caster
+python3 tools/rtk_forwarder.py --source ntrip \
+  --ntrip-host <caster-ip> --ntrip-port 2101 \
+  --mountpoint <mount> --ntrip-user <user> --ntrip-pass <pass> \
+  --gps-ports /dev/ttyUSB0 /dev/ttyUSB1 \
+  --log-file /tmp/rtk.log
+
+# Source option 2: E610 DTU base station (Jetson Ethernet port → E610 LAN port)
+python3 tools/rtk_forwarder.py --source e610 \
+  --e610-host 192.168.1.20 --e610-port 9000 \
+  --gps-ports /dev/ttyUSB0 /dev/ttyUSB1
+```
+
+### ROS2 simulator node (alternative — requires Isaac ROS)
+
+```bash
+ros2 launch agri_rover_simulator simulator.launch.py
 ros2 topic echo /sim/rv1/fix
 ros2 topic echo /sim/rv2/fix
 ```
 
-### Config
+---
 
-Edit `agri_rover_simulator/config/simulator_params.yaml`:
-- `rv1_start_lat/lon`, `rv2_start_lat/lon` — field origin
-- `antenna_baseline_m` — must match physical antenna separation on rover
-- `wheelbase_m` — rover wheelbase for turning radius accuracy
-- Port assignments if USB hub enumeration differs
+## Tools
+
+All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
+
+| Script | Runs on | Purpose |
+|--------|---------|---------|
+| `simulator.py` | Simulator Jetson | Dead-reckoning physics → NMEA over UDP WiFi |
+| `nmea_wifi_rx.py` | Each rover Jetson | Receives UDP NMEA → PTY virtual serial ports for gps_driver |
+| `rtk_forwarder.py` | Each rover Jetson | NTRIP/E610 RTCM3 → u-blox serial (real hardware) |
+| `monitor.py` | Dev machine | Live MAVLink terminal dashboard |
+| `mission_uploader.py` | Dev machine | CSV waypoints → MAVLink mission upload |
+
+### NTRIP pitfalls (rtk_forwarder.py)
+
+- **Use HTTP/1.0** — NTRIP v1 casters (including Emlid) respond with `ICY 200 OK\r\n` (single CRLF). HTTP/1.1 persistent-connection semantics confuse them.
+- **Do not send GGA unconditionally** — single-base casters start streaming immediately after the HTTP request. Sending a GGA sentence into a v1 stream causes the caster to stop sending. Only send GGA if `--approx-lat`/`--approx-lon` are given (needed for VRS/network-RTK casters only).
+- **Emlid caster behaviour**: responds `ICY 200 OK\r\n` (no double CRLF), starts RTCM3 immediately after connect, no GGA needed.
+- **Disconnect reason** is logged: `no data for 30 s` = base offline; `stream closed by caster (EOF)` = caster dropped connection.
+- **Test without the script**: `str2str -in ntrip://user:pass@host:port/mount | xxd | head -20`
 
 ---
 
