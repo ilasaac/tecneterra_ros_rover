@@ -148,14 +148,19 @@ class NtripClient:
         self._gga_interval = gga_interval
 
     def _build_request(self) -> bytes:
-        creds   = base64.b64encode(f'{self._user}:{self._password}'.encode()).decode()
+        creds = base64.b64encode(f'{self._user}:{self._password}'.encode()).decode()
+        # Include GGA in request header (NTRIP v2 — required by some casters incl. Emlid)
+        gga_line = _make_approx_gga(self._approx_lat, self._approx_lon).decode('ascii').strip()
         request = (
-            f'GET /{self._mountpoint} HTTP/1.0\r\n'
+            f'GET /{self._mountpoint} HTTP/1.1\r\n'
+            f'Host: {self._host}\r\n'
             f'User-Agent: NTRIP AgriRover/1.0\r\n'
             f'Authorization: Basic {creds}\r\n'
-            f'Ntrip-Version: Ntrip/1.0\r\n'
+            f'Ntrip-Version: Ntrip/2.0\r\n'
+            f'Ntrip-GGA: {gga_line}\r\n'
             f'\r\n'
         )
+        log(f'NTRIP request headers sent (Ntrip-GGA: {gga_line})')
         return request.encode('ascii')
 
     def stream(self):
