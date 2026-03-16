@@ -316,7 +316,7 @@ def log(msg: str, error: bool = False):
     out = f'[{ts}] {msg}'
     stream = sys.stderr if error else sys.stdout
     print(out, file=stream, flush=True)
-    if _log_file:
+    if _log_file and not _log_file.closed:
         print(out, file=_log_file, flush=True)
 
 
@@ -476,9 +476,9 @@ def main():
     client.close()            # ensure TCP FIN is sent before process exits
     fwd_thread.join(timeout=3.0)
     writer.close()
+    log('Forwarder stopped.')
     if _log_file:
         _log_file.close()
-    log('Forwarder stopped.')
 
 
 if __name__ == '__main__':
