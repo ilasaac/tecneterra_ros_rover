@@ -53,6 +53,9 @@ if [ ! -e "$PRI_SYMLINK" ]; then
     exit 1
 fi
 
+# Make PTY devices world-readable so the Docker container (any user) can open them
+chmod 666 "$(readlink "$PRI_SYMLINK")" "$(readlink "$SEC_SYMLINK")"
+
 # ── Step 3: start rover1 container ────────────────────────────────────────────
 echo "[sim] Starting rover1 Docker container (camera_source=test)..."
 CAMERA_SOURCE=test docker compose up --force-recreate rover1
