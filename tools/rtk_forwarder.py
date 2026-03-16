@@ -137,7 +137,7 @@ class NtripClient:
     def __init__(self, host: str, port: int, mountpoint: str,
                  user: str, password: str,
                  approx_lat: float = 0.0, approx_lon: float = 0.0,
-                 gga_interval: float = 30.0,
+                 gga_interval: float = 30.0,   # 0 = disable GGA keep-alive
                  recv_timeout: float = 15.0):
         self._host         = host
         self._port         = port
@@ -196,14 +196,21 @@ class NtripClient:
 
         sock.settimeout(self._recv_timeout)
 
-        # Only send post-connection GGA for VRS/network-RTK casters that require it.
-        # Standard single-base casters (incl. Emlid) start streaming immediately —
-        # sending GGA to them confuses the stream.  Only send if coordinates given.
-        last_gga = time.monotonic()
-        if self._approx_lat != 0.0 and self._approx_lon != 0.0 and self._gga_interval > 0:
+        # Send periodic GGA to keep the rover session alive on the caster.
+        # Emlid Caster (and most NTRIP casters) require GGA from the rover —
+        # without it they stop sending RTCM3 after ~30 s.
+        # Use provided approx coords if given, otherwise send 0,0,0 as a
+        # keep-alive placeholder (caster just needs to see the rover is alive).
+        last_gga = time.monotonic() - self._gga_interval  # trigger immediately
+        def _send_gga(sock):
             gga = _make_approx_gga(self._approx_lat, self._approx_lon)
             sock.sendall(gga)
             log(f'GGA sent to caster  ({self._approx_lat:.4f}, {self._approx_lon:.4f})')
+
+        # Small delay before first GGA so the RTCM3 stream has started
+        if self._gga_interval > 0:
+            time.sleep(0.5)
+            _send_gga(sock)
 
         # Yield any data that arrived after the header in the same recv
         if b'\r\n\r\n' in header:
@@ -217,12 +224,10 @@ class NtripClient:
             yield leftover
 
         while True:
-            # Periodically re-send GGA — only for VRS casters when coordinates given
-            if (self._approx_lat != 0.0 and self._approx_lon != 0.0 and
-                    self._gga_interval > 0 and
+            # Periodically re-send GGA to keep the caster session alive
+            if (self._gga_interval > 0 and
                     time.monotonic() - last_gga >= self._gga_interval):
-                gga = _make_approx_gga(self._approx_lat, self._approx_lon)
-                sock.sendall(gga)
+                _send_gga(sock)
                 last_gga = time.monotonic()
 
             try:
@@ -361,7 +366,7 @@ def parse_args():
     g.add_argument('--approx-lon',   default=0.0,   type=float,
                    help='Rover approx longitude for VRS casters (optional)')
     g.add_argument('--gga-interval', default=30.0,  type=float, metavar='S',
-                   help='Seconds between GGA position reports to caster (0=off)')
+                   help='Seconds between GGA keep-alive to caster (0=disable, default 30)')
     g.add_argument('--recv-timeout', default=15.0,  type=float, metavar='S',
                    help='Seconds without data before reconnecting (default 15)')
 
