@@ -151,18 +151,14 @@ class NtripClient:
 
     def _build_request(self) -> bytes:
         creds = base64.b64encode(f'{self._user}:{self._password}'.encode()).decode()
-        # Include GGA in request header (NTRIP v2 — required by some casters incl. Emlid)
-        gga_line = _make_approx_gga(self._approx_lat, self._approx_lon).decode('ascii').strip()
+        # HTTP/1.0 — matches str2str and standard NTRIP v1 behaviour (Emlid caster)
         request = (
-            f'GET /{self._mountpoint} HTTP/1.1\r\n'
-            f'Host: {self._host}\r\n'
+            f'GET /{self._mountpoint} HTTP/1.0\r\n'
             f'User-Agent: NTRIP AgriRover/1.0\r\n'
             f'Authorization: Basic {creds}\r\n'
-            f'Ntrip-Version: Ntrip/2.0\r\n'
-            f'Ntrip-GGA: {gga_line}\r\n'
             f'\r\n'
         )
-        log(f'NTRIP request headers sent (Ntrip-GGA: {gga_line})')
+        log('NTRIP request sent')
         return request.encode('ascii')
 
     def stream(self):
@@ -198,12 +194,14 @@ class NtripClient:
 
         sock.settimeout(self._recv_timeout)
 
-        # Send GGA immediately on connect — many casters (including Emlid) will not
-        # start streaming RTCM3 until they receive the rover's position.
-        gga = _make_approx_gga(self._approx_lat, self._approx_lon)
-        sock.sendall(gga)
+        # Only send post-connection GGA for VRS/network-RTK casters that require it.
+        # Standard single-base casters (incl. Emlid) start streaming immediately —
+        # sending GGA to them confuses the stream.  Only send if coordinates given.
         last_gga = time.monotonic()
-        log(f'GGA sent to caster  ({self._approx_lat:.4f}, {self._approx_lon:.4f})')
+        if self._approx_lat != 0.0 and self._approx_lon != 0.0 and self._gga_interval > 0:
+            gga = _make_approx_gga(self._approx_lat, self._approx_lon)
+            sock.sendall(gga)
+            log(f'GGA sent to caster  ({self._approx_lat:.4f}, {self._approx_lon:.4f})')
 
         # Yield any data that arrived after the header in the same recv
         if b'\r\n\r\n' in header:
@@ -217,8 +215,9 @@ class NtripClient:
             yield leftover
 
         while True:
-            # Periodically re-send GGA (keeps VRS casters updated on rover position)
-            if (self._gga_interval > 0 and
+            # Periodically re-send GGA — only for VRS casters when coordinates given
+            if (self._approx_lat != 0.0 and self._approx_lon != 0.0 and
+                    self._gga_interval > 0 and
                     time.monotonic() - last_gga >= self._gga_interval):
                 gga = _make_approx_gga(self._approx_lat, self._approx_lon)
                 sock.sendall(gga)
