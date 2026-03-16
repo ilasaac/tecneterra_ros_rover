@@ -132,7 +132,7 @@ class MavlinkBridgeNode(Node):
         """Send a pre-packed MAVLink message to GQC via UDP."""
         try:
             buf = msg.pack(self._mav.mav)
-            self._mav.mav.socket.sendto(buf, self._gqc_addr)
+            self._mav.socket.sendto(buf, self._gqc_addr)
         except Exception as e:
             self.get_logger().warn(f'MAVLink send error: {e}')
 

@@ -103,7 +103,7 @@ ros_agri_rover/
 | MAVLink version  | v2 (MAVLINK20=1)       | set in all Python node env              |
 
 GQC identifies rovers by **sysid in HEARTBEAT**, not by port.
-`mavlink_bridge` uses `socket.sendto()` directly — all sends go through `_send()` which calls `self._mav.mav.socket.sendto(buf, self._gqc_addr)`. Never use `xxx_send()` convenience methods on a `udpin:` connection — they call `mav.file.write()` which fails silently if no packet has been received yet. Use `xxx_encode()` + `_send()` instead.
+`mavlink_bridge` uses `socket.sendto()` directly — all sends go through `_send()` which calls `self._mav.socket.sendto(buf, self._gqc_addr)`. Note: socket is on the connection object (`self._mav`), not the dialect object (`self._mav.mav`). Never use `xxx_send()` convenience methods on a `udpin:` connection — they call `mav.file.write()` which fails silently if no packet has been received yet. Use `xxx_encode()` + `_send()` instead.
 `gqc_host` in params must match the **broadcast address of the rover's WiFi subnet** (e.g. `192.168.100.255` for a `192.168.100.x` network).
 
 ---
