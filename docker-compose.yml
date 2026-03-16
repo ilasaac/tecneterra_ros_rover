@@ -13,6 +13,7 @@ x-rover-base: &rover-base
     context: .
     dockerfile: Dockerfile
   privileged: true          # required for GPIO, USB serial, CSI camera
+  user: root                # needed for PTY access (sim GPS) and device permissions
   network_mode: host        # MAVLink UDP broadcast + ROS2 DDS multicast
   runtime: nvidia           # enable Jetson GPU (NITROS, nvarguscamerasrc)
   environment:
