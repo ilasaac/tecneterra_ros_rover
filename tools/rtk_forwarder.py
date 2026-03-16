@@ -58,6 +58,7 @@ from __future__ import annotations
 import argparse
 import base64
 import math
+import queue
 import signal
 import socket
 import sys
@@ -96,26 +97,53 @@ def _make_approx_gga(lat: float, lon: float) -> bytes:
 # ── GPS serial writer ─────────────────────────────────────────────────────────
 
 class GpsWriter:
-    """Opens one or more serial ports for writing RTCM3 corrections."""
+    """
+    Opens one or more serial ports for writing RTCM3 corrections.
+
+    Writes happen in a dedicated background thread so the NTRIP receive loop
+    is never stalled by a slow or full serial/PTY buffer.  If the queue fills
+    up (e.g. gps_driver is not running and the PTY buffer is full), incoming
+    chunks are silently dropped rather than blocking the TCP connection.
+    """
+
+    _QUEUE_MAX = 256   # max chunks to buffer before dropping
 
     def __init__(self, ports: list[str], baud: int):
         self._sers: list[serial.Serial] = []
         for p in ports:
             try:
-                s = serial.Serial(p, baud, timeout=1.0)
+                s = serial.Serial(p, baud, timeout=1.0, write_timeout=1.0)
                 self._sers.append(s)
                 print(f'  [OK]  GPS serial          {p}  @ {baud} baud')
             except serial.SerialException as e:
                 print(f'  [ERR] GPS serial          {p}  — {e}', file=sys.stderr)
 
+        self._queue: queue.Queue = queue.Queue(maxsize=self._QUEUE_MAX)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        """Background thread: drain the queue and write to serial ports."""
+        while True:
+            chunk = self._queue.get()
+            if chunk is None:          # sentinel — exit
+                break
+            for s in self._sers:
+                try:
+                    s.write(chunk)
+                except Exception as e:
+                    print(f'\n[WARN] serial write error: {e}', file=sys.stderr)
+
     def write(self, data: bytes):
-        for s in self._sers:
-            try:
-                s.write(data)
-            except serial.SerialException as e:
-                print(f'\n[WARN] serial write error: {e}', file=sys.stderr)
+        """Non-blocking enqueue.  Drops silently if the queue is full."""
+        try:
+            self._queue.put_nowait(data)
+        except queue.Full:
+            pass   # PTY/serial not being read — drop rather than stall TCP
 
     def close(self):
+        self._queue.put(None)          # wake the write thread so it exits
+        self._thread.join(timeout=2.0)
         for s in self._sers:
             s.close()
 
@@ -137,7 +165,7 @@ class NtripClient:
     def __init__(self, host: str, port: int, mountpoint: str,
                  user: str, password: str,
                  approx_lat: float = 0.0, approx_lon: float = 0.0,
-                 gga_interval: float = 30.0,   # 0 = disable GGA keep-alive
+                 gga_interval: float = 10.0,   # 0 = disable GGA keep-alive
                  recv_timeout: float = 15.0):
         self._host         = host
         self._port         = port
@@ -358,13 +386,14 @@ def forward_loop(client, writer: GpsWriter, state: dict, stop: threading.Event):
             backoff = 2.0
             for chunk in client.stream():
                 if stop.is_set():
-                    client.close()   # send TCP FIN immediately on Ctrl+C
                     return
                 writer.write(chunk)
                 state['last_rx']   = time.monotonic()
                 state['bytes_fwd'] += len(chunk)
                 state['chunks']    += 1
         except Exception as e:
+            if stop.is_set():
+                return  # socket closed by main thread during shutdown — exit silently
             state['connected'] = False
             state['reconnects'] += 1
             log(f'ERROR: {type(e).__name__}: {e}  — retry in {backoff:.0f} s', error=True)
@@ -394,8 +423,8 @@ def parse_args():
                    help='Rover approx latitude for VRS casters (optional)')
     g.add_argument('--approx-lon',   default=0.0,   type=float,
                    help='Rover approx longitude for VRS casters (optional)')
-    g.add_argument('--gga-interval', default=30.0,  type=float, metavar='S',
-                   help='Seconds between GGA keep-alive to caster (0=disable, default 30)')
+    g.add_argument('--gga-interval', default=10.0,  type=float, metavar='S',
+                   help='Seconds between GGA keep-alive to caster (0=disable, default 10)')
     g.add_argument('--recv-timeout', default=15.0,  type=float, metavar='S',
                    help='Seconds without data before reconnecting (default 15)')
 
@@ -473,9 +502,9 @@ def main():
         time.sleep(1.0)
 
     stop.set()
-    client.close()            # ensure TCP FIN is sent before process exits
-    fwd_thread.join(timeout=3.0)
-    writer.close()
+    client.close()            # interrupt blocking recv so thread exits immediately
+    fwd_thread.join(timeout=5.0)
+    writer.close()            # safe: serial closed only after thread has exited
     log('Forwarder stopped.')
     if _log_file:
         _log_file.close()
