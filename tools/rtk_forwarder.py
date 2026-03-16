@@ -171,16 +171,22 @@ class NtripClient:
         sock.sendall(self._build_request())
 
         # Read HTTP/ICY response header
+        # Accept both \r\n\r\n (HTTP standard) and bare \r\n (some NTRIP v1 casters)
         header = b''
-        while b'\r\n\r\n' not in header:
+        while True:
             chunk = sock.recv(256)
             if not chunk:
                 raise ConnectionError('NTRIP: connection closed during header')
+            log(f'NTRIP header chunk ({len(chunk)}B): {repr(chunk.decode("ascii", errors="replace"))}')
             header += chunk
+            if b'\r\n\r\n' in header or b'ICY 200 OK' in header:
+                break
+            if len(header) > 8192:
+                raise ConnectionError(f'NTRIP: header too large ({len(header)}B), first bytes: {repr(header[:200])}')
 
-        # Log full response so we can diagnose caster rejections
-        header_text = header.split(b'\r\n\r\n')[0].decode('ascii', errors='replace')
-        log(f'NTRIP response:\n{header_text}')
+        # Log the full raw response so we can see exactly what the caster sent
+        header_text = header.decode('ascii', errors='replace')
+        log(f'NTRIP raw response ({len(header)} bytes):\n{repr(header_text)}')
 
         first_line = header.split(b'\r\n')[0].decode('ascii', errors='ignore')
         if '200' not in first_line and 'ICY' not in first_line:
@@ -198,7 +204,13 @@ class NtripClient:
         log(f'GGA sent to caster  ({self._approx_lat:.4f}, {self._approx_lon:.4f})')
 
         # Yield any data that arrived after the header in the same recv
-        leftover = header.split(b'\r\n\r\n', 1)[1]
+        if b'\r\n\r\n' in header:
+            leftover = header.split(b'\r\n\r\n', 1)[1]
+        elif b'ICY 200 OK' in header:
+            # Some v1 casters send "ICY 200 OK\r\n" with no blank line — strip it
+            leftover = header.split(b'\r\n', 1)[1] if b'\r\n' in header else b''
+        else:
+            leftover = b''
         if leftover:
             yield leftover
 
