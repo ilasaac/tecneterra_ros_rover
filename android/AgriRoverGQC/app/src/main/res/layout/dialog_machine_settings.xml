@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:text="Pump Speed (0-100%)"
+        android:textStyle="bold"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="5dp"/>
+
+    <EditText
+        android:id="@+id/etPump"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:inputType="number"
+        android:hint="Enter speed (e.g. 80)"
+        android:layout_marginBottom="15dp"/>
+
+    <TextView
+        android:text="Valve Control"
+        android:textStyle="bold"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="5dp"/>
+
+    <CheckBox
+        android:id="@+id/chkValve1"
+        android:text="Valve 1 (Main)"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"/>
+
+    <CheckBox
+        android:id="@+id/chkValve2"
+        android:text="Valve 2 (Aux)"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"/>
+
+    <CheckBox
+        android:id="@+id/chkValve3"
+        android:text="Valve 3 (Return)"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"/>
+
+</LinearLayout>

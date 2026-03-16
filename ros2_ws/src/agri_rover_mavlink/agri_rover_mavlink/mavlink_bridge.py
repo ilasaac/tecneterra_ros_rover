@@ -142,12 +142,23 @@ class MavlinkBridgeNode(Node):
             self.get_logger().warn(f'MAVLink send error: {e}')
 
     def _send_heartbeat(self):
+        if self._mode == 'EMERGENCY':
+            sys_status = mavutil.mavlink.MAV_STATE_EMERGENCY
+        elif self._armed:
+            sys_status = mavutil.mavlink.MAV_STATE_ACTIVE
+        else:
+            sys_status = mavutil.mavlink.MAV_STATE_STANDBY
+        base_mode = 0
+        if self._armed:
+            base_mode |= mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
+        if self._mode == 'AUTONOMOUS':
+            base_mode |= mavutil.mavlink.MAV_MODE_FLAG_GUIDED_ENABLED
         self._send(self._mav.mav.heartbeat_encode(
             type=mavutil.mavlink.MAV_TYPE_GROUND_ROVER,
             autopilot=mavutil.mavlink.MAV_AUTOPILOT_GENERIC,
-            base_mode=(mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED if self._armed else 0),
+            base_mode=base_mode,
             custom_mode=MODE_MAP.get(self._mode, 0),
-            system_status=mavutil.mavlink.MAV_STATE_ACTIVE,
+            system_status=sys_status,
         ))
 
     def _send_gps(self):
@@ -165,8 +176,9 @@ class MavlinkBridgeNode(Node):
 
     def _send_rc(self):
         chs = list(self._rc.channels) + [0] * (18 - len(self._rc.channels))
+        chancount = len(self._rc.channels)
         self._send(self._mav.mav.rc_channels_encode(
-            self._uptime_ms(), 9, *chs[:18], 0))
+            self._uptime_ms(), chancount, *chs[:18], 0))
 
     def _send_sys_status(self):
         self._send(self._mav.mav.sys_status_encode(

@@ -1,0 +1,23 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp"
+    android:height="32dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+
+    <!-- Left track -->
+    <path
+        android:fillColor="#333333"
+        android:pathData="M15,15 L15,85 L30,85 L30,15 Z" />
+    <!-- Right track -->
+    <path
+        android:fillColor="#333333"
+        android:pathData="M70,15 L70,85 L85,85 L85,15 Z" />
+    <!-- Body -->
+    <path
+        android:fillColor="#FF9800"
+        android:pathData="M30,20 L70,20 L70,80 L30,80 Z" />
+    <!-- Cab / front indicator -->
+    <path
+        android:fillColor="#F57C00"
+        android:pathData="M35,20 L50,8 L65,20 Z" />
+</vector>
