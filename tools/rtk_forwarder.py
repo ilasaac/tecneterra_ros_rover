@@ -148,6 +148,7 @@ class NtripClient:
         self._approx_lon   = approx_lon
         self._gga_interval = gga_interval
         self._recv_timeout = recv_timeout
+        self._sock         = None
 
     def _build_request(self) -> bytes:
         creds = base64.b64encode(f'{self._user}:{self._password}'.encode()).decode()
@@ -161,9 +162,19 @@ class NtripClient:
         log('NTRIP request sent')
         return request.encode('ascii')
 
+    def close(self):
+        """Explicitly close the socket so the caster sees a clean TCP FIN."""
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+
     def stream(self):
         """Generator: yields chunks of raw RTCM3 bytes.  Raises on connection error."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock = sock
         # TCP keepalive: detect silently-dropped NAT sessions (router idle timeout)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         sock.settimeout(10.0)
@@ -196,20 +207,27 @@ class NtripClient:
 
         sock.settimeout(self._recv_timeout)
 
-        # Send periodic GGA to keep the rover session alive on the caster.
-        # Emlid Caster (and most NTRIP casters) require GGA from the rover —
-        # without it they stop sending RTCM3 after ~30 s.
-        # Use provided approx coords if given, otherwise send 0,0,0 as a
-        # keep-alive placeholder (caster just needs to see the rover is alive).
-        last_gga = time.monotonic() - self._gga_interval  # trigger immediately
+        # GGA keep-alive: Emlid Caster requires the rover to send its position
+        # to confirm it is within range of the base station.
+        # Without GGA the caster stops streaming after ~30 s.
+        # Sending GGA at (0,0,0) causes the caster to also stop streaming
+        # because (0°N 0°E) is too far from any real base station.
+        # MUST provide --approx-lat / --approx-lon for a sustained connection.
+        _has_coords = (self._approx_lat != 0.0 or self._approx_lon != 0.0)
+        if not _has_coords:
+            log('WARNING: no --approx-lat/--approx-lon given — '
+                'Emlid Caster will drop this connection after ~30 s. '
+                'Add your field coordinates to sustain the connection.')
+
+        last_gga = time.monotonic()
         def _send_gga(sock):
             gga = _make_approx_gga(self._approx_lat, self._approx_lon)
             sock.sendall(gga)
             log(f'GGA sent to caster  ({self._approx_lat:.4f}, {self._approx_lon:.4f})')
 
-        # Small delay before first GGA so the RTCM3 stream has started
-        if self._gga_interval > 0:
-            time.sleep(0.5)
+        # Send initial GGA (only when real coords are available)
+        if _has_coords and self._gga_interval > 0:
+            time.sleep(0.5)   # let RTCM3 stream start before sending anything back
             _send_gga(sock)
 
         # Yield any data that arrived after the header in the same recv
@@ -225,7 +243,7 @@ class NtripClient:
 
         while True:
             # Periodically re-send GGA to keep the caster session alive
-            if (self._gga_interval > 0 and
+            if (_has_coords and self._gga_interval > 0 and
                     time.monotonic() - last_gga >= self._gga_interval):
                 _send_gga(sock)
                 last_gga = time.monotonic()
@@ -260,10 +278,20 @@ class E610Client:
     def __init__(self, host: str, port: int):
         self._host = host
         self._port = port
+        self._sock = None
+
+    def close(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
 
     def stream(self):
         """Generator: yields chunks of raw RTCM3 bytes.  Raises on connection error."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock = sock
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         sock.settimeout(10.0)
         sock.connect((self._host, self._port))
@@ -330,6 +358,7 @@ def forward_loop(client, writer: GpsWriter, state: dict, stop: threading.Event):
             backoff = 2.0
             for chunk in client.stream():
                 if stop.is_set():
+                    client.close()   # send TCP FIN immediately on Ctrl+C
                     return
                 writer.write(chunk)
                 state['last_rx']   = time.monotonic()
@@ -444,6 +473,7 @@ def main():
         time.sleep(1.0)
 
     stop.set()
+    client.close()            # ensure TCP FIN is sent before process exits
     fwd_thread.join(timeout=3.0)
     writer.close()
     if _log_file:
