@@ -105,7 +105,9 @@ class RoverState:
                max_speed: float, wheelbase: float, dt: float):
         speed = (throttle - 1500) / 500.0 * max_speed
         steer = (steering - 1500) / 500.0
-        omega = (speed * steer / wheelbase) if wheelbase > 0 else 0.0
+        # Skid/differential steer: turn rate is proportional to max_speed,
+        # independent of forward speed — allows in-place spinning.
+        omega = (2.0 * steer * max_speed / wheelbase) if wheelbase > 0 else 0.0
         self.heading_rad += omega * dt
         lat_rad = math.radians(self.lat)
         cos_lat = math.cos(lat_rad) or 1e-9
