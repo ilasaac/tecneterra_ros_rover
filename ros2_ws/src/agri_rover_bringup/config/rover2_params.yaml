@@ -17,7 +17,7 @@
 /rv2/mavlink_bridge:
   ros__parameters:
     rover_id:  2
-    gqc_host:  192.168.1.255
+    gqc_host:  192.168.100.255  # WiFi broadcast — GQC receives regardless of IP
     gqc_port:  14550            # GQC identifies rovers by sysid, not port
     bind_port: 14551            # RV2 listens on :14551
 

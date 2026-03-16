@@ -137,41 +137,41 @@ class MavlinkBridgeNode(Node):
             self.get_logger().warn(f'MAVLink send error: {e}')
 
     def _send_heartbeat(self):
-        self._mav.mav.heartbeat_send(
+        self._send(self._mav.mav.heartbeat_encode(
             type=mavutil.mavlink.MAV_TYPE_GROUND_ROVER,
             autopilot=mavutil.mavlink.MAV_AUTOPILOT_GENERIC,
             base_mode=(mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED if self._armed else 0),
             custom_mode=MODE_MAP.get(self._mode, 0),
             system_status=mavutil.mavlink.MAV_STATE_ACTIVE,
-        )
+        ))
 
     def _send_gps(self):
         if self._fix.latitude == 0.0:
             return
-        self._mav.mav.global_position_int_send(
+        self._send(self._mav.mav.global_position_int_encode(
             self._uptime_ms(),
             int(self._fix.latitude  * 1e7),
             int(self._fix.longitude * 1e7),
-            0,     # alt MSL mm — TODO
-            0,     # relative alt mm
-            0, 0, 0,   # vx, vy, vz cm/s
-            0xFFFF,    # hdg unknown
-        )
+            0,       # alt MSL mm — TODO
+            0,       # relative alt mm
+            0, 0, 0, # vx, vy, vz cm/s
+            0xFFFF,  # hdg unknown
+        ))
 
     def _send_rc(self):
         chs = list(self._rc.channels) + [0] * (18 - len(self._rc.channels))
-        self._mav.mav.rc_channels_send(
-            self._uptime_ms(), 9, *chs[:18], 0)
+        self._send(self._mav.mav.rc_channels_encode(
+            self._uptime_ms(), 9, *chs[:18], 0))
 
     def _send_sys_status(self):
-        self._mav.mav.sys_status_send(
+        self._send(self._mav.mav.sys_status_encode(
             0, 0, 0,
             500,   # load % * 10
             int(getattr(self._status, 'battery_voltage', 0) * 1000),
             -1,    # current unknown
             int(getattr(self._status, 'battery_remaining', -1) * 100),
             0, 0, 0, 0, 0, 0,
-        )
+        ))
 
     def _send_named_values(self):
         t = self._uptime_ms()
@@ -182,7 +182,8 @@ class MavlinkBridgeNode(Node):
             ('PRESSURE', self._sensors.pressure),
         ]
         for name, value in pairs:
-            self._mav.mav.named_value_float_send(t, name.encode(), value)
+            self._send(self._mav.mav.named_value_float_encode(
+                t, name.encode(), value))
 
     # ── MAVLink receive loop ──────────────────────────────────────────────────
 
@@ -200,8 +201,8 @@ class MavlinkBridgeNode(Node):
                 self._mission_count = msg.count
                 self._mission_buf   = []
                 # Request first item
-                self._mav.mav.mission_request_int_send(
-                    msg.get_srcSystem(), msg.get_srcComponent(), 0)
+                self._send(self._mav.mav.mission_request_int_encode(
+                    msg.get_srcSystem(), msg.get_srcComponent(), 0))
             elif mt == 'MISSION_ITEM_INT':
                 self._on_mission_item(msg)
 
@@ -218,7 +219,8 @@ class MavlinkBridgeNode(Node):
         if msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
             self._armed = (msg.param1 == 1.0)
             self.get_logger().info(f'{"ARM" if self._armed else "DISARM"} command received')
-            self._mav.mav.command_ack_send(msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED)
+            self._send(self._mav.mav.command_ack_encode(
+                msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
 
     def _on_mission_item(self, msg):
         wp = MissionWaypoint()
@@ -231,12 +233,12 @@ class MavlinkBridgeNode(Node):
         self.mission_pub.publish(wp)
 
         if msg.seq + 1 < self._mission_count:
-            self._mav.mav.mission_request_int_send(
-                msg.get_srcSystem(), msg.get_srcComponent(), msg.seq + 1)
+            self._send(self._mav.mav.mission_request_int_encode(
+                msg.get_srcSystem(), msg.get_srcComponent(), msg.seq + 1))
         else:
-            self._mav.mav.mission_ack_send(
+            self._send(self._mav.mav.mission_ack_encode(
                 msg.get_srcSystem(), msg.get_srcComponent(),
-                mavutil.mavlink.MAV_MISSION_ACCEPTED)
+                mavutil.mavlink.MAV_MISSION_ACCEPTED))
             self.get_logger().info(
                 f'Mission received: {self._mission_count} waypoints')
 

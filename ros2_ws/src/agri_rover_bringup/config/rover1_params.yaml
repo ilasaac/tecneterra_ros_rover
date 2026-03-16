@@ -17,7 +17,7 @@
 /rv1/mavlink_bridge:
   ros__parameters:
     rover_id:  1
-    gqc_host:  192.168.1.255   # WiFi broadcast — GQC receives regardless of IP
+    gqc_host:  192.168.100.255  # WiFi broadcast — GQC receives regardless of IP
     gqc_port:  14550
     bind_port: 14550            # listen on :14550 for inbound MAVLink from GQC
 
