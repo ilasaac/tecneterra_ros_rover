@@ -369,7 +369,7 @@ Simulator Jetson Orin Nano                 WiFi (UDP)          Rover Jetson Nano
 ```python
 speed = (throttle_ppm - 1500) / 500 * max_speed_mps   # m/s, negative = reverse
 steer = (steering_ppm - 1500) / 500                    # -1..+1
-omega = speed * steer / wheelbase_m                    # rad/s
+omega = 2 * steer * max_speed_mps / wheelbase_m        # rad/s — skid steer, independent of forward speed
 heading += omega * dt
 lat += speed * cos(heading) * dt / 111320
 lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))

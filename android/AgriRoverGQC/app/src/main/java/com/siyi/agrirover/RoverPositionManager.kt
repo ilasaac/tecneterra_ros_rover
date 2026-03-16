@@ -393,9 +393,10 @@ class RoverPositionManager(
      * onLinkMismatch callback fires so the app can stop everything and warn the user.
      *
      * Conditions checked:
-     *   • Emergency active on master (SWA < 1700) but slave NOT in emergency
-     *   • Master in AUTONOMOUS (SWB > 1700) but slave NOT in autonomous
-     *   • Master in MANUAL (SWB < 1700) but slave IS in autonomous
+     *   • Emergency active on master (SWA < 1700) but slave NOT in emergency  [safety-critical]
+     *   • Master back to MANUAL (SWB < 1700) but slave still in autonomous    [safety-critical]
+     *   NOTE: master→AUTO but slave→IDLE is intentionally NOT flagged — slave is
+     *   stopped (safe); it will go autonomous once its navigator connects.
      */
     private suspend fun checkLinkMismatch() {
         val masterChannels = roverPpmChannels[MASTER_SYSID]
@@ -416,12 +417,14 @@ class RoverPositionManager(
         val slaveAutonomous = (slaveBase and 0x08) != 0        // MAV_MODE_FLAG_GUIDED_ENABLED
 
         val mismatch: String? = when {
+            // Safety-critical: emergency active on master but slave still moving
             masterEmergency && !slaveEmergency ->
                 "EMERGENCY switch active but slave is NOT stopped"
-            !masterEmergency && masterAutonomous && !slaveAutonomous ->
-                "Mode mismatch: master→AUTONOMOUS, slave still in MANUAL"
+            // Safety-critical: master switched back to MANUAL but slave still running autonomous
             !masterEmergency && !masterAutonomous && slaveAutonomous ->
                 "Mode mismatch: master→MANUAL, slave still in AUTONOMOUS"
+            // master→AUTONOMOUS but slave→IDLE is NOT a mismatch: slave is stopped (safe).
+            // It will go autonomous once its own navigator connects and sends commands.
             else -> null
         }
 

@@ -16,15 +16,19 @@ The secondary GPS stream carries a position offset `antenna_baseline_m` ahead
 of the primary along the rover's current heading — gps_driver then recovers
 that heading via atan2(dlon, dlat).
 
-Dead-reckoning model (bicycle kinematic):
+Dead-reckoning model (differential/skid-steer kinematic):
   throttle_ppm: 1500 = stop, 2000 = max forward, 1000 = max reverse
   steering_ppm: 1500 = straight, 2000 = full right, 1000 = full left
   speed  = (throttle - 1500) / 500 * max_speed_mps        [m/s]
   steer  = (steering  - 1500) / 500                        [-1..+1]
-  omega  = speed * steer / wheelbase_m                     [rad/s]
+  omega  = 2 * steer * max_speed / wheelbase_m             [rad/s] — independent of forward speed
   heading += omega * dt
   lat += speed * cos(heading) * dt / 111320
   lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))
+
+  Skid-steer model: left/right wheels can spin independently so the rover
+  can turn in place (steer at zero throttle). omega is set by max_speed, not
+  current speed — matches real differential-drive rover behaviour.
 
 NMEA output (u-blox ZED-X20P RTK quality emulation):
   $GNGGA,...,4,...   fix quality 4 = RTK fixed
@@ -113,7 +117,9 @@ class RoverState:
                max_speed: float, wheelbase: float, dt: float):
         speed = (throttle_ppm - 1500) / 500.0 * max_speed
         steer = (steering_ppm - 1500) / 500.0       # -1..+1
-        omega = (speed * steer / wheelbase) if wheelbase > 0 else 0.0
+        # Differential/skid-steer: turn rate proportional to max_speed, not current speed.
+        # This allows in-place spinning (steer with zero throttle), matching real rover.
+        omega = (2.0 * steer * max_speed / wheelbase) if wheelbase > 0 else 0.0
 
         self.heading_rad += omega * dt
         lat_rad = math.radians(self.lat)
