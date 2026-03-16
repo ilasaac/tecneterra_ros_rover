@@ -173,23 +173,24 @@ class NtripClient:
                 raise ConnectionError('NTRIP: connection closed during header')
             header += chunk
 
+        # Log full response so we can diagnose caster rejections
+        header_text = header.split(b'\r\n\r\n')[0].decode('ascii', errors='replace')
+        log(f'NTRIP response:\n{header_text}')
+
         first_line = header.split(b'\r\n')[0].decode('ascii', errors='ignore')
         if '200' not in first_line and 'ICY' not in first_line:
             raise ConnectionError(f'NTRIP: caster rejected request: {first_line}')
 
-        print(f'  [OK]  NTRIP connected     {self._host}:{self._port}/{self._mountpoint}')
+        log(f'NTRIP connected  {self._host}:{self._port}/{self._mountpoint}')
 
         sock.settimeout(5.0)
 
         # Send GGA immediately on connect — many casters (including Emlid) will not
         # start streaming RTCM3 until they receive the rover's position.
-        # Send regardless of approx_lat/lon: use (0,0) as fallback so the caster
-        # at least sees a GGA and starts the stream; accuracy only matters for VRS.
         gga = _make_approx_gga(self._approx_lat, self._approx_lon)
         sock.sendall(gga)
         last_gga = time.monotonic()
-        print(f'  [GGA] Sent initial position to caster  '
-              f'({self._approx_lat:.4f}, {self._approx_lon:.4f})')
+        log(f'GGA sent to caster  ({self._approx_lat:.4f}, {self._approx_lon:.4f})')
 
         # Yield any data that arrived after the header in the same recv
         leftover = header.split(b'\r\n\r\n', 1)[1]
@@ -246,9 +247,23 @@ class E610Client:
         sock.close()
 
 
-# ── Status display ────────────────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
 
-ANSI_CLR  = '\033[2J\033[H'
+_log_file = None   # set in main() if --log-file is given
+
+
+def log(msg: str, error: bool = False):
+    """Print to stdout/stderr and mirror to log file if configured."""
+    ts  = time.strftime('%H:%M:%S')
+    out = f'[{ts}] {msg}'
+    stream = sys.stderr if error else sys.stdout
+    print(out, file=stream, flush=True)
+    if _log_file:
+        print(out, file=_log_file, flush=True)
+
+
+# ── Status display (scrolling single-line, no screen clear) ───────────────────
+
 ANSI_BOLD = '\033[1m'
 ANSI_RST  = '\033[0m'
 ANSI_GRN  = '\033[32m'
@@ -257,29 +272,22 @@ ANSI_RED  = '\033[31m'
 
 
 def _status(source: str, state: dict) -> str:
-    conn_col = ANSI_GRN if state['connected'] else ANSI_RED
-    conn_str = f'{conn_col}{"CONNECTED" if state["connected"] else "RECONNECTING..."}{ANSI_RST}'
-    age      = time.monotonic() - state['last_rx'] if state['last_rx'] else None
-    age_str  = (f'{ANSI_GRN}{age:.1f} s ago{ANSI_RST}' if age and age < 5.0
-                else f'{ANSI_RED}{age:.0f} s ago{ANSI_RST}' if age
-                else f'{ANSI_RED}none{ANSI_RST}')
-    lines = [
-        f'{ANSI_BOLD}AgriRover RTK Forwarder{ANSI_RST}',
-        f'  Source    : {source}',
-        f'  Status    : {conn_str}',
-        f'  Last data : {age_str}',
-        f'  Forwarded : {state["bytes_fwd"]:,} bytes  ({state["chunks"]} chunks)',
-        f'  Reconnects: {state["reconnects"]}',
-        '',
-        '  Ctrl-C to stop',
-    ]
-    return ANSI_CLR + '\n'.join(lines) + '\n'
+    conn  = f'{ANSI_GRN}OK{ANSI_RST}' if state['connected'] else f'{ANSI_RED}RECONNECTING{ANSI_RST}'
+    age   = time.monotonic() - state['last_rx'] if state['last_rx'] else None
+    rx    = (f'{ANSI_GRN}{age:.1f}s ago{ANSI_RST}' if age and age < 5.0
+             else f'{ANSI_YLW}{age:.0f}s ago{ANSI_RST}' if age
+             else f'{ANSI_RED}none{ANSI_RST}')
+    ts    = time.strftime('%H:%M:%S')
+    return (f'[{ts}] {conn}  rx={rx}  '
+            f'fwd={state["bytes_fwd"]:,}B ({state["chunks"]} chunks)  '
+            f'reconnects={state["reconnects"]}\n')
 
 
 # ── Forwarding loop ───────────────────────────────────────────────────────────
 
 def forward_loop(client, writer: GpsWriter, state: dict, stop: threading.Event):
     """Connect → stream → write loop with exponential backoff on failure."""
+    import traceback
     backoff = 2.0
     while not stop.is_set():
         try:
@@ -292,11 +300,11 @@ def forward_loop(client, writer: GpsWriter, state: dict, stop: threading.Event):
                 state['last_rx']   = time.monotonic()
                 state['bytes_fwd'] += len(chunk)
                 state['chunks']    += 1
-        except (ConnectionError, OSError, socket.error) as e:
+        except Exception as e:
             state['connected'] = False
             state['reconnects'] += 1
-            print(f'\n[WARN] Source disconnected: {e}  — retry in {backoff:.0f} s',
-                  file=sys.stderr)
+            log(f'ERROR: {type(e).__name__}: {e}  — retry in {backoff:.0f} s', error=True)
+            log(traceback.format_exc(), error=True)
             stop.wait(backoff)
             backoff = min(backoff * 2, 60.0)
 
@@ -339,13 +347,22 @@ def parse_args():
                    help='Serial ports of u-blox GPS modules (space-separated)')
     p.add_argument('--gps-baud',     default=115200, type=int)
 
+    # Debug
+    p.add_argument('--log-file',     default='',
+                   help='Path to log file — all output mirrored here (e.g. rtk.log)')
+
     return p.parse_args()
 
 
 def main():
+    global _log_file
     args = parse_args()
 
-    print('\nAgriRover RTK Forwarder')
+    if args.log_file:
+        _log_file = open(args.log_file, 'a')
+        print(f'Logging to {args.log_file}')
+
+    log('AgriRover RTK Forwarder starting')
     writer = GpsWriter(args.gps_ports, args.gps_baud)
 
     if args.source == 'ntrip':
@@ -380,9 +397,8 @@ def main():
         target=forward_loop, args=(client, writer, state, stop), daemon=True)
     fwd_thread.start()
 
-    print(f'\nForwarding {source_str} → {args.gps_ports}')
-    print('Ctrl-C to stop\n')
-    time.sleep(0.5)
+    log(f'Forwarding {source_str} → {args.gps_ports}')
+    log('Ctrl-C to stop')
 
     while not stop.is_set():
         sys.stdout.write(_status(source_str, state))
@@ -392,7 +408,9 @@ def main():
     stop.set()
     fwd_thread.join(timeout=3.0)
     writer.close()
-    print('\n\nForwarder stopped.')
+    if _log_file:
+        _log_file.close()
+    log('Forwarder stopped.')
 
 
 if __name__ == '__main__':
