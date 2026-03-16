@@ -165,19 +165,23 @@ class VideoStreamerNode(Node):
     def _start_fallback_rtsp(self, w: int, h: int, fps: int, kbps: int) -> None:
         tmpl = _FALLBACK_PIPELINES.get(self._src, _FALLBACK_PIPELINES['test'])
         pipeline = tmpl.format(w=w, h=h, fps=fps, kbps=kbps)
-        cmd = (
-            f'gst-rtsp-server '
-            f'--port {self._port} '
-            f'--mount-point {self._mount} '
-            f'"{pipeline}"'
-        )
+
+        Gst.init(None)
+
+        server = GstRtspServer.RTSPServer()
+        server.set_service(str(self._port))
+
+        factory = GstRtspServer.RTSPMediaFactory()
+        factory.set_launch(f'( {pipeline} )')
+        factory.set_shared(True)
+        server.get_mount_points().add_factory(self._mount, factory)
+        server.attach(None)
+
+        self._glib = GLib.MainLoop()
+        threading.Thread(target=self._glib.run, daemon=True).start()
+
         self.get_logger().info(
             f'[GStreamer] RTSP server: rtsp://<ip>:{self._port}{self._mount}'
-        )
-        self._proc = subprocess.Popen(
-            shlex.split(cmd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
         )
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
