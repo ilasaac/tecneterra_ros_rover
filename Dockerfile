@@ -11,7 +11,7 @@
 #     -e NVIDIA_VISIBLE_DEVICES=all agri_rover:latest \
 #     ros2 launch agri_rover_bringup rover1.launch.py
 
-ARG BASE_IMAGE=nvcr.io/nvidia/isaac/ros:aarch64-humble-ros_base_2.1.0
+ARG BASE_IMAGE=nvcr.io/nvidia/isaac/ros:aarch64-humble-ros_base_3.2.3
 FROM ${BASE_IMAGE}
 
 # ── System packages ───────────────────────────────────────────────────────────
