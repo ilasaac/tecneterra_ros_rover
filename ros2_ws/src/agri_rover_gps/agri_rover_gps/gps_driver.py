@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -83,11 +84,16 @@ class GpsDriverNode(Node):
 
     def _start_reader(self, port: str, baud: int, is_primary: bool):
         def run():
-            try:
-                ser = serial.Serial(port, baud, timeout=1.0)
-            except serial.SerialException as e:
-                self.get_logger().error(f'Cannot open GPS port {port}: {e}')
+            ser = None
+            while rclpy.ok() and ser is None:
+                try:
+                    ser = serial.Serial(port, baud, timeout=1.0)
+                except serial.SerialException as e:
+                    self.get_logger().warning(f'GPS port {port} not ready, retrying in 5 s: {e}')
+                    time.sleep(5.0)
+            if ser is None:
                 return
+            self.get_logger().info(f'GPS port {port} opened')
             while rclpy.ok():
                 try:
                     line = ser.readline().decode('ascii', errors='ignore').strip()
