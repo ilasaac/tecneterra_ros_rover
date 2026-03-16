@@ -180,7 +180,16 @@ class NtripClient:
         print(f'  [OK]  NTRIP connected     {self._host}:{self._port}/{self._mountpoint}')
 
         sock.settimeout(5.0)
+
+        # Send GGA immediately on connect — many casters (including Emlid) will not
+        # start streaming RTCM3 until they receive the rover's position.
+        # Send regardless of approx_lat/lon: use (0,0) as fallback so the caster
+        # at least sees a GGA and starts the stream; accuracy only matters for VRS.
+        gga = _make_approx_gga(self._approx_lat, self._approx_lon)
+        sock.sendall(gga)
         last_gga = time.monotonic()
+        print(f'  [GGA] Sent initial position to caster  '
+              f'({self._approx_lat:.4f}, {self._approx_lon:.4f})')
 
         # Yield any data that arrived after the header in the same recv
         leftover = header.split(b'\r\n\r\n', 1)[1]
@@ -188,9 +197,8 @@ class NtripClient:
             yield leftover
 
         while True:
-            # Periodically send GGA position to caster (VRS requirement)
+            # Periodically re-send GGA (keeps VRS casters updated on rover position)
             if (self._gga_interval > 0 and
-                    self._approx_lat != 0.0 and
                     time.monotonic() - last_gga >= self._gga_interval):
                 gga = _make_approx_gga(self._approx_lat, self._approx_lon)
                 sock.sendall(gga)
