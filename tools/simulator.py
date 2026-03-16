@@ -3,36 +3,30 @@
 tools/simulator.py — AgriRover GPS simulator  (standalone, no ROS2 required)
 
 Dead-reckoning physics for both rovers.  Reads ppm_decoder RP2040 over USB
-and writes simulated u-blox ZED-X20P RTK-quality NMEA to 4 serial ports
-(primary + secondary GPS for each rover Jetson).
+and sends simulated u-blox ZED-X20P RTK-quality NMEA to rover Jetsons over WiFi
+(UDP unicast).  Run nmea_wifi_rx.py on each rover Jetson to receive.
 
-Hardware connections on the simulator Jetson Nano (USB hub):
-  ppm_port   /dev/ttyACM0  ← ppm_decoder RP2040   "RV1:ch0..7 RV2:ch0..7"
-  rv1-pri    /dev/ttyUSB0  → RV1 Jetson /dev/ttyUSB0   (primary  GPS)
-  rv1-sec    /dev/ttyUSB1  → RV1 Jetson /dev/ttyUSB1   (secondary GPS → heading)
-  rv2-pri    /dev/ttyUSB2  → RV2 Jetson /dev/ttyUSB0   (primary  GPS)
-  rv2-sec    /dev/ttyUSB3  → RV2 Jetson /dev/ttyUSB1   (secondary GPS → heading)
+Hardware on simulator Jetson Orin Nano:
+  --ppm-port /dev/ttyACM0  ← ppm_decoder RP2040  "RV1:ch0..7 RV2:ch0..7"
+
+Network targets (rover Jetsons on WiFi):
+  --rv1-ip 192.168.1.10   RV1 Jetson IP
+  --rv2-ip 192.168.1.11   RV2 Jetson IP
+  Each rover listens on two UDP ports:  pri-port (default 5000) + sec-port (5001)
 
 Heading simulation:
-  Secondary antenna position is `--baseline` metres ahead of primary along the
-  rover's current heading.  gps_driver.py on the rover Jetson recovers heading
-  via atan2(dlon, dlat) between secondary and primary — identical to real hardware.
+  Secondary antenna is `--baseline` metres ahead of primary along rover heading.
+  gps_driver.py recovers heading via atan2(dlon,dlat) — identical to real hardware.
 
 Requirements:
   pip3 install pyserial
 
-Usage examples:
-  # Minimal — uses default ports and São Paulo coordinates
-  python3 simulator.py
+Usage:
+  python3 simulator.py --rv1-ip 192.168.1.10 --rv2-ip 192.168.1.11 \\
+                        --rv1-lat -23.550520  --rv1-lon -46.633308   \\
+                        --rv2-lat -23.550620  --rv2-lon -46.633408
 
-  # Custom field origin
-  python3 simulator.py --rv1-lat -23.550520 --rv1-lon -46.633308 \\
-                        --rv2-lat -23.550620 --rv2-lon -46.633408
-
-  # Different ports
-  python3 simulator.py --ppm-port /dev/ttyACM2 --rv1-pri /dev/ttyUSB4
-
-  # Dry-run: print NMEA to stdout only, do not open output ports
+  # Dry-run: print sample NMEA to stdout, do not send UDP
   python3 simulator.py --dry-run
 """
 
@@ -41,6 +35,7 @@ from __future__ import annotations
 import argparse
 import math
 import signal
+import socket
 import sys
 import threading
 import time
@@ -108,10 +103,9 @@ class RoverState:
 
     def update(self, throttle: int, steering: int,
                max_speed: float, wheelbase: float, dt: float):
-        speed = (throttle - 1500) / 500.0 * max_speed   # m/s, neg = reverse
-        steer = (steering - 1500) / 500.0                # -1..+1
+        speed = (throttle - 1500) / 500.0 * max_speed
+        steer = (steering - 1500) / 500.0
         omega = (speed * steer / wheelbase) if wheelbase > 0 else 0.0
-
         self.heading_rad += omega * dt
         lat_rad = math.radians(self.lat)
         cos_lat = math.cos(lat_rad) or 1e-9
@@ -120,7 +114,6 @@ class RoverState:
         self.speed_mps = speed
 
     def secondary_pos(self, baseline_m: float):
-        """(lat, lon) of secondary antenna, `baseline_m` ahead along heading."""
         lat_rad = math.radians(self.lat)
         cos_lat = math.cos(lat_rad) or 1e-9
         s_lat = self.lat + (baseline_m * math.cos(self.heading_rad)) / 111320.0
@@ -132,35 +125,9 @@ class RoverState:
         return math.degrees(self.heading_rad) % 360.0
 
 
-# ── Serial port helpers ───────────────────────────────────────────────────────
-
-def open_port(path: str, baud: int, label: str, dry_run: bool):
-    """Open a serial port, print result.  Returns Serial or None."""
-    if dry_run:
-        return None
-    try:
-        s = serial.Serial(path, baud, timeout=1.0)
-        print(f'  [OK]  {label:20s} {path}')
-        return s
-    except serial.SerialException as e:
-        print(f'  [ERR] {label:20s} {path}  — {e}', file=sys.stderr)
-        return None
-
-
-def write_port(ser, data: bytes, label: str):
-    if ser is None:
-        return
-    try:
-        ser.write(data)
-    except serial.SerialException as e:
-        print(f'\n[WARN] write failed on {label}: {e}', file=sys.stderr)
-
-
 # ── PPM decoder reader thread ─────────────────────────────────────────────────
 
 class PpmReader:
-    """Background thread that reads the ppm_decoder serial output."""
-
     def __init__(self, port: str, baud: int, thr_ch: int, str_ch: int):
         self._thr_ch    = thr_ch
         self._str_ch    = str_ch
@@ -168,28 +135,21 @@ class PpmReader:
         self._rv1_ch    = [1500] * 8
         self._rv2_ch    = [1500] * 8
         self._last_time = 0.0
-        self._ok        = False   # True once first valid frame received
-        self._port_ok   = False
-
-        t = threading.Thread(target=self._run, args=(port, baud), daemon=True)
-        t.start()
+        self._ok        = False
+        self.port_ok    = False
+        threading.Thread(target=self._run, args=(port, baud), daemon=True).start()
 
     def get(self):
-        """Returns ((rv1_thr, rv1_str), (rv2_thr, rv2_str), age_seconds)."""
         with self._lock:
-            r1 = (self._rv1_ch[self._thr_ch], self._rv1_ch[self._str_ch])
-            r2 = (self._rv2_ch[self._thr_ch], self._rv2_ch[self._str_ch])
+            r1  = (self._rv1_ch[self._thr_ch], self._rv1_ch[self._str_ch])
+            r2  = (self._rv2_ch[self._thr_ch], self._rv2_ch[self._str_ch])
             age = time.monotonic() - self._last_time if self._ok else 999.0
         return r1, r2, age
-
-    @property
-    def port_ok(self):
-        return self._port_ok
 
     def _run(self, port: str, baud: int):
         try:
             ser = serial.Serial(port, baud, timeout=1.0)
-            self._port_ok = True
+            self.port_ok = True
             print(f'  [OK]  ppm_port             {port}')
         except serial.SerialException as e:
             print(f'  [ERR] ppm_port             {port}  — {e}', file=sys.stderr)
@@ -216,28 +176,39 @@ class PpmReader:
                 pass
 
 
+# ── UDP output ────────────────────────────────────────────────────────────────
+
+def udp_send(sock: socket.socket, data: bytes, addr: tuple, label: str):
+    try:
+        sock.sendto(data, addr)
+    except OSError as e:
+        print(f'\n[WARN] UDP send to {label} {addr}: {e}', file=sys.stderr)
+
+
 # ── Status display ────────────────────────────────────────────────────────────
 
-ANSI_CLR  = '\033[2J\033[H'    # clear screen + home
+ANSI_CLR  = '\033[2J\033[H'
 ANSI_BOLD = '\033[1m'
 ANSI_RST  = '\033[0m'
 ANSI_GRN  = '\033[32m'
 ANSI_YLW  = '\033[33m'
 ANSI_RED  = '\033[31m'
 
+
 def _status_str(rv1: RoverState, rv2: RoverState,
-                ppm_age: float, tick: int, rate: float, dry_run: bool) -> str:
-    def ppm_color(age):
-        if age < 0.5:   return ANSI_GRN
-        if age < 2.0:   return ANSI_YLW
+                ppm_age: float, tick: int, args, dry_run: bool) -> str:
+    def ppm_col(age):
+        if age < 0.5:  return ANSI_GRN
+        if age < 2.0:  return ANSI_YLW
         return ANSI_RED
 
-    ppm_str = f'{ppm_color(ppm_age)}{ppm_age*1000:.0f} ms{ANSI_RST}'
     mode    = f'{ANSI_YLW}DRY-RUN{ANSI_RST}' if dry_run else f'{ANSI_GRN}LIVE{ANSI_RST}'
-
+    ppm_str = f'{ppm_col(ppm_age)}{ppm_age*1000:.0f} ms{ANSI_RST}'
     lines = [
-        f'{ANSI_BOLD}AgriRover GPS Simulator{ANSI_RST}  [{mode}]  tick={tick}  rate={rate:.0f} Hz',
+        f'{ANSI_BOLD}AgriRover GPS Simulator{ANSI_RST}  [{mode}]  tick={tick}  rate={args.rate:.0f} Hz',
         f'  PPM age : {ppm_str}  (>2 s → rovers frozen)',
+        f'  Targets : RV1 {args.rv1_ip}:{args.pri_port}/{args.sec_port}'
+        f'  RV2 {args.rv2_ip}:{args.pri_port}/{args.sec_port}',
         '',
         f'  {"Rover":<6} {"Lat":>14} {"Lon":>14} {"Heading":>10} {"Speed":>10}',
         f'  {"─"*6} {"─"*14} {"─"*14} {"─"*10} {"─"*10}',
@@ -249,105 +220,96 @@ def _status_str(rv1: RoverState, rv2: RoverState,
     return ANSI_CLR + '\n'.join(lines) + '\n'
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Args ──────────────────────────────────────────────────────────────────────
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description='AgriRover standalone GPS simulator (no ROS2 needed)',
+        description='AgriRover GPS simulator — sends NMEA over UDP WiFi',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    # Ports
-    p.add_argument('--ppm-port',  default='/dev/ttyACM0',
-                   help='ppm_decoder RP2040 serial port')
-    p.add_argument('--rv1-pri',   default='/dev/ttyUSB0',
-                   help='→ RV1 Jetson /dev/ttyUSB0 (primary GPS)')
-    p.add_argument('--rv1-sec',   default='/dev/ttyUSB1',
-                   help='→ RV1 Jetson /dev/ttyUSB1 (secondary GPS)')
-    p.add_argument('--rv2-pri',   default='/dev/ttyUSB2',
-                   help='→ RV2 Jetson /dev/ttyUSB0 (primary GPS)')
-    p.add_argument('--rv2-sec',   default='/dev/ttyUSB3',
-                   help='→ RV2 Jetson /dev/ttyUSB1 (secondary GPS)')
-    p.add_argument('--baud',      default=115200, type=int,
-                   help='Baud for all ports')
+    # PPM decoder
+    p.add_argument('--ppm-port',  default='/dev/ttyACM0')
+    p.add_argument('--ppm-baud',  default=115200, type=int)
 
-    # Starting positions
+    # WiFi targets
+    p.add_argument('--rv1-ip',    default='192.168.1.10',
+                   help='RV1 Jetson IP address')
+    p.add_argument('--rv2-ip',    default='192.168.1.11',
+                   help='RV2 Jetson IP address')
+    p.add_argument('--pri-port',  default=5000, type=int,
+                   help='UDP port for primary GPS stream (same on both rovers)')
+    p.add_argument('--sec-port',  default=5001, type=int,
+                   help='UDP port for secondary GPS stream (same on both rovers)')
+
+    # Start positions
     p.add_argument('--rv1-lat',   default=-23.550520, type=float)
     p.add_argument('--rv1-lon',   default=-46.633308, type=float)
-    p.add_argument('--rv1-hdg',   default=0.0,        type=float,
-                   help='RV1 initial heading (degrees, 0=north)')
+    p.add_argument('--rv1-hdg',   default=0.0,        type=float)
     p.add_argument('--rv2-lat',   default=-23.550620, type=float)
     p.add_argument('--rv2-lon',   default=-46.633408, type=float)
-    p.add_argument('--rv2-hdg',   default=0.0,        type=float,
-                   help='RV2 initial heading (degrees, 0=north)')
+    p.add_argument('--rv2-hdg',   default=0.0,        type=float)
 
     # Physics
-    p.add_argument('--max-speed', default=1.5,  type=float, metavar='M/S',
-                   help='Speed at full throttle (PPM 2000)')
-    p.add_argument('--wheelbase', default=0.50, type=float, metavar='M',
-                   help='Rover wheelbase in metres')
+    p.add_argument('--max-speed', default=1.5,  type=float, metavar='M/S')
+    p.add_argument('--wheelbase', default=0.50, type=float, metavar='M')
     p.add_argument('--baseline',  default=0.30, type=float, metavar='M',
-                   help='Antenna separation (secondary ahead of primary)')
-
-    # Output
-    p.add_argument('--rate',      default=10.0, type=float, metavar='HZ',
-                   help='NMEA output rate')
-    p.add_argument('--alt',       default=45.0, type=float, metavar='M',
-                   help='Simulated altitude (metres)')
-
-    # Misc
-    p.add_argument('--thr-ch',    default=0, type=int,
-                   help='Throttle channel index in ppm_decoder output (0-7)')
-    p.add_argument('--str-ch',    default=1, type=int,
-                   help='Steering channel index in ppm_decoder output (0-7)')
+                   help='Antenna separation in metres')
+    p.add_argument('--alt',       default=45.0, type=float, metavar='M')
+    p.add_argument('--rate',      default=10.0, type=float, metavar='HZ')
+    p.add_argument('--thr-ch',    default=0,    type=int)
+    p.add_argument('--str-ch',    default=1,    type=int)
     p.add_argument('--dry-run',   action='store_true',
-                   help='Do not open output ports; print one sample NMEA to stdout')
-
+                   help='Print sample NMEA; do not send UDP')
     return p.parse_args()
 
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     args = parse_args()
 
-    print('\nAgriRover GPS Simulator — opening ports...')
-    ppm = PpmReader(args.ppm_port, args.baud, args.thr_ch, args.str_ch)
+    print('\nAgriRover GPS Simulator (WiFi mode)')
+    print(f'  Targets: RV1={args.rv1_ip}  RV2={args.rv2_ip}'
+          f'  ports pri:{args.pri_port} sec:{args.sec_port}')
 
-    ports = {}
-    for key, path in (('rv1_pri', args.rv1_pri), ('rv1_sec', args.rv1_sec),
-                      ('rv2_pri', args.rv2_pri), ('rv2_sec', args.rv2_sec)):
-        ports[key] = open_port(path, args.baud, key, args.dry_run)
+    ppm  = PpmReader(args.ppm_port, args.ppm_baud, args.thr_ch, args.str_ch)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    rv1_pri_addr = (args.rv1_ip, args.pri_port)
+    rv1_sec_addr = (args.rv1_ip, args.sec_port)
+    rv2_pri_addr = (args.rv2_ip, args.pri_port)
+    rv2_sec_addr = (args.rv2_ip, args.sec_port)
 
     rv1 = RoverState(args.rv1_lat, args.rv1_lon, args.rv1_hdg)
     rv2 = RoverState(args.rv2_lat, args.rv2_lon, args.rv2_hdg)
+    dt  = 1.0 / args.rate
 
-    dt   = 1.0 / args.rate
-    tick = 0
-
-    # ── Dry-run: print sample sentences and exit ──────────────────────────────
+    # ── Dry-run ───────────────────────────────────────────────────────────────
     if args.dry_run:
-        print('\n--- sample NMEA output (first tick) ---')
+        print('\n--- sample NMEA (first tick) ---')
         s1_lat, s1_lon = rv1.secondary_pos(args.baseline)
         s2_lat, s2_lon = rv2.secondary_pos(args.baseline)
         for label, data in (
-            ('RV1 primary  GGA', make_gga(rv1.lat, rv1.lon, args.alt)),
-            ('RV1 primary  VTG', make_vtg(rv1.heading_deg, 0.0)),
-            ('RV1 secondary GGA', make_gga(s1_lat, s1_lon, args.alt)),
-            ('RV2 primary  GGA', make_gga(rv2.lat, rv2.lon, args.alt)),
-            ('RV2 primary  VTG', make_vtg(rv2.heading_deg, 0.0)),
-            ('RV2 secondary GGA', make_gga(s2_lat, s2_lon, args.alt)),
+            ('RV1 pri GGA', make_gga(rv1.lat, rv1.lon, args.alt)),
+            ('RV1 pri VTG', make_vtg(rv1.heading_deg, 0.0)),
+            ('RV1 sec GGA', make_gga(s1_lat, s1_lon, args.alt)),
+            ('RV2 pri GGA', make_gga(rv2.lat, rv2.lon, args.alt)),
+            ('RV2 pri VTG', make_vtg(rv2.heading_deg, 0.0)),
+            ('RV2 sec GGA', make_gga(s2_lat, s2_lon, args.alt)),
         ):
             print(f'  {label}: {data.decode().strip()}')
-        print()
+        sock.close()
         return
 
-    # ── Stop cleanly on Ctrl-C / SIGTERM ─────────────────────────────────────
     stop = threading.Event()
     signal.signal(signal.SIGINT,  lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
 
     print('\nRunning — Ctrl-C to stop\n')
-    time.sleep(0.5)   # let port-open messages settle before display takes over
+    time.sleep(0.5)
 
     t_next = time.monotonic()
+    tick   = 0
 
     while not stop.is_set():
         t_now = time.monotonic()
@@ -356,49 +318,34 @@ def main():
         t_next += dt
         tick   += 1
 
-        # ── Read PPM ──────────────────────────────────────────────────────────
         (rv1_thr, rv1_str), (rv2_thr, rv2_str), ppm_age = ppm.get()
-
-        # Freeze rovers if no ppm_decoder data
         if ppm_age > 2.0:
             rv1_thr = rv1_str = rv2_thr = rv2_str = 1500
 
-        # ── Physics ───────────────────────────────────────────────────────────
         rv1.update(rv1_thr, rv1_str, args.max_speed, args.wheelbase, dt)
         rv2.update(rv2_thr, rv2_str, args.max_speed, args.wheelbase, dt)
 
-        # ── Build NMEA ────────────────────────────────────────────────────────
         s1_lat, s1_lon = rv1.secondary_pos(args.baseline)
         s2_lat, s2_lon = rv2.secondary_pos(args.baseline)
 
-        rv1_gga_pri = make_gga(rv1.lat, rv1.lon, args.alt)
-        rv1_vtg     = make_vtg(rv1.heading_deg, rv1.speed_mps)
-        rv1_gga_sec = make_gga(s1_lat, s1_lon, args.alt)
+        # Primary packets: GGA + VTG concatenated in one UDP datagram
+        rv1_pri_pkt = make_gga(rv1.lat, rv1.lon, args.alt) + make_vtg(rv1.heading_deg, rv1.speed_mps)
+        rv2_pri_pkt = make_gga(rv2.lat, rv2.lon, args.alt) + make_vtg(rv2.heading_deg, rv2.speed_mps)
+        # Secondary packets: GGA only
+        rv1_sec_pkt = make_gga(s1_lat, s1_lon, args.alt)
+        rv2_sec_pkt = make_gga(s2_lat, s2_lon, args.alt)
 
-        rv2_gga_pri = make_gga(rv2.lat, rv2.lon, args.alt)
-        rv2_vtg     = make_vtg(rv2.heading_deg, rv2.speed_mps)
-        rv2_gga_sec = make_gga(s2_lat, s2_lon, args.alt)
+        udp_send(sock, rv1_pri_pkt, rv1_pri_addr, 'rv1_pri')
+        udp_send(sock, rv1_sec_pkt, rv1_sec_addr, 'rv1_sec')
+        udp_send(sock, rv2_pri_pkt, rv2_pri_addr, 'rv2_pri')
+        udp_send(sock, rv2_sec_pkt, rv2_sec_addr, 'rv2_sec')
 
-        # ── Write to serial ports ─────────────────────────────────────────────
-        write_port(ports['rv1_pri'], rv1_gga_pri, 'rv1_pri')
-        write_port(ports['rv1_pri'], rv1_vtg,     'rv1_pri')
-        write_port(ports['rv1_sec'], rv1_gga_sec, 'rv1_sec')
-
-        write_port(ports['rv2_pri'], rv2_gga_pri, 'rv2_pri')
-        write_port(ports['rv2_pri'], rv2_vtg,     'rv2_pri')
-        write_port(ports['rv2_sec'], rv2_gga_sec, 'rv2_sec')
-
-        # ── Status display (refresh every ~1 s) ──────────────────────────────
         if tick % max(1, round(args.rate)) == 0:
-            sys.stdout.write(_status_str(rv1, rv2, ppm_age, tick,
-                                         args.rate, args.dry_run))
+            sys.stdout.write(_status_str(rv1, rv2, ppm_age, tick, args, args.dry_run))
             sys.stdout.flush()
 
-    # ── Shutdown ──────────────────────────────────────────────────────────────
     print('\n\nSimulator stopped.')
-    for s in ports.values():
-        if s is not None:
-            s.close()
+    sock.close()
 
 
 if __name__ == '__main__':
