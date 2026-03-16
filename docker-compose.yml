@@ -22,18 +22,17 @@ x-rover-base: &rover-base
   volumes:
     - /dev:/dev             # serial ports, video devices (incl. /dev/pts PTY slaves)
     - /tmp:/tmp             # PTY symlinks from nmea_wifi_rx.py + argus socket
-    - ./ros2_ws/src:/workspaces/isaac_ros-dev/src  # live config/code — no rebuild needed
+    - ./ros2_ws/src:/workspaces/isaac_ros-dev/src  # live Python nodes — no rebuild needed
+    - ./ros2_ws/src/agri_rover_bringup/config:/workspaces/isaac_ros-dev/install/agri_rover_bringup/share/agri_rover_bringup/config  # live params YAML
   restart: unless-stopped
 
 services:
   rover1:
     <<: *rover-base
     container_name: agri_rover_rv1
-    command: >
-      ros2 launch agri_rover_bringup rover1.launch.py
+    command: ros2 launch agri_rover_bringup rover1.launch.py camera_source:=${CAMERA_SOURCE:-csi}
 
   rover2:
     <<: *rover-base
     container_name: agri_rover_rv2
-    command: >
-      ros2 launch agri_rover_bringup rover2.launch.py
+    command: ros2 launch agri_rover_bringup rover2.launch.py camera_source:=${CAMERA_SOURCE:-csi}

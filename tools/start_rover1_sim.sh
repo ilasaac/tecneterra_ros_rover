@@ -54,5 +54,5 @@ if [ ! -e "$PRI_SYMLINK" ]; then
 fi
 
 # ── Step 3: start rover1 container ────────────────────────────────────────────
-echo "[sim] Starting rover1 Docker container..."
-docker compose up rover1
+echo "[sim] Starting rover1 Docker container (camera_source=test)..."
+CAMERA_SOURCE=test docker compose up rover1
