@@ -22,6 +22,7 @@ x-rover-base: &rover-base
   volumes:
     - /dev:/dev             # serial ports, video devices (incl. /dev/pts PTY slaves)
     - /tmp:/tmp             # PTY symlinks from nmea_wifi_rx.py + argus socket
+    - ./ros2_ws/src:/workspaces/isaac_ros-dev/src  # live config/code — no rebuild needed
   restart: unless-stopped
 
 services:
