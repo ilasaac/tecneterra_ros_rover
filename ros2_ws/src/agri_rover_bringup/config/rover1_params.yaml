@@ -1,30 +1,31 @@
 # ── Rover 1 (Master) parameters ───────────────────────────────────────────────
 # Deploy on: Jetson connected to HM30 air unit
+# Node keys must use fully-qualified names (/rv1/<node>) to match namespaced nodes.
 
-rp2040_bridge:
+/rv1/rp2040_bridge:
   ros__parameters:
     uart_port:          /dev/ttyACM0
     uart_baud:          115200
     heartbeat_interval: 0.2
 
-gps_driver:
+/rv1/gps_driver:
   ros__parameters:
     primary_port:   /tmp/rv1_gps_pri   # real HW: /dev/ttyUSB0  sim: symlink from nmea_wifi_rx.py
     secondary_port: /tmp/rv1_gps_sec   # real HW: /dev/ttyUSB1  sim: symlink from nmea_wifi_rx.py
     baud:           115200
 
-mavlink_bridge:
+/rv1/mavlink_bridge:
   ros__parameters:
     rover_id:  1
     gqc_host:  192.168.1.255   # WiFi broadcast — GQC receives regardless of IP
     gqc_port:  14550
     bind_port: 14550            # listen on :14550 for inbound MAVLink from GQC
 
-sensor_node:
+/rv1/sensor_node:
   ros__parameters:
     publish_rate: 1.0
 
-video_streamer:
+/rv1/video_streamer:
   ros__parameters:
     rtsp_port:     8554
     mount_point:   /stream
@@ -36,7 +37,7 @@ video_streamer:
     bitrate:       2000
     flip_method:   0
 
-navigator:
+/rv1/navigator:
   ros__parameters:
     lookahead_distance:       3.0
     default_acceptance_radius: 1.5
