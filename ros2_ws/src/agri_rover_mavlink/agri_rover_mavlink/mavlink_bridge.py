@@ -25,6 +25,7 @@ MAVLink addressing:
 from __future__ import annotations
 
 import os
+import socket as _socket
 import threading
 import time
 
@@ -75,6 +76,10 @@ class MavlinkBridgeNode(Node):
             source_component=1,
         )
         self._gqc_addr = (self._gqc_host, gqc_port)
+
+        # Dedicated outbound UDP socket (pymavlink internals vary by version)
+        self._udp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        self._udp_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_BROADCAST, 1)
 
         # ── Local state (updated from subscriptions) ─────────────────────────
         self._fix         = NavSatFix()
@@ -132,7 +137,7 @@ class MavlinkBridgeNode(Node):
         """Send a pre-packed MAVLink message to GQC via UDP."""
         try:
             buf = msg.pack(self._mav.mav)
-            self._mav.socket.sendto(buf, self._gqc_addr)
+            self._udp_sock.sendto(buf, self._gqc_addr)
         except Exception as e:
             self.get_logger().warn(f'MAVLink send error: {e}')
 
@@ -251,5 +256,6 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node._udp_sock.close()
         node.destroy_node()
         rclpy.shutdown()

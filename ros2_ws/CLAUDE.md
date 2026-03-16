@@ -82,9 +82,12 @@ from pymavlink import mavutil
 self._mav = mavutil.mavlink_connection(f'udpin:0.0.0.0:{bind_port}', ...)
 self._gqc_addr = (gqc_host, gqc_port)
 
-# Send (do NOT use mav.write() — swallows socket.error silently):
+# Send — use a dedicated outbound socket (pymavlink internals vary by version):
+# In __init__:
+#   self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+#   self._udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 buf = msg.pack(self._mav.mav)
-self._mav.mav.socket.sendto(buf, self._gqc_addr)
+self._udp_sock.sendto(buf, self._gqc_addr)
 
 # Receive loop (runs in daemon thread):
 msg = self._mav.recv_match(blocking=True, timeout=1.0)
