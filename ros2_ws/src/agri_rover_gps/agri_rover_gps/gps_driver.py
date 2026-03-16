@@ -45,10 +45,14 @@ class GpsDriverNode(Node):
         self.declare_parameter('primary_port',   '/dev/ttyUSB0')
         self.declare_parameter('secondary_port', '/dev/ttyUSB1')
         self.declare_parameter('baud',           115200)
+        # heading_source: 'baseline' (secondary GPS vector) | 'vtg' (primary VTG COG)
+        # Use 'vtg' when a single serial port provides both GGA and VTG (e.g. simulator).
+        self.declare_parameter('heading_source', 'baseline')
 
         primary_port   = self.get_parameter('primary_port').value
         secondary_port = self.get_parameter('secondary_port').value
         baud           = self.get_parameter('baud').value
+        self._heading_source = self.get_parameter('heading_source').value
 
         # ── Publishers ───────────────────────────────────────────────────────
         self.fix_pub    = self.create_publisher(NavSatFix, 'fix',        10)
@@ -56,19 +60,24 @@ class GpsDriverNode(Node):
         self.status_pub = self.create_publisher(String,    'rtk_status', 10)
 
         # ── GPS state ────────────────────────────────────────────────────────
-        self._primary   = {'lat': 0.0, 'lon': 0.0, 'fix': '0', 'hdop': 99.9}
-        self._secondary = {'lat': 0.0, 'lon': 0.0}
-        self._lock      = threading.Lock()
+        self._primary       = {'lat': 0.0, 'lon': 0.0, 'fix': '0', 'hdop': 99.9}
+        self._secondary     = {'lat': 0.0, 'lon': 0.0}
+        self._vtg_heading   = None   # degrees, filled when heading_source=='vtg'
+        self._lock          = threading.Lock()
 
         # ── Serial threads ───────────────────────────────────────────────────
-        self._start_reader(primary_port,   baud, is_primary=True)
-        self._start_reader(secondary_port, baud, is_primary=False)
+        self._start_reader(primary_port, baud, is_primary=True)
+        if self._heading_source == 'baseline':
+            self._start_reader(secondary_port, baud, is_primary=False)
 
         # ── Publish timer (5 Hz) ─────────────────────────────────────────────
         self.create_timer(0.2, self._publish)
 
         self.get_logger().info(
-            f'GPS driver on {primary_port} (primary) + {secondary_port} (secondary)')
+            f'GPS driver on {primary_port} (primary), '
+            f'heading_source={self._heading_source}'
+            + (f', secondary={secondary_port}' if self._heading_source == 'baseline' else '')
+        )
 
     # ── Serial reader thread ──────────────────────────────────────────────────
 
@@ -99,8 +108,8 @@ class GpsDriverNode(Node):
 
         if msg_type in ('GPGGA', 'GNGGA') and len(parts) >= 10:
             self._parse_gga(parts, is_primary)
-        elif msg_type in ('GPVTG', 'GNVTG') and len(parts) >= 5 and is_primary:
-            pass  # speed — extend here if needed
+        elif msg_type in ('GPVTG', 'GNVTG') and is_primary:
+            self._parse_vtg(parts)
 
     def _parse_gga(self, parts: list, is_primary: bool):
         try:
@@ -121,6 +130,18 @@ class GpsDriverNode(Node):
         except (ValueError, IndexError):
             pass
 
+    def _parse_vtg(self, parts: list):
+        # $GNVTG,COG_T,T,COG_M,M,SPEED_KN,N,SPEED_KMH,K,mode*CS
+        # Field 1 = true COG (degrees), field 2 = 'T'
+        try:
+            cog_str = parts[1]
+            if cog_str and self._heading_source == 'vtg':
+                cog = float(cog_str) % 360.0
+                with self._lock:
+                    self._vtg_heading = cog
+        except (ValueError, IndexError):
+            pass
+
     @staticmethod
     def _nmea_to_deg(raw: str) -> float:
         if not raw:
@@ -134,8 +155,9 @@ class GpsDriverNode(Node):
 
     def _publish(self):
         with self._lock:
-            p = self._primary.copy()
-            s = self._secondary.copy()
+            p           = self._primary.copy()
+            s           = self._secondary.copy()
+            vtg_heading = self._vtg_heading
 
         now = self.get_clock().now().to_msg()
 
@@ -155,14 +177,20 @@ class GpsDriverNode(Node):
         fix_msg.status.service = NavSatStatus.SERVICE_GPS
         self.fix_pub.publish(fix_msg)
 
-        # Heading via baseline vector between primary and secondary
-        if p['lat'] != 0.0 and s['lat'] != 0.0:
-            dlat = s['lat'] - p['lat']
-            dlon = s['lon'] - p['lon']
-            bearing = math.degrees(math.atan2(dlon, dlat)) % 360.0
-            head_msg      = Float32()
-            head_msg.data = bearing
-            self.head_pub.publish(head_msg)
+        # Heading — baseline vector or VTG COG depending on heading_source
+        if self._heading_source == 'vtg':
+            if vtg_heading is not None:
+                head_msg      = Float32()
+                head_msg.data = vtg_heading
+                self.head_pub.publish(head_msg)
+        else:
+            if p['lat'] != 0.0 and s['lat'] != 0.0:
+                dlat = s['lat'] - p['lat']
+                dlon = s['lon'] - p['lon']
+                bearing = math.degrees(math.atan2(dlon, dlat)) % 360.0
+                head_msg      = Float32()
+                head_msg.data = bearing
+                self.head_pub.publish(head_msg)
 
         # RTK status string
         status_msg      = String()

@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'agri_rover_video'
+package_name = 'agri_rover_simulator'
 
 setup(
     name=package_name,
@@ -9,20 +9,19 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/video.launch.py',
-                                               'launch/video_pipeline.launch.py']),
-        ('share/' + package_name + '/config', ['config/gstreamer.yaml']),
+        ('share/' + package_name + '/launch', ['launch/simulator.launch.py']),
+        ('share/' + package_name + '/config', ['config/simulator_params.yaml']),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'pyserial'],
     zip_safe=True,
     maintainer='AgriRover',
     maintainer_email='dev@agrirover.com',
-    description='Video streaming node',
+    description='Dead-reckoning GPS simulator for AgriRover development',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'video_streamer = agri_rover_video.video_streamer:main',
+            'simulator = agri_rover_simulator.simulator_node:main',
         ],
     },
 )

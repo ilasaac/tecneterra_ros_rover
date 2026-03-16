@@ -2,11 +2,18 @@
 <package format="3">
   <name>agri_rover_video</name>
   <version>0.1.0</version>
-  <description>Video streaming node — GStreamer RTSP server for camera feeds</description>
+  <description>Video streaming node — Isaac ROS NITROS camera pipeline + GstRtspServer RTSP</description>
   <maintainer email="dev@agrirover.com">AgriRover</maintainer>
   <license>MIT</license>
 
   <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+
+  <!-- Isaac ROS: CSI camera capture and H264 hardware encoding (NITROS pipeline) -->
+  <exec_depend>isaac_ros_common</exec_depend>
+  <exec_depend>isaac_ros_argus_camera</exec_depend>
+  <exec_depend>isaac_ros_h264_encoder</exec_depend>
+  <exec_depend>isaac_ros_nitros</exec_depend>
 
   <buildtool_depend>ament_python</buildtool_depend>
 

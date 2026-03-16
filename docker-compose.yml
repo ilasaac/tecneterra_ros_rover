@@ -1,0 +1,46 @@
+# AgriRover — Docker Compose
+#
+# Usage:
+#   Rover 1 (master Jetson):  docker compose up rover1
+#   Rover 2 (slave Jetson):   docker compose up rover2
+#
+# Override camera source:
+#   docker compose run rover1 ros2 launch agri_rover_bringup rover1.launch.py camera_source:=usb
+
+x-rover-base: &rover-base
+  image: agri_rover:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+  privileged: true          # required for GPIO, USB serial, CSI camera
+  network_mode: host        # MAVLink UDP broadcast + ROS2 DDS multicast
+  runtime: nvidia           # enable Jetson GPU (NITROS, nvarguscamerasrc)
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=all,graphics
+    - ROS_DOMAIN_ID=0
+  volumes:
+    - /dev:/dev             # serial ports, video devices
+    - /tmp/argus_socket:/tmp/argus_socket  # nvargus daemon socket (CSI camera)
+  restart: unless-stopped
+
+services:
+  rover1:
+    <<: *rover-base
+    container_name: agri_rover_rv1
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0   # RP2040 USB CDC
+      - /dev/ttyUSB0:/dev/ttyUSB0   # GPS primary
+      - /dev/ttyUSB1:/dev/ttyUSB1   # GPS secondary
+    command: >
+      ros2 launch agri_rover_bringup rover1.launch.py
+
+  rover2:
+    <<: *rover-base
+    container_name: agri_rover_rv2
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+      - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/ttyUSB1:/dev/ttyUSB1
+    command: >
+      ros2 launch agri_rover_bringup rover2.launch.py

@@ -101,7 +101,7 @@ output stalls — acceptable for a wired simulator bench.
 | RegDioMapping1    | 0x40   | DIO0 = TxDone (master TX mode)       |
 | RegDioMapping1    | 0x00   | DIO0 = RxDone (slave RX mode)        |
 
-**Time on air (18-byte payload):** ~12.9 ms → TX at 25 Hz (every 2nd PPM frame).
+**Time on air (32-byte payload, 16 × uint16_t):** ~12.9 ms → TX at 25 Hz (every 2nd PPM frame).
 
 ## Build (requires Pico SDK)
 
@@ -145,3 +145,17 @@ cmake --build build -j4
 
   Inversion formula: `3000 − value` (maps 1000↔2000, 1500 stays centred).
   Implemented in `apply_ppm_map()` in both master and slave `main.cpp`.
+
+- **LoRa payload must be `sbus_ch[]`, not `out_ch[]`:** `out_ch` is already PPM-remapped for local hardware output. Transmitting it causes slave to remap again (double-map = wrong channels). In RELAY mode `out_ch` is also neutralised to 1500, so transmitting it would prevent the slave from receiving real stick values. Fix applied in `master/main.cpp` — always pack `sbus_ch[]` into the LoRa payload.
+
+- **CH9 rover-select / mode logic (3-position switch):**
+
+  | CH9 value    | Master          | Slave              |
+  |--------------|-----------------|---------------------|
+  | Low  < 1250  | MANUAL (moves)  | EMERGENCY (neutral) |
+  | Mid  1250–1750 | RELAY or AUTO | AUTONOMOUS or EMERGENCY |
+  | High > 1750  | EMERGENCY (neutral) | MODE_RF (moves) |
+
+  - **RELAY** (master, CH9 mid, CH5 not set): master PPM neutral, raw `sbus_ch[]` forwarded over LoRa.
+  - **AUTO** (either rover, CH9 mid + CH4 not triggered + CH5 set + HB alive + fresh `<J:>` cmd): Jetson drives PPM.
+  - Slave checks CH4 and CH5 directly from the received `rf_ch[]` (raw SBUS values forwarded by master).

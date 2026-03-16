@@ -29,6 +29,7 @@ ros_agri_rover/
 │   ├── agri_rover_navigator/        ← pure-pursuit autonomous navigator node
 │   ├── agri_rover_sensors/          ← agricultural sensor node (stub)
 │   ├── agri_rover_video/            ← GStreamer RTSP streamer node
+│   ├── agri_rover_simulator/        ← dead-reckoning GPS simulator (separate Jetson)
 │   └── agri_rover_bringup/          ← launch files + per-rover YAML configs
 ├── firmware/rc_link_sx1278/
 │   ├── master/                      ← RP2040: SBUS→PIO decode, PPM→PIO+DMA, SX1278 TX
@@ -63,6 +64,7 @@ ros_agri_rover/
 | agri_rover_navigator     | ament_python | navigator          | Pure-pursuit waypoint follower        |
 | agri_rover_sensors       | ament_python | sensor_node        | Tank/temp/humidity/pressure (stub)    |
 | agri_rover_video         | ament_python | video_streamer     | GStreamer RTSP server                 |
+| agri_rover_simulator     | ament_python | simulator          | Dead-reckoning GPS simulator (runs on separate Jetson) |
 | agri_rover_bringup       | ament_cmake  | —                  | rover1.launch.py, rover2.launch.py    |
 
 **ROS2 namespaces:** `/rv1/` for master, `/rv2/` for slave. Same `ROS_DOMAIN_ID`.
@@ -102,16 +104,37 @@ GQC identifies rovers by **sysid in HEARTBEAT**, not by port.
 
 ## Firmware — RP2040 pin assignments
 
-| Signal       | GPIO | Direction | Notes                              |
-|--------------|------|-----------|------------------------------------|
-| SBUS RX      | GP4  | IN        | Inverted 100kbaud 8E2 from HM30    |
-| PPM OUT      | GP15 | OUT       | To motor controllers / ESC         |
-| SX1278 MISO  | GP16 | IN        | SPI0                               |
-| SX1278 SCK   | GP18 | OUT       | SPI0                               |
-| SX1278 MOSI  | GP19 | OUT       | SPI0                               |
-| SX1278 NSS   | GP17 | OUT       | Chip select (active LOW)           |
-| SX1278 RST   | GP20 | OUT       | Hardware reset                     |
-| SX1278 DIO0  | GP21 | IN        | TxDone (master) / RxDone (slave)   |
+| Signal       | GPIO | Pico Pin | Direction | Notes                              |
+|--------------|------|----------|-----------|------------------------------------|
+| SBUS RX      | GP4  | 6        | IN        | Inverted 100kbaud 8E2 from HM30 (master only) |
+| PPM OUT      | GP15 | 20       | OUT       | To motor controllers / ESC (both)  |
+| SX1278 MISO  | GP16 | 21       | IN        | SPI0 RX                            |
+| SX1278 NSS   | GP17 | 22       | OUT       | SPI0 chip select (active LOW)      |
+| SX1278 SCK   | GP18 | 24       | OUT       | SPI0 SCK                           |
+| SX1278 MOSI  | GP19 | 25       | OUT       | SPI0 TX                            |
+| SX1278 RST   | GP20 | 26       | OUT       | Hardware reset (active LOW pulse)  |
+| SX1278 DIO0  | GP21 | 27       | IN        | TxDone (master) / RxDone (slave)   |
+
+### SX1278 module wiring (same for master and slave)
+
+Wires the RP2040 Pico to a standard Ra-02 / RA-01S style SX1278 breakout.
+The module runs at **3.3 V** — do not connect to 5 V.
+
+| SX1278 module pin | RP2040 GPIO | Pico Pin | Notes                          |
+|-------------------|-------------|----------|--------------------------------|
+| VCC               | —           | 36 (3V3) | 3.3 V supply from Pico onboard regulator |
+| GND               | —           | 38 (GND) | Common ground                  |
+| SCK               | GP18        | 24       | SPI clock                      |
+| MISO              | GP16        | 21       | Master-in / slave-out          |
+| MOSI              | GP19        | 25       | Master-out / slave-in          |
+| NSS (CS)          | GP17        | 22       | Chip select, idle HIGH         |
+| RST               | GP20        | 26       | Reset — pulled HIGH after init |
+| DIO0              | GP21        | 27       | IRQ: TxDone (master) or RxDone (slave); no pull-up needed, module drives it |
+
+**Master-specific:** after `sx1278_init()`, `RegDioMapping1 = 0x40` → DIO0 signals TxDone.
+**Slave-specific:** `sx1278_start_rx()` sets `RegDioMapping1 = 0x00` → DIO0 signals RxDone; slave polls via `sx1278_recv()` in main loop.
+
+No other DIOx pins (DIO1–DIO5) are used — leave them unconnected.
 
 ---
 
@@ -132,24 +155,40 @@ GQC identifies rovers by **sysid in HEARTBEAT**, not by port.
 
 **SX1278 LoRa config:** 433 MHz (0x6C8000), SF7, BW500kHz, CR4/5, explicit header, CRC on, +17dBm.
 **TX rate:** 25 Hz (every 2nd PPM frame) — LoRa ToA ≈ 12.9 ms, 40 ms period = 32% duty cycle.
-**Payload:** 9 × uint16_t = 18 bytes, little-endian, channels in µs.
+**Payload:** 16 × uint16_t = 32 bytes, little-endian, raw SBUS channels in µs.
+**Important:** master always transmits `sbus_ch[]` (raw SBUS), never `out_ch[]`. Slave applies `apply_ppm_map()` once on reception. Using `out_ch` would double-map channels and send neutral (1500) in RELAY mode.
 
 ---
 
 ## Mode logic (both RP2040s)
 
 ```
-SBUS lost/timeout (200ms)     → EMERGENCY (neutral)
-CH4 (SWA) < 1700              → EMERGENCY
-CH8 (CH9) in (1250, 1750)     → RELAY (local neutral, slave sees packets)
-CH5 (SWB) > 1700:
-  + no Jetson heartbeat       → AUTO-NO-HB (neutral)
-  + heartbeat but no cmd      → AUTO-TIMEOUT (neutral)
-  + heartbeat + fresh cmd     → AUTONOMOUS (Jetson controls)
-else                          → MANUAL (raw SBUS passthrough)
+── Master (RV1) ──────────────────────────────────────────────────────────────
+SBUS lost/timeout (200ms)          → EMERGENCY
+CH4 (SWA) < 1700                   → EMERGENCY
+CH9 > 1750                         → EMERGENCY  (slave selected, master neutral)
+CH9 in [1250, 1750]:
+  CH5 (SWB) > 1700:
+    + no Jetson heartbeat          → AUTO-NO-HB  (neutral)
+    + heartbeat but no cmd         → AUTO-TIMEOUT (neutral)
+    + heartbeat + fresh cmd        → AUTONOMOUS  (Jetson controls master)
+  CH5 <= 1700                      → RELAY  (master neutral, raw SBUS forwarded to slave)
+CH9 < 1250                         → MANUAL (master moves, raw SBUS passthrough)
+
+── Slave (RV2) ───────────────────────────────────────────────────────────────
+RF lost/timeout (500ms)            → EMERGENCY
+CH4 (from RF packet) < 1700        → EMERGENCY
+CH9 (from RF packet) < 1250        → EMERGENCY  (master selected, slave neutral)
+CH9 in [1250, 1750]:
+  CH5 > 1700 + HB alive + fresh cmd → AUTONOMOUS (Jetson controls slave)
+  else                               → EMERGENCY  (neutral — no rover selected manually)
+CH9 > 1750                         → MODE_RF (slave moves, RC values from master relay)
 ```
 
-Slave additionally gates on CH9 rover-select: ignores packets when not in relay window.
+The 3-position CH9 switch selects which rover moves in manual:
+- **Low  (< 1250):** RV1 manual, RV2 neutral
+- **Middle (1250–1750):** both neutral in manual; AUTO valid for each Jetson independently
+- **High  (> 1750):** RV2 manual (via RF relay), RV1 neutral
 
 ---
 
@@ -172,24 +211,32 @@ Jetson → RP2040:
 ## Build commands
 
 ```bash
-# Build ROS2 workspace (run on each Jetson)
-cd C:/ros_agri_rover/ros2_ws
+# ── Isaac ROS Docker (preferred on Jetson) ────────────────────────────────────
+# Build image (once, or after dependency changes)
+docker build -t agri_rover:latest .
+
+# Launch via Docker Compose
+docker compose up rover1          # master Jetson
+docker compose up rover2          # slave Jetson
+
+# Override camera source
+docker compose run rover1 ros2 launch agri_rover_bringup rover1.launch.py camera_source:=usb
+
+# ── Bare-metal (inside Isaac ROS Docker shell or native install) ──────────────
+cd /workspaces/isaac_ros-dev
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 
-# Launch (run the appropriate one on each Jetson)
 ros2 launch agri_rover_bringup rover1.launch.py   # master Jetson
 ros2 launch agri_rover_bringup rover2.launch.py   # slave Jetson
 
-# Build firmware (run on dev machine with Pico SDK installed)
+# ── Firmware (dev machine, Pico SDK required) ─────────────────────────────────
 cd firmware/rc_link_sx1278/master
 cmake -B build -DPICO_SDK_PATH=$PICO_SDK_PATH && cmake --build build
 
-# Monitor (dev machine, both rovers on WiFi)
+# ── Tools ─────────────────────────────────────────────────────────────────────
 python tools/monitor.py
-
-# Upload a mission
 python tools/mission_uploader.py missions/field.csv --rover 1 --host 192.168.1.10
 ```
 
@@ -213,7 +260,40 @@ python tools/mission_uploader.py missions/field.csv --rover 1 --host 192.168.1.1
 - **MAVLink:** always `os.environ['MAVLINK20'] = '1'` before importing pymavlink. Send via `socket.sendto()`, not `mav.write()` (silent failure bug — see memory).
 - **PPM buffer:** only updated inside `dma_irq_handler()` (IRQ context). Main loop writes `out_ch[]` (volatile), IRQ reads it. No mutex needed on M0+ for uint16_t aligned writes.
 - **SX1278 TX:** fire-and-forget. Check `RegIrqFlags.TxDone` before next TX. Returns `false` if still busy — caller skips that frame.
+- **LoRa payload = raw SBUS only:** master transmits `sbus_ch[]`, never `out_ch[]`. `out_ch` is PPM-remapped (and neutralised in RELAY mode) — sending it would double-map on the slave and break RELAY forwarding. Slave calls `apply_ppm_map()` exactly once on the received `rf_ch[]`.
 - **SBUS decode:** validate `frame[0]==0x0F && frame[24]==0x00` before accepting. Re-sync on every `0x0F` byte regardless of position.
+
+---
+
+## Isaac ROS — architecture
+
+The ROS2 workspace runs inside NVIDIA Isaac ROS (Humble, aarch64) on each Jetson.
+
+| Component            | Isaac ROS role                                              |
+|----------------------|-------------------------------------------------------------|
+| `agri_rover_video`   | CSI path uses NITROS composable pipeline (see below)        |
+| All other nodes      | Standard rclpy — no NITROS changes needed                   |
+| Docker base image    | `nvcr.io/nvidia/isaac/ros:aarch64-humble-ros_base_2.1.0`   |
+
+**Video pipeline (CSI camera, `camera_source:=csi`):**
+```
+[ComposableNodeContainer  /rvN/video_container]
+  isaac_ros_argus_camera::ArgusMonoNode   → camera/image_raw  (NITROS Image)
+  isaac_ros_h264_encoder::EncoderNode     → image_compressed  (NITROS H264)
+[VideoStreamerNode  /rvN/video_streamer]
+  subscribes to image_compressed → GstRtspServer appsrc → RTSP clients (GQC)
+```
+`ArgusMonoNode` and `EncoderNode` must share a `component_container_mt` to use
+zero-copy NITROS transport. `VideoStreamerNode` is a separate Python node that
+subscribes to the output topic (`sensor_msgs/CompressedImage`, format `"h264"`).
+
+**Fallback (USB / test camera):** `video_streamer` spawns a `gst-rtsp-server`
+subprocess directly — no NITROS pipeline is launched.
+
+**Docker files:**
+- `Dockerfile` — extends Isaac ROS base, installs deps, builds workspace
+- `docker-entrypoint.sh` — sources ROS2 + Isaac ROS + project overlays
+- `docker-compose.yml` — device mounts, GPU runtime, per-rover launch commands
 
 ---
 
@@ -221,6 +301,76 @@ python tools/mission_uploader.py missions/field.csv --rover 1 --host 192.168.1.1
 
 Scaffold only at `android/AgriRoverGQC/`. Not yet built. See `android/AgriRoverGQC/README.md`.
 Planned stack: Kotlin, Jetpack Compose, java-mavlink, ExoPlayer (RTSP), OSMDroid.
+
+---
+
+## Simulator — dead-reckoning GPS
+
+Runs on a **third Jetson Nano** (not RV1, not RV2). Replaces real u-blox ZED-X20P hardware during development.
+
+### Hardware connections (via USB hub on simulator Jetson)
+
+| USB port on sim Jetson | Cable destination                   | Purpose                        |
+|------------------------|-------------------------------------|--------------------------------|
+| `/dev/ttyACM0`         | ppm_decoder RP2040 USB-CDC          | Reads PPM state for both rovers |
+| `/dev/ttyUSB0`         | → RV1 Jetson `/dev/ttyUSB0`        | RV1 primary GPS   (GGA + VTG)  |
+| `/dev/ttyUSB1`         | → RV1 Jetson `/dev/ttyUSB1`        | RV1 secondary GPS (GGA only)   |
+| `/dev/ttyUSB2`         | → RV2 Jetson `/dev/ttyUSB0`        | RV2 primary GPS   (GGA + VTG)  |
+| `/dev/ttyUSB3`         | → RV2 Jetson `/dev/ttyUSB1`        | RV2 secondary GPS (GGA only)   |
+
+Total: 5 USB connections (use a powered USB hub — Jetson Nano has 4 USB-A ports).
+
+### How it works
+
+```
+ppm_decoder → "RV1:ch0..7 RV2:ch0..7\n"
+                        │
+              SimulatorNode (10 Hz timer)
+                        │
+          ┌─────────────┴─────────────┐
+        RoverState rv1              RoverState rv2
+          │ dead-reckoning             │ dead-reckoning
+          │ bicycle kinematic          │ (same model)
+          │
+          ├─ primary lat/lon  → $GNGGA (fix=4, RTK) + $GNVTG → /dev/ttyUSB0
+          └─ secondary lat/lon → $GNGGA (fix=4)               → /dev/ttyUSB1
+             (offset `antenna_baseline_m` ahead along heading)
+```
+
+- `gps_driver.py` on each rover Jetson runs in default `heading_source: baseline` mode.
+- Secondary GGA position is offset `antenna_baseline_m` (default 0.30 m) ahead of primary along rover heading.
+- `gps_driver.py` recovers heading via `atan2(dlon, dlat)` between secondary and primary — same as with real hardware.
+- Primary port also sends `$GNVTG` (COG + speed) — unused by default but consumed if `heading_source: vtg`.
+
+### Physics model (bicycle kinematic)
+
+```python
+speed = (throttle_ppm - 1500) / 500 * max_speed_mps   # m/s, negative = reverse
+steer = (steering_ppm - 1500) / 500                    # -1..+1
+omega = speed * steer / wheelbase_m                    # rad/s
+heading += omega * dt
+lat += speed * cos(heading) * dt / 111320
+lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))
+```
+
+### Launch
+
+```bash
+# On simulator Jetson — set start_lat/lon in simulator_params.yaml first
+ros2 launch agri_rover_simulator simulator.launch.py
+
+# Monitor simulated positions
+ros2 topic echo /sim/rv1/fix
+ros2 topic echo /sim/rv2/fix
+```
+
+### Config
+
+Edit `agri_rover_simulator/config/simulator_params.yaml`:
+- `rv1_start_lat/lon`, `rv2_start_lat/lon` — field origin
+- `antenna_baseline_m` — must match physical antenna separation on rover
+- `wheelbase_m` — rover wheelbase for turning radius accuracy
+- Port assignments if USB hub enumeration differs
 
 ---
 

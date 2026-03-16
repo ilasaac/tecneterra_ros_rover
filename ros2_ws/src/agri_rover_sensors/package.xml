@@ -9,6 +9,8 @@
   <depend>rclpy</depend>
   <depend>agri_rover_interfaces</depend>
 
+  <exec_depend>isaac_ros_common</exec_depend>
+
   <buildtool_depend>ament_python</buildtool_depend>
 
   <export>

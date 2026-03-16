@@ -12,7 +12,8 @@ See root CLAUDE.md for system-wide context. This file covers ROS2-specific detai
 | agri_rover_mavlink      | agri_rover_mavlink/mavlink_bridge.py             |
 | agri_rover_navigator    | agri_rover_navigator/navigator.py                |
 | agri_rover_sensors      | agri_rover_sensors/sensor_node.py                |
-| agri_rover_video        | agri_rover_video/video_streamer.py               |
+| agri_rover_video        | agri_rover_video/video_streamer.py (RTSP node) + launch/video_pipeline.launch.py (NITROS container) |
+| agri_rover_simulator    | agri_rover_simulator/simulator_node.py          |
 | agri_rover_bringup      | launch/rover1.launch.py, launch/rover2.launch.py |
 
 ## Interface definitions
@@ -123,6 +124,54 @@ Reads two serial ports in background threads. Publishes at 5 Hz via timer.
 - **`rover2.launch.py`**: hardcodes namespace `'/rv2'`, loads `config/rover2_params.yaml`
 - All nodes receive parameters via `parameters=[config]` pointing to the YAML
 - YAML key must match `node_name.ros__parameters.param_name` (ROS2 YAML convention)
+- `camera_source` launch arg (default `csi`) selects video mode:
+  - `csi` → `IncludeLaunchDescription(video_pipeline.launch.py)` + `video_streamer` in Isaac ROS mode
+  - `usb`/`test` → `video_streamer` in GStreamer subprocess mode; NITROS container NOT launched
+
+## agri_rover_video — Isaac ROS pipeline
+
+```
+camera_source=csi:
+  [ComposableNodeContainer /rvN/video_container]
+    ArgusMonoNode  → camera/image_raw  (NITROS)
+    EncoderNode    → image_compressed  (NITROS, format="h264")
+  [VideoStreamerNode /rvN/video_streamer]
+    subscribes image_compressed → GstRtspServer appsrc → rtsp://<ip>:<port>/stream
+
+camera_source=usb|test:
+  [VideoStreamerNode /rvN/video_streamer]
+    spawns gst-rtsp-server subprocess directly
+```
+
+- `ArgusMonoNode` and `EncoderNode` must be in the same `component_container_mt` for zero-copy NITROS.
+- `VideoStreamerNode` subscribes to `sensor_msgs/CompressedImage` (format `"h264"`).
+- `_H264AppsrcFactory.push_frame()` is called from the ROS2 subscription callback — thread-safe via `threading.Lock`.
+- The `GLib.MainLoop` (GstRtspServer event loop) runs in a daemon thread.
+
+## agri_rover_simulator — key patterns
+
+```python
+# PPM decoder line parsing
+raw = ser.readline().decode('ascii', errors='ignore').strip()
+# "RV1:ch0,ch1,...,ch7 RV2:ch0,...,ch7"
+rv1_part, rv2_part = raw.split(' ')
+rv1_vals = [int(v) for v in rv1_part[4:].split(',')]  # skip "RV1:"
+rv2_vals = [int(v) for v in rv2_part[4:].split(',')]  # skip "RV2:"
+
+# Secondary GPS position (antenna_baseline_m ahead of primary)
+sec_lat = lat + (baseline_m * math.cos(heading_rad)) / 111320.0
+sec_lon = lon + (baseline_m * math.sin(heading_rad)) / (111320.0 * math.cos(math.radians(lat)))
+
+# NMEA output (GGA RTK fixed quality=4)
+body = f'GNGGA,{utc},{lat_s},{lat_h},{lon_s},{lon_h},4,12,0.5,{alt:.1f},M,0.0,M,0.5,0001'
+sentence = f'${body}*{checksum(body)}\r\n'
+```
+
+- `heading_source` parameter added to `gps_driver`:
+  - `'baseline'` (default): heading from secondary–primary baseline vector (real hardware + simulator)
+  - `'vtg'`: heading from `$GNVTG` COG field on primary port only (single-port mode — optional)
+- Simulator always outputs 4 NMEA streams (primary + secondary per rover). Rover Jetsons need no config changes.
+- PPM timeout: if no ppm_decoder data for >2 s, simulator freezes rovers at current position (uses neutral 1500).
 
 ## colcon tips
 

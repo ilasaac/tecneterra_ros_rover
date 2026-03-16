@@ -1,0 +1,48 @@
+# agri_rover_simulator — simulator Jetson parameters
+#
+# Hardware connections on the simulator Jetson Nano (via USB hub):
+#
+#   ppm_port          ← ppm_decoder RP2040 USB-CDC   (reads RV1/RV2 PPM state at ~50 Hz)
+#   rv1_primary_port  → RV1 Jetson /dev/ttyUSB0      (primary GPS   → position + fix quality)
+#   rv1_secondary_port→ RV1 Jetson /dev/ttyUSB1      (secondary GPS → baseline vector → heading)
+#   rv2_primary_port  → RV2 Jetson /dev/ttyUSB0
+#   rv2_secondary_port→ RV2 Jetson /dev/ttyUSB1
+#
+# Each rover Jetson runs gps_driver with default heading_source: baseline.
+# No changes to rover params are needed beyond ensuring the port names match.
+#
+# Heading simulation:
+#   secondary antenna is placed `antenna_baseline_m` ahead of primary along the rover heading.
+#   gps_driver.py computes: bearing = atan2(dlon, dlat) between secondary and primary → correct heading.
+
+simulator:
+  ros__parameters:
+    # Serial ports on the simulator Jetson
+    ppm_port:           /dev/ttyACM0   # ppm_decoder RP2040 (USB-CDC)
+    ppm_baud:           115200
+    rv1_primary_port:   /dev/ttyUSB0   # → RV1 Jetson primary GPS input
+    rv1_secondary_port: /dev/ttyUSB1   # → RV1 Jetson secondary GPS input
+    rv2_primary_port:   /dev/ttyUSB2   # → RV2 Jetson primary GPS input
+    rv2_secondary_port: /dev/ttyUSB3   # → RV2 Jetson secondary GPS input
+    nmea_baud:          115200
+
+    # Starting positions (decimal degrees) — set to actual field origin
+    rv1_start_lat:  -23.550520
+    rv1_start_lon:  -46.633308
+    rv1_start_heading_deg: 0.0   # initial heading (0 = north)
+    rv2_start_lat:  -23.550620
+    rv2_start_lon:  -46.633408
+    rv2_start_heading_deg: 0.0
+
+    # Dead-reckoning physics
+    max_speed_mps:        1.5    # m/s at full throttle (PPM 2000)
+    wheelbase_m:          0.50   # rover wheelbase — controls turning radius
+    antenna_baseline_m:   0.30   # separation between primary and secondary antenna (metres)
+                                  # secondary is placed ahead of primary along rover heading
+
+    # Output rate
+    nmea_rate_hz:  10.0   # Hz — NMEA sentences sent to each rover Jetson
+
+    # PPM decoder channel indices (post-wFly map, from ppm_decoder output)
+    throttle_ch:  0   # ch0 = throttle (1500=stop, 2000=full fwd, 1000=full rev)
+    steering_ch:  1   # ch1 = steering (1500=straight, 2000=full right, 1000=full left)

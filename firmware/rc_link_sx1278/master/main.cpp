@@ -70,7 +70,7 @@
 // Channel limits
 #define CH_EMERGENCY    4    // SWA: < 1700 → emergency
 #define CH_AUTONOMOUS   5    // SWB: > 1700 → autonomous
-#define CH_ROVER_SEL    8    // CH9: relay window 1250–1750
+#define CH_ROVER_SEL    8    // CH9: master relay window 1250–1750 (middle position)
 #define EMERGENCY_THRESH  1700
 #define AUTO_THRESH       1700
 #define RELAY_LOW         1250
@@ -256,15 +256,20 @@ static Mode compute_mode(void) {
 
     if (sbus_ch[CH_EMERGENCY] < EMERGENCY_THRESH) return MODE_EMERGENCY;
 
-    if (sbus_ch[CH_ROVER_SEL] > RELAY_LOW && sbus_ch[CH_ROVER_SEL] < RELAY_HIGH)
-        return MODE_RELAY;
+    // CH9 high: slave manually selected — master must be neutral
+    if (sbus_ch[CH_ROVER_SEL] > RELAY_HIGH) return MODE_EMERGENCY;
 
-    if (sbus_ch[CH_AUTONOMOUS] > AUTO_THRESH) {
-        if (!hb_alive) return MODE_AUTO_NO_HB;
-        if (!cmd_fresh) return MODE_AUTO_TIMEOUT;
-        return MODE_AUTONOMOUS;
+    // CH9 middle: no rover manually selected — autonomous possible, else relay-neutral
+    if (sbus_ch[CH_ROVER_SEL] >= RELAY_LOW && sbus_ch[CH_ROVER_SEL] <= RELAY_HIGH) {
+        if (sbus_ch[CH_AUTONOMOUS] > AUTO_THRESH) {
+            if (!hb_alive)  return MODE_AUTO_NO_HB;
+            if (!cmd_fresh) return MODE_AUTO_TIMEOUT;
+            return MODE_AUTONOMOUS;
+        }
+        return MODE_RELAY;
     }
 
+    // CH9 low: master manually selected
     return MODE_MANUAL;
 }
 
@@ -431,10 +436,12 @@ int main(void) {
         // 4b. SX1278 TX every SX_TX_DIVISOR frames (25 Hz) — skip if not present
         if (sx_ok && ++sx_frame_div >= SX_TX_DIVISOR) {
             sx_frame_div = 0;
-            // Payload: relay the same channels that go to local PPM
+            // Payload: always raw SBUS channels — slave applies its own PPM map.
+            // Do NOT use out_ch here: out_ch is already PPM-remapped (and neutral
+            // in RELAY mode), so using it would double-map and break RELAY forwarding.
             uint8_t payload[CHANNELS * 2];
             for (int i = 0; i < CHANNELS; i++) {
-                uint16_t ch = out_ch[i];
+                uint16_t ch = sbus_ch[i];
                 payload[i * 2]     = (uint8_t)(ch & 0xFF);
                 payload[i * 2 + 1] = (uint8_t)(ch >> 8);
             }

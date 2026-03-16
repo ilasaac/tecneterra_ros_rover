@@ -1,14 +1,14 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>agri_rover_rp2040</name>
+  <name>agri_rover_simulator</name>
   <version>0.1.0</version>
-  <description>RP2040 USB serial bridge — reads CH: lines, sends heartbeat and autonomous commands</description>
+  <description>Dead-reckoning GPS simulator — reads ppm_decoder, outputs RTK-quality NMEA to rover Jetsons</description>
   <maintainer email="dev@agrirover.com">AgriRover</maintainer>
   <license>MIT</license>
 
   <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
-  <depend>agri_rover_interfaces</depend>
 
   <exec_depend>isaac_ros_common</exec_depend>
 

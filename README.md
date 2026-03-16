@@ -46,7 +46,7 @@ ros_agri_rover/
 
 | Layer    | Protocol          | Rate  | Purpose                        |
 |----------|-------------------|-------|-------------------------------|
-| RC       | SBUS → SX1278 LoRa| 50 Hz | Manual control, safety-critical|
+| RC       | SBUS → SX1278 LoRa| 25 Hz | Manual control, safety-critical|
 | MAVLink  | UDP/WiFi          | 10 Hz | Telemetry, commands, missions  |
 | Video    | RTSP/WiFi         | 30fps | Camera feeds                   |
 | ROS2     | DDS/WiFi          | varies| Autonomy, sensor fusion        |
@@ -104,9 +104,18 @@ python tools/mission_uploader.py missions/field_a.csv --rover 1 --host 192.168.1
 
 ## Firmware
 
-RP2040 firmware uses Pico SDK + SX1278 LoRa for inter-rover RC relay.
-See `firmware/rc_link_sx1278/` — the SX1278 driver stubs must be completed
-before flashing (use RadioLib or a custom SPI driver).
+RP2040 firmware uses Pico SDK, custom PIO state machines, and an SX1278 LoRa driver
+for inter-rover RC relay at 25 Hz. See `firmware/rc_link_sx1278/`.
+
+**Master** (RV1): decodes SBUS from HM30 air unit → transmits raw 16-channel payload
+over LoRa → outputs PPM locally via DMA+PIO → streams channel data to Jetson over USB CDC.
+
+**Slave** (RV2): receives LoRa packet → applies PPM channel map → outputs PPM via DMA+PIO
+→ streams channel data to Jetson over USB CDC.
+
+**CH9 rover-select (RELAY mode):** CH9 centred (1250–1750 µs) → master PPM goes neutral,
+slave receives and acts on raw RC stick values. CH9 outside that window → slave ignores
+all RF packets (MODE_EMERGENCY, neutral output).
 
 ## Android GQC
 

@@ -53,11 +53,13 @@
 #define CMD_TIMEOUT_MS  500
 
 // Channel gating thresholds (same as master)
-#define CH_ROVER_SEL    8
-#define RELAY_LOW       1250
-#define RELAY_HIGH      1750
-#define CH_AUTONOMOUS   5
-#define AUTO_THRESH     1700
+#define CH_ROVER_SEL     8
+#define CH_EMERGENCY     4     // same as master — emergency switch
+#define CH_AUTONOMOUS    5     // same as master — auto switch
+#define RELAY_LOW        1250  // below → master manually selected (slave neutral)
+#define RELAY_HIGH       1750  // above → slave manually selected
+#define EMERGENCY_THRESH 1700
+#define AUTO_THRESH      1700
 
 // Jetson status rate: 10 Hz = 100 ms
 #define STATUS_INTERVAL_MS  100
@@ -165,19 +167,29 @@ static void apply_ppm_map(const volatile uint16_t *src, volatile uint16_t *dst) 
 static Mode compute_mode(void) {
     uint64_t now = time_us_64();
 
-    if (rf_ok  && (now - t_last_rf)  > (uint64_t)RF_TIMEOUT_MS  * 1000) rf_ok    = false;
-    if (hb_alive && (now - t_last_hb) > (uint64_t)HB_TIMEOUT_MS  * 1000) hb_alive = false;
+    if (rf_ok    && (now - t_last_rf)   > (uint64_t)RF_TIMEOUT_MS  * 1000) rf_ok    = false;
+    if (hb_alive && (now - t_last_hb)   > (uint64_t)HB_TIMEOUT_MS  * 1000) hb_alive = false;
     if (cmd_fresh && (now - t_last_cmd) > (uint64_t)CMD_TIMEOUT_MS * 1000) cmd_fresh = false;
-
-    // Autonomous override from Jetson takes priority (local intelligence)
-    if (cmd_fresh && hb_alive) return MODE_AUTONOMOUS;
 
     if (!rf_ok) return MODE_EMERGENCY;
 
-    // CH9 rover-select gating: slave only responds when its window is active
-    uint16_t ch9 = rf_ch[CH_ROVER_SEL];
-    if (ch9 < RELAY_LOW || ch9 > RELAY_HIGH) return MODE_EMERGENCY;
+    // Emergency switch (CH4) always overrides — read from received RF packet
+    if (rf_ch[CH_EMERGENCY] < EMERGENCY_THRESH) return MODE_EMERGENCY;
 
+    uint16_t ch9 = rf_ch[CH_ROVER_SEL];
+
+    // CH9 low: master manually selected — slave must be neutral
+    if (ch9 < RELAY_LOW) return MODE_EMERGENCY;
+
+    // CH9 middle: no rover manually selected — autonomous only if all conditions met:
+    //   CH5 (auto switch) set  +  Jetson heartbeat alive  +  fresh <J:> command
+    if (ch9 <= RELAY_HIGH) {
+        if (rf_ch[CH_AUTONOMOUS] > AUTO_THRESH && hb_alive && cmd_fresh)
+            return MODE_AUTONOMOUS;
+        return MODE_EMERGENCY;
+    }
+
+    // CH9 high: slave manually selected — follow RC values from master RF relay
     return MODE_RF;
 }
 
