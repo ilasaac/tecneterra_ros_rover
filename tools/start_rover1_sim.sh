@@ -51,7 +51,7 @@ fi
 # Symlinks appear at /tmp/rv1_gps_{pri,sec} (shared via /tmp:/tmp mount).
 echo "[sim] Starting NMEA WiFi receiver inside container..."
 docker exec -d agri_rover_rv1 \
-    python3 /workspaces/isaac_ros-dev/src/tools/nmea_wifi_rx.py \
+    python3 /workspaces/isaac_ros-dev/tools/nmea_wifi_rx.py \
         --pri-port 5000 --sec-port 5001 \
         --pri-symlink "$PRI_SYMLINK" \
         --sec-symlink "$SEC_SYMLINK"
