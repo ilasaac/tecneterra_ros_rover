@@ -291,7 +291,7 @@ The config directory is volume-mounted into the container (`docker-compose.yml`)
 
 ## Isaac ROS — architecture
 
-The ROS2 workspace runs inside NVIDIA Isaac ROS (Humble, aarch64) on each Jetson.
+The ROS2 workspace runs inside NVIDIA Isaac ROS (Jazzy, aarch64) on each Jetson.
 
 | Component            | Isaac ROS role                                              |
 |----------------------|-------------------------------------------------------------|

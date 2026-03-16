@@ -1,6 +1,6 @@
 # AgriRover — Isaac ROS Docker image (Jetson aarch64)
 #
-# Base: NVIDIA Isaac ROS Humble (JetPack 5.x, aarch64)
+# Base: NVIDIA Isaac ROS (JetPack 5.x/6.x, aarch64) — Jazzy detected at runtime
 # Adds: project Python deps, GStreamer RTSP server libs, project workspace
 #
 # Build:
@@ -37,11 +37,12 @@ RUN pip3 install --no-cache-dir --break-system-packages pyserial pymavlink
 # (isaac_ros_*-arm64-jetpack) ships these pre-installed; this step is kept
 # as a best-effort install for older base images and is non-fatal.
 RUN apt-get update && \
+    ROS_DISTRO=$(ls /opt/ros/ | head -1) && \
     (apt-get install -y --no-install-recommends \
-        ros-humble-isaac-ros-common \
-        ros-humble-isaac-ros-nitros \
-        ros-humble-isaac-ros-argus-camera \
-        ros-humble-isaac-ros-h264-encoder \
+        ros-${ROS_DISTRO}-isaac-ros-common \
+        ros-${ROS_DISTRO}-isaac-ros-nitros \
+        ros-${ROS_DISTRO}-isaac-ros-argus-camera \
+        ros-${ROS_DISTRO}-isaac-ros-h264-encoder \
      || echo "Isaac ROS apt packages not found — assuming pre-installed in base image") \
     && rm -rf /var/lib/apt/lists/*
 
