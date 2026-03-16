@@ -24,11 +24,13 @@ ros_agri_rover/
 ├── android/
 │   └── AgriRoverGQC/               Android GQC app (Kotlin)
 ├── tools/
-│   ├── monitor.py                  Terminal MAVLink dashboard (both rovers)
-│   ├── mission_uploader.py         CSV mission → MAVLink upload
+│   ├── start_rover1_sim.sh         Single-command RV1 simulation launcher
+│   ├── start_rover2_sim.sh         Single-command RV2 simulation launcher
 │   ├── simulator.py                Standalone GPS simulator (no ROS2 required)
-│   ├── nmea_wifi_rx.py             WiFi→PTY bridge for rover Jetsons
-│   └── rtk_forwarder.py            NTRIP/E610 RTK corrections → u-blox serial
+│   ├── nmea_wifi_rx.py             UDP NMEA → PTY bridge (runs inside container)
+│   ├── rtk_forwarder.py            NTRIP/E610 RTK corrections → u-blox serial
+│   ├── monitor.py                  Terminal MAVLink dashboard (both rovers)
+│   └── mission_uploader.py         CSV mission → MAVLink upload
 └── docs/
 ```
 
@@ -57,22 +59,27 @@ ros_agri_rover/
 
 ## Quick Start
 
-### Build ROS2 workspace (on Jetson)
+### Build Docker image (first time on each Jetson)
 ```bash
-cd ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install
-source install/setup.bash
+docker build -t agri_rover:latest .
 ```
 
-### Launch Rover 1 (Master)
+### Run in simulation (no real GPS or camera hardware needed)
 ```bash
-ros2 launch agri_rover_bringup rover1.launch.py
+# On RV1 Jetson
+bash tools/start_rover1_sim.sh
+
+# On RV2 Jetson
+bash tools/start_rover2_sim.sh
+
+# On simulator Jetson (after rover containers are up)
+python3 tools/simulator.py --rv1-ip <rv1-ip> --rv2-ip <rv2-ip> --ppm-port /dev/ttyACM0
 ```
 
-### Launch Rover 2 (Slave)
+### Run on real hardware
 ```bash
-ros2 launch agri_rover_bringup rover2.launch.py
+docker compose up rover1   # RV1 Jetson — uses CSI camera and real GPS by default
+docker compose up rover2   # RV2 Jetson
 ```
 
 ### Monitor from dev machine
@@ -82,7 +89,7 @@ python tools/monitor.py
 
 ### Upload a mission
 ```bash
-python tools/mission_uploader.py missions/field_a.csv --rover 1 --host 192.168.1.10
+python tools/mission_uploader.py missions/field_a.csv --rover 1 --host 192.168.100.19
 ```
 
 ---
@@ -117,38 +124,24 @@ those sentences and exposes them as virtual serial ports (PTY) that
 
 ### Startup order
 
-**Step 1 — Rover Jetsons** (run before bringup):
+**Step 1 — Each rover Jetson** (single command):
 ```bash
-# On each rover Jetson — receives UDP NMEA and creates /dev/pts/N virtual ports
-python3 tools/nmea_wifi_rx.py --pri-port 5000 --sec-port 5001
-# Note the printed PTY paths, e.g. /dev/pts/2 and /dev/pts/3
+bash tools/start_rover1_sim.sh   # RV1
+bash tools/start_rover2_sim.sh   # RV2
 ```
+This starts the Docker container (detached), runs `nmea_wifi_rx.py` inside the
+container to create virtual GPS serial ports, then follows logs. Ctrl-C stops
+and removes the container cleanly.
 
-**Step 2 — Configure gps_driver** with the printed PTY paths:
-```yaml
-# ros2_ws/src/agri_rover_bringup/config/rover1_params.yaml
-gps_driver:
-  ros__parameters:
-    primary_port:   /dev/pts/2
-    secondary_port: /dev/pts/3
-```
-
-**Step 3 — Simulator Jetson**:
+**Step 2 — Simulator Jetson**:
 ```bash
-# Standalone (no ROS2/Isaac ROS needed)
 python3 tools/simulator.py \
-    --rv1-ip 192.168.1.10 --rv2-ip 192.168.1.20 \
+    --rv1-ip <rv1-jetson-ip> --rv2-ip <rv2-jetson-ip> \
     --ppm-port /dev/ttyACM0
-
-# OR as a ROS2 node (edit config/simulator_params.yaml first)
-ros2 launch agri_rover_simulator simulator.launch.py
 ```
 
-**Step 4 — Rover Jetsons**:
-```bash
-ros2 launch agri_rover_bringup rover1.launch.py   # on RV1 Jetson
-ros2 launch agri_rover_bringup rover2.launch.py   # on RV2 Jetson
-```
+The rover containers pick up the simulated GPS automatically — no manual
+configuration of PTY paths is required.
 
 ### Simulator physics model
 

@@ -36,6 +36,11 @@ ros_agri_rover/
 │   └── slave/                       ← RP2040: SX1278 RX, PPM→PIO+DMA, Jetson serial
 ├── android/AgriRoverGQC/            ← Android GQC app (Kotlin scaffold, not yet built)
 └── tools/
+    ├── simulator.py                 ← standalone GPS simulator (no ROS2 required)
+    ├── nmea_wifi_rx.py              ← UDP NMEA → PTY virtual serial ports
+    ├── rtk_forwarder.py             ← NTRIP/E610 RTCM3 → u-blox serial
+    ├── start_rover1_sim.sh          ← single-command RV1 simulation launcher
+    ├── start_rover2_sim.sh          ← single-command RV2 simulation launcher
     ├── monitor.py                   ← terminal MAVLink dashboard (both rovers)
     └── mission_uploader.py          ← CSV waypoints → MAVLink mission upload
 ```
@@ -92,13 +97,14 @@ ros_agri_rover/
 |------------------|------------------------|-----------------------------------------|
 | RV1 sysid        | 1                      | bind port :14550                        |
 | RV2 sysid        | 2                      | bind port :14551                        |
-| GQC sysid        | 255                    | sends to broadcast 192.168.1.255:14550  |
+| GQC sysid        | 255                    | sends to WiFi broadcast (subnet .255)   |
 | RV1 video        | rtsp://rv1-ip:8554/stream |                                      |
 | RV2 video        | rtsp://rv2-ip:8555/stream |                                      |
 | MAVLink version  | v2 (MAVLINK20=1)       | set in all Python node env              |
 
 GQC identifies rovers by **sysid in HEARTBEAT**, not by port.
-`mavlink_bridge` uses `socket.sendto()` directly (not `mav.write()`) — see memory note on pymavlink silent failure.
+`mavlink_bridge` uses `socket.sendto()` directly — all sends go through `_send()` which calls `self._mav.mav.socket.sendto(buf, self._gqc_addr)`. Never use `xxx_send()` convenience methods on a `udpin:` connection — they call `mav.file.write()` which fails silently if no packet has been received yet. Use `xxx_encode()` + `_send()` instead.
+`gqc_host` in params must match the **broadcast address of the rover's WiFi subnet** (e.g. `192.168.100.255` for a `192.168.100.x` network).
 
 ---
 
@@ -212,24 +218,26 @@ Jetson → RP2040:
 
 ```bash
 # ── Isaac ROS Docker (preferred on Jetson) ────────────────────────────────────
-# Build image (once, or after dependency changes)
+# Build image (once, or after Dockerfile/dependency changes)
 docker build -t agri_rover:latest .
 
-# Launch via Docker Compose
-docker compose up rover1          # master Jetson
+# Simulation (single command — handles PTY, container, GPS)
+bash tools/start_rover1_sim.sh    # RV1 Jetson
+bash tools/start_rover2_sim.sh    # RV2 Jetson
+
+# Production (real hardware)
+docker compose up rover1          # master Jetson (camera_source=csi by default)
 docker compose up rover2          # slave Jetson
 
 # Override camera source
-docker compose run rover1 ros2 launch agri_rover_bringup rover1.launch.py camera_source:=usb
+CAMERA_SOURCE=usb docker compose up rover1
 
-# ── Bare-metal (inside Isaac ROS Docker shell or native install) ──────────────
-cd /workspaces/isaac_ros-dev
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install
-source install/setup.bash
-
-ros2 launch agri_rover_bringup rover1.launch.py   # master Jetson
-ros2 launch agri_rover_bringup rover2.launch.py   # slave Jetson
+# ── Inside running container ──────────────────────────────────────────────────
+docker exec -it agri_rover_rv1 bash
+source /opt/ros/*/setup.bash
+source /workspaces/isaac_ros-dev/install/setup.bash
+ros2 topic list
+ros2 param get /rv1/gps_driver primary_port
 
 # ── Firmware (dev machine, Pico SDK required) ─────────────────────────────────
 cd firmware/rc_link_sx1278/master
@@ -237,7 +245,7 @@ cmake -B build -DPICO_SDK_PATH=$PICO_SDK_PATH && cmake --build build
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 python tools/monitor.py
-python tools/mission_uploader.py missions/field.csv --rover 1 --host 192.168.1.10
+python tools/mission_uploader.py missions/field.csv --rover 1 --host 192.168.100.19
 ```
 
 ---
@@ -251,13 +259,29 @@ python tools/mission_uploader.py missions/field.csv --rover 1 --host 192.168.1.1
 | `ros2_ws/src/agri_rover_navigator/config/navigator_params.yaml` | Lookahead, speed limits |
 | `ros2_ws/src/agri_rover_video/config/gstreamer.yaml` | Camera source, resolution, bitrate |
 
+**YAML key format — critical:** Parameter YAML keys must use the **fully-qualified node name** including namespace, or ROS2 silently ignores them and nodes use code defaults. Example:
+```yaml
+# WRONG — does not match namespaced node /rv1/gps_driver
+gps_driver:
+  ros__parameters:
+    primary_port: /dev/ttyUSB0
+
+# CORRECT
+/rv1/gps_driver:
+  ros__parameters:
+    primary_port: /dev/ttyUSB0
+```
+The config directory is volume-mounted into the container (`docker-compose.yml`) so edits on the host take effect on the next container restart — no image rebuild needed.
+
 ---
 
 ## Conventions
 
 - **Python nodes:** rclpy, class inherits `Node`, parameters declared in `__init__`, timers not threads where possible.
-- **Namespacing:** all topics are relative (no leading `/`), launch files set `namespace='/rv1'` or `'/rv2'`.
-- **MAVLink:** always `os.environ['MAVLINK20'] = '1'` before importing pymavlink. Send via `socket.sendto()`, not `mav.write()` (silent failure bug — see memory).
+- **Namespacing:** all topics are relative (no leading `/`), launch files set `namespace='/rv1'` or `'/rv2'`. YAML param keys must include the namespace (`/rv1/node_name:`) — see Config files section.
+- **MAVLink:** always `os.environ['MAVLINK20'] = '1'` before importing pymavlink. Use `xxx_encode()` + `_send()` — never `xxx_send()` convenience methods. `_send()` calls `self._mav.mav.socket.sendto(buf, self._gqc_addr)` directly.
+- **GPS port retry:** `gps_driver._start_reader()` retries opening the serial port every 5 s. This is intentional — in simulation mode, `nmea_wifi_rx.py` starts inside the container after `gps_driver` and the port doesn't exist immediately.
+- **PTY and Docker devpts:** Docker containers have their own `devpts` filesystem. PTY devices created on the host are NOT visible inside the container even with `/dev:/dev` mounted. Always run `nmea_wifi_rx.py` inside the container (via `docker exec -d`) so its PTYs live in the container's `/dev/pts`.
 - **PPM buffer:** only updated inside `dma_irq_handler()` (IRQ context). Main loop writes `out_ch[]` (volatile), IRQ reads it. No mutex needed on M0+ for uint16_t aligned writes.
 - **SX1278 TX:** fire-and-forget. Check `RegIrqFlags.TxDone` before next TX. Returns `false` if still busy — caller skips that frame.
 - **LoRa payload = raw SBUS only:** master transmits `sbus_ch[]`, never `out_ch[]`. `out_ch` is PPM-remapped (and neutralised in RELAY mode) — sending it would double-map on the slave and break RELAY forwarding. Slave calls `apply_ppm_map()` exactly once on the received `rf_ch[]`.
@@ -273,7 +297,7 @@ The ROS2 workspace runs inside NVIDIA Isaac ROS (Humble, aarch64) on each Jetson
 |----------------------|-------------------------------------------------------------|
 | `agri_rover_video`   | CSI path uses NITROS composable pipeline (see below)        |
 | All other nodes      | Standard rclpy — no NITROS changes needed                   |
-| Docker base image    | `nvcr.io/nvidia/isaac/ros:aarch64-humble-ros_base_2.1.0`   |
+| Docker base image    | `nvcr.io/nvidia/isaac/ros:isaac_ros_740c8500df2685ab1f4a4e53852601df-arm64-jetpack` (Ubuntu 24.04 noble) |
 
 **Video pipeline (CSI camera, `camera_source:=csi`):**
 ```
@@ -287,13 +311,16 @@ The ROS2 workspace runs inside NVIDIA Isaac ROS (Humble, aarch64) on each Jetson
 zero-copy NITROS transport. `VideoStreamerNode` is a separate Python node that
 subscribes to the output topic (`sensor_msgs/CompressedImage`, format `"h264"`).
 
-**Fallback (USB / test camera):** `video_streamer` spawns a `gst-rtsp-server`
-subprocess directly — no NITROS pipeline is launched.
+**Fallback (USB / test camera):** `video_streamer._start_fallback_rtsp()` uses
+`GstRtspServer` Python GI directly (same library already imported). There is no
+`gst-rtsp-server` binary in the container — do not use subprocess for this.
 
 **Docker files:**
-- `Dockerfile` — extends Isaac ROS base, installs deps, builds workspace
-- `docker-entrypoint.sh` — sources ROS2 + Isaac ROS + project overlays
-- `docker-compose.yml` — device mounts, GPU runtime, per-rover launch commands
+- `Dockerfile` — extends Isaac ROS base, installs deps, builds workspace. Uses dynamic ROS distro detection (`ls /opt/ros/*/setup.bash | head -1`) since the base image may ship Humble or Jazzy. pip installs use `--break-system-packages` (Python 3.12 PEP 668).
+- `docker-entrypoint.sh` — sources ROS2 + project overlay dynamically
+- `docker-compose.yml` — runs as `user: root`; volume mounts: `/dev`, `/tmp` (PTY symlinks), `./ros2_ws/src` (live nodes), `./tools` (sim scripts), config dir override (bypasses cmake copy)
+
+**Live-edit without rebuild:** Python node files and config YAML are volume-mounted so changes on the host take effect immediately. Restart the container (`docker compose down rover1 && bash tools/start_rover1_sim.sh`) — no `docker build` needed.
 
 ---
 
@@ -351,20 +378,24 @@ lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))
 ### Startup order (simulation)
 
 ```bash
-# ── Simulator Jetson ─────────────────────────────────────────────────────────
+# ── Each rover Jetson — single command handles everything ─────────────────────
+bash tools/start_rover1_sim.sh    # RV1 Jetson
+bash tools/start_rover2_sim.sh    # RV2 Jetson
+# Starts container (detached), execs nmea_wifi_rx.py inside container,
+# follows logs. Ctrl-C cleanly stops container and removes it.
+
+# ── Simulator Jetson (run after rover containers are up) ─────────────────────
 python3 tools/simulator.py \
-  --rv1-ip 192.168.1.10 --rv2-ip 192.168.1.11 \
-  --rv1-lat -23.550520  --rv1-lon -46.633308   \
-  --rv2-lat -23.550620  --rv2-lon -46.633408
-
-# ── Each rover Jetson (run BEFORE gps_driver) ────────────────────────────────
-python3 tools/nmea_wifi_rx.py --pri-port 5000 --sec-port 5001
-# → prints: primary_port: /dev/pts/2   secondary_port: /dev/pts/3
-
-# Launch ROS2 with the printed PTY paths
-ros2 launch agri_rover_bringup rover1.launch.py \
-  primary_port:=/dev/pts/2 secondary_port:=/dev/pts/3
+  --rv1-ip 192.168.100.19 --rv2-ip 192.168.100.20 \
+  --ppm-port /dev/ttyACM0
 ```
+
+**Why nmea_wifi_rx.py runs inside the container:** Docker containers have their own
+`devpts` mount. PTYs created on the host are not visible inside the container even
+with `/dev:/dev`. Running `nmea_wifi_rx.py` via `docker exec -d` inside the container
+creates PTYs in the container's `/dev/pts`. Symlinks appear at `/tmp/rv1_gps_{pri,sec}`
+(shared via `/tmp:/tmp` mount). `gps_driver` retries port open every 5 s and connects
+once the symlinks are ready.
 
 ### Startup order (real hardware + RTK corrections)
 
