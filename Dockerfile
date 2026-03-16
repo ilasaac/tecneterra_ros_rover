@@ -32,13 +32,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip3 install --no-cache-dir --break-system-packages pyserial pymavlink
 
 # ── Isaac ROS binary packages (apt) ──────────────────────────────────────────
-# These ship as pre-built Debian packages in the Isaac ROS apt repo.
-# The base image already sources /opt/ros/humble/setup.bash.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ros-humble-isaac-ros-common \
-    ros-humble-isaac-ros-nitros \
-    ros-humble-isaac-ros-argus-camera \
-    ros-humble-isaac-ros-h264-encoder \
+# isaac_ros_argus_camera / nitros / h264_encoder are exec_depends only —
+# colcon build succeeds without them.  The new hash-based base image
+# (isaac_ros_*-arm64-jetpack) ships these pre-installed; this step is kept
+# as a best-effort install for older base images and is non-fatal.
+RUN apt-get update && \
+    (apt-get install -y --no-install-recommends \
+        ros-humble-isaac-ros-common \
+        ros-humble-isaac-ros-nitros \
+        ros-humble-isaac-ros-argus-camera \
+        ros-humble-isaac-ros-h264-encoder \
+     || echo "Isaac ROS apt packages not found — assuming pre-installed in base image") \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Workspace ─────────────────────────────────────────────────────────────────
