@@ -10,8 +10,8 @@
 
 /rv2/gps_driver:
   ros__parameters:
-    primary_port:   /dev/ttyUSB0
-    secondary_port: /dev/ttyUSB1
+    primary_port:   /tmp/rv2_gps_pri   # real HW: /dev/ttyUSB0  sim: symlink from nmea_wifi_rx.py
+    secondary_port: /tmp/rv2_gps_sec   # real HW: /dev/ttyUSB1  sim: symlink from nmea_wifi_rx.py
     baud:           115200
 
 /rv2/mavlink_bridge:
@@ -29,7 +29,7 @@
   ros__parameters:
     rtsp_port:     8555          # different port from RV1
     mount_point:   /stream
-    camera_source: csi
+    camera_source: test         # csi | usb | test
     csi_sensor_id: 0
     width:         1280
     height:        720
