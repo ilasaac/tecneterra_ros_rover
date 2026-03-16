@@ -87,6 +87,18 @@ docker compose up rover2   # RV2 Jetson
 python tools/monitor.py
 ```
 
+### Monitor ROS2 topics inside a container
+```bash
+# Use the container's own entrypoint — auto-detects ROS distro (Jazzy)
+docker exec -it agri_rover_rv1 /docker-entrypoint.sh ros2 topic echo /rv1/rc_input
+docker exec -it agri_rover_rv2 /docker-entrypoint.sh ros2 topic echo /rv2/rc_input
+docker exec -it agri_rover_rv1 /docker-entrypoint.sh ros2 topic list
+docker exec -it agri_rover_rv1 /docker-entrypoint.sh ros2 node list
+```
+
+Both rovers share `ROS_DOMAIN_ID=0` — when both containers are running you will see
+`/rv1/` **and** `/rv2/` nodes from either container (DDS discovery over the shared network).
+
 ### Upload a mission
 ```bash
 python tools/mission_uploader.py missions/field_a.csv --rover 1 --host 192.168.100.19
@@ -121,6 +133,11 @@ ppm_decoder, runs bicycle-kinematic dead reckoning at 10 Hz, and sends
 `$GNGGA` + `$GNVTG` sentences over UDP WiFi. Each rover Jetson receives
 those sentences and exposes them as virtual serial ports (PTY) that
 `gps_driver.py` reads without any modification.
+
+> **PTY isolation note:** `nmea_wifi_rx.py` runs **inside the Docker container**
+> (via `docker exec -d`), not on the host. Docker containers have their own
+> `devpts` — PTYs created on the host are not visible inside the container even
+> with `/dev:/dev` mounted. The start scripts handle this automatically.
 
 ### Startup order
 
@@ -247,9 +264,15 @@ over LoRa → outputs PPM locally via DMA+PIO → streams channel data to Jetson
 **Slave** (RV2): receives LoRa packet → applies PPM channel map → outputs PPM via DMA+PIO
 → streams channel data to Jetson over USB CDC.
 
-**CH9 rover-select (RELAY mode):** CH9 centred (1250–1750 µs) → master PPM goes neutral,
-slave receives and acts on raw RC stick values. CH9 outside that window → slave ignores
-all RF packets (MODE_EMERGENCY, neutral output).
+**CH9 rover-select switch (3-position):**
+
+| CH9 value     | RV1 (master)                  | RV2 (slave)                        |
+|---------------|-------------------------------|-------------------------------------|
+| Low  < 1250   | MANUAL — moves                | IDLE — neutral, no alarm            |
+| Mid  1250–1750| RELAY/AUTO — neutral locally  | AUTONOMOUS or IDLE — neutral        |
+| High > 1750   | RELAY — neutral, LoRa active  | MODE_RF — moves (RC from master)    |
+
+**Emergency** is triggered **only** by SWA (CH4 < 1700) or signal loss. Selecting the other rover via CH9 no longer raises an emergency alarm on the idle rover. The LoRa link always transmits raw SBUS regardless of master mode — the slave always receives live stick values.
 
 ## Android GQC
 

@@ -150,11 +150,11 @@ cmake --build build -j4
 
 - **CH9 rover-select / mode logic (3-position switch):**
 
-  | CH9 value    | Master          | Slave              |
-  |--------------|-----------------|---------------------|
-  | Low  < 1250  | MANUAL (moves)  | EMERGENCY (neutral) |
-  | Mid  1250–1750 | RELAY or AUTO | AUTONOMOUS or EMERGENCY |
-  | High > 1750  | EMERGENCY (neutral) | MODE_RF (moves) |
+  | CH9 value      | Master              | Slave                    |
+  |----------------|---------------------|--------------------------|
+  | Low  < 1250    | MANUAL (moves)      | IDLE (neutral, no alarm) |
+  | Mid  1250–1750 | RELAY or AUTO       | AUTONOMOUS or IDLE       |
+  | High > 1750    | RELAY (neutral)     | MODE_RF (moves)          |
 
   - **RELAY** (master, CH9 mid, CH5 not set): master PPM neutral, raw `sbus_ch[]` forwarded over LoRa.
   - **AUTO** (either rover, CH9 mid + CH4 not triggered + CH5 set + HB alive + fresh `<J:>` cmd): Jetson drives PPM.

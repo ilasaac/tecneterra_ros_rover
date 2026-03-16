@@ -103,7 +103,7 @@ ros_agri_rover/
 | MAVLink version  | v2 (MAVLINK20=1)       | set in all Python node env              |
 
 GQC identifies rovers by **sysid in HEARTBEAT**, not by port.
-`mavlink_bridge` uses `socket.sendto()` directly — all sends go through `_send()` which calls `self._mav.socket.sendto(buf, self._gqc_addr)`. Note: socket is on the connection object (`self._mav`), not the dialect object (`self._mav.mav`). Never use `xxx_send()` convenience methods on a `udpin:` connection — they call `mav.file.write()` which fails silently if no packet has been received yet. Use `xxx_encode()` + `_send()` instead.
+`mavlink_bridge` uses a dedicated outbound `socket.SOCK_DGRAM` (`self._udp_sock`) created in `__init__` — pymavlink's internal socket attribute varies by version and must not be accessed directly. All sends go through `_send()` which calls `self._udp_sock.sendto(buf, self._gqc_addr)`. Never use `xxx_send()` convenience methods on a `udpin:` connection — they call `mav.file.write()` which fails silently. Use `xxx_encode()` + `_send()` instead.
 `gqc_host` in params must match the **broadcast address of the rover's WiFi subnet** (e.g. `192.168.100.255` for a `192.168.100.x` network).
 
 ---
@@ -171,8 +171,8 @@ No other DIOx pins (DIO1–DIO5) are used — leave them unconnected.
 ```
 ── Master (RV1) ──────────────────────────────────────────────────────────────
 SBUS lost/timeout (200ms)          → EMERGENCY
-CH4 (SWA) < 1700                   → EMERGENCY
-CH9 > 1750                         → EMERGENCY  (slave selected, master neutral)
+CH4 (SWA) < 1700                   → EMERGENCY  ← only emergency trigger besides signal loss
+CH9 > 1750                         → RELAY  (slave selected: master neutral, LoRa still forwarding)
 CH9 in [1250, 1750]:
   CH5 (SWB) > 1700:
     + no Jetson heartbeat          → AUTO-NO-HB  (neutral)
@@ -183,11 +183,11 @@ CH9 < 1250                         → MANUAL (master moves, raw SBUS passthroug
 
 ── Slave (RV2) ───────────────────────────────────────────────────────────────
 RF lost/timeout (500ms)            → EMERGENCY
-CH4 (from RF packet) < 1700        → EMERGENCY
-CH9 (from RF packet) < 1250        → EMERGENCY  (master selected, slave neutral)
+CH4 (from RF packet) < 1700        → EMERGENCY  ← only emergency trigger besides signal loss
+CH9 (from RF packet) < 1250        → IDLE  (master selected: slave neutral, not an alarm)
 CH9 in [1250, 1750]:
   CH5 > 1700 + HB alive + fresh cmd → AUTONOMOUS (Jetson controls slave)
-  else                               → EMERGENCY  (neutral — no rover selected manually)
+  else                               → IDLE  (neither rover selected manually, not an alarm)
 CH9 > 1750                         → MODE_RF (slave moves, RC values from master relay)
 ```
 
@@ -279,7 +279,7 @@ The config directory is volume-mounted into the container (`docker-compose.yml`)
 
 - **Python nodes:** rclpy, class inherits `Node`, parameters declared in `__init__`, timers not threads where possible.
 - **Namespacing:** all topics are relative (no leading `/`), launch files set `namespace='/rv1'` or `'/rv2'`. YAML param keys must include the namespace (`/rv1/node_name:`) — see Config files section.
-- **MAVLink:** always `os.environ['MAVLINK20'] = '1'` before importing pymavlink. Use `xxx_encode()` + `_send()` — never `xxx_send()` convenience methods. `_send()` calls `self._mav.mav.socket.sendto(buf, self._gqc_addr)` directly.
+- **MAVLink:** always `os.environ['MAVLINK20'] = '1'` before importing pymavlink. Use `xxx_encode()` + `_send()` — never `xxx_send()` convenience methods. `_send()` uses a dedicated `self._udp_sock` (broadcast SOCK_DGRAM created in `__init__`) — do not access pymavlink's internal socket attributes, they vary by version.
 - **GPS port retry:** `gps_driver._start_reader()` retries opening the serial port every 5 s. This is intentional — in simulation mode, `nmea_wifi_rx.py` starts inside the container after `gps_driver` and the port doesn't exist immediately.
 - **PTY and Docker devpts:** Docker containers have their own `devpts` filesystem. PTY devices created on the host are NOT visible inside the container even with `/dev:/dev` mounted. Always run `nmea_wifi_rx.py` inside the container (via `docker exec -d`) so its PTYs live in the container's `/dev/pts`.
 - **PPM buffer:** only updated inside `dma_irq_handler()` (IRQ context). Main loop writes `out_ch[]` (volatile), IRQ reads it. No mutex needed on M0+ for uint16_t aligned writes.
@@ -318,7 +318,7 @@ subscribes to the output topic (`sensor_msgs/CompressedImage`, format `"h264"`).
 **Docker files:**
 - `Dockerfile` — extends Isaac ROS base, installs deps, builds workspace. Uses dynamic ROS distro detection (`ls /opt/ros/*/setup.bash | head -1`) since the base image may ship Humble or Jazzy. pip installs use `--break-system-packages` (Python 3.12 PEP 668).
 - `docker-entrypoint.sh` — sources ROS2 + project overlay dynamically
-- `docker-compose.yml` — runs as `user: root`; volume mounts: `/dev`, `/tmp` (PTY symlinks), `./ros2_ws/src` (live nodes), `./tools` (sim scripts), config dir override (bypasses cmake copy)
+- `docker-compose.yml` — runs as `user: root`; volume mounts: `/dev`, `/tmp` (PTY symlinks), `./ros2_ws/src` (live nodes), `./tools` (sim scripts), config dir + launch dir overrides (both bypass cmake copy so edits take effect on restart without rebuild)
 
 **Live-edit without rebuild:** Python node files and config YAML are volume-mounted so changes on the host take effect immediately. Restart the container (`docker compose down rover1 && bash tools/start_rover1_sim.sh`) — no `docker build` needed.
 

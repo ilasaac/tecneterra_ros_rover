@@ -69,10 +69,11 @@
 typedef enum {
     MODE_RF = 0,          // channels come from SX1278 (master rover RF link)
     MODE_AUTONOMOUS,      // channels from Jetson <J:...> command
-    MODE_EMERGENCY        // neutral (RF lost or channel gated)
+    MODE_IDLE,            // neutral — other rover selected or middle with no AUTO (not an alarm)
+    MODE_EMERGENCY        // true emergency: RF lost or SWA (CH4) triggered
 } Mode;
 
-static const char *const MODE_STR[] = { "MANUAL", "AUTONOMOUS", "EMERGENCY" };
+static const char *const MODE_STR[] = { "MANUAL", "AUTONOMOUS", "IDLE", "EMERGENCY" };
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -178,15 +179,15 @@ static Mode compute_mode(void) {
 
     uint16_t ch9 = rf_ch[CH_ROVER_SEL];
 
-    // CH9 low: master manually selected — slave must be neutral
-    if (ch9 < RELAY_LOW) return MODE_EMERGENCY;
+    // CH9 low: master manually selected — slave neutral, not an alarm
+    if (ch9 < RELAY_LOW) return MODE_IDLE;
 
-    // CH9 middle: no rover manually selected — autonomous only if all conditions met:
-    //   CH5 (auto switch) set  +  Jetson heartbeat alive  +  fresh <J:> command
+    // CH9 middle: no rover manually selected — autonomous if all conditions met,
+    //   otherwise idle (not emergency — SWA is the only emergency trigger)
     if (ch9 <= RELAY_HIGH) {
         if (rf_ch[CH_AUTONOMOUS] > AUTO_THRESH && hb_alive && cmd_fresh)
             return MODE_AUTONOMOUS;
-        return MODE_EMERGENCY;
+        return MODE_IDLE;
     }
 
     // CH9 high: slave manually selected — follow RC values from master RF relay
@@ -202,6 +203,7 @@ static void apply_mode(Mode m) {
         case MODE_AUTONOMOUS:
             for (int i = 0; i < CHANNELS; i++) out_ch[i] = auto_ch[i];
             break;
+        case MODE_IDLE:
         case MODE_EMERGENCY:
             for (int i = 0; i < CHANNELS; i++) out_ch[i] = 1500;
             break;

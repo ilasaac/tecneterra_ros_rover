@@ -63,6 +63,7 @@ class Rp2040BridgeNode(Node):
         self._ser  = serial.Serial(port, baud, timeout=0.05)
         self._lock = threading.Lock()
         self._hb_seq = 0
+        self._rf_link_ok = False
 
         # ── Timers ───────────────────────────────────────────────────────────
         self.create_timer(hb_interval, self._send_heartbeat)
@@ -84,6 +85,12 @@ class Rp2040BridgeNode(Node):
 
         if raw.startswith('CH:'):
             self._parse_ch_line(raw)
+        elif raw == '[RF_LINK_OK]':
+            self._rf_link_ok = True
+            self.get_logger().info('RF link OK')
+        elif raw == '[RF_LINK_LOST]':
+            self._rf_link_ok = False
+            self.get_logger().warn('RF link LOST')
         elif raw.startswith('['):
             self.get_logger().debug(f'RP2040 status: {raw}')
         elif raw.startswith('<HB:'):
@@ -99,8 +106,9 @@ class Rp2040BridgeNode(Node):
 
             msg          = RCInput()
             msg.channels = channels[:CHANNELS]
-            msg.mode     = mode_str.strip()
-            msg.sbus_ok  = True   # TODO: track [SBUS_OK/LOST] flag separately
+            msg.mode        = mode_str.strip()
+            msg.sbus_ok     = True   # TODO: track [SBUS_OK/LOST] flag separately
+            msg.rf_link_ok  = self._rf_link_ok
             msg.stamp    = self.get_clock().now().to_msg()
             self.rc_pub.publish(msg)
 

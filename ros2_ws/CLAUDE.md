@@ -72,6 +72,13 @@ ser.write(f'<J:{",".join(str(c) for c in channels[:8])}>\n'.encode())
 
 Lock `self._lock` around all `ser.write()` calls (called from both timer and subscription callbacks).
 
+Status messages from RP2040 (not CH: lines) are parsed separately:
+```python
+elif raw == '[RF_LINK_OK]':    self._rf_link_ok = True
+elif raw == '[RF_LINK_LOST]':  self._rf_link_ok = False
+```
+`rf_link_ok` is stamped onto every published `RCInput` message. `sbus_ok` tracking works the same way via `[SBUS_OK]`/`[SBUS_LOST]`.
+
 ## mavlink_bridge — key patterns
 
 ```python
@@ -82,12 +89,14 @@ from pymavlink import mavutil
 self._mav = mavutil.mavlink_connection(f'udpin:0.0.0.0:{bind_port}', ...)
 self._gqc_addr = (gqc_host, gqc_port)
 
-# Send — use a dedicated outbound socket (pymavlink internals vary by version):
-# In __init__:
-#   self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-#   self._udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+# Send — dedicated outbound socket created in __init__ (pymavlink internals vary by version):
+#   import socket as _socket
+#   self._udp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+#   self._udp_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_BROADCAST, 1)
+# _send() method:
 buf = msg.pack(self._mav.mav)
 self._udp_sock.sendto(buf, self._gqc_addr)
+# Close in main(): node._udp_sock.close()
 
 # Receive loop (runs in daemon thread):
 msg = self._mav.recv_match(blocking=True, timeout=1.0)
