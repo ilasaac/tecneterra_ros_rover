@@ -95,6 +95,17 @@ class MavlinkBridgeNode(Node):
         # Servo state for PPM CH5-CH8 (servo numbers 5-8 → channel indices 4-7).
         # Updated by DO_SET_SERVO commands; forwarded to rp2040_bridge via cmd_override.
         self._servo_pwm = {5: 1500, 6: 1500, 7: 1500, 8: 1500}
+        # Mission upload retry state — protected by _mission_lock.
+        # _gqc_unicast: GQC IP discovered from first incoming UDP packet; used instead
+        #   of broadcast for mission handshake replies (broadcast is unreliable on WiFi APs).
+        # _mission_src: (srcSys, srcComp) from MISSION_COUNT; None when no upload active.
+        # _mission_expect_seq: next seq we're waiting for; None when no upload active.
+        # _mission_last_req_t: monotonic time of last MISSION_REQUEST_INT sent.
+        self._mission_lock        = threading.Lock()
+        self._gqc_unicast         = None            # (ip, port) or None
+        self._mission_src         = None            # (srcSys, srcComp)
+        self._mission_expect_seq  = None            # int or None
+        self._mission_last_req_t  = 0.0
 
         # ── Subscriptions ────────────────────────────────────────────────────
         self.create_subscription(NavSatFix,    'fix',         self._cb_fix,     10)
@@ -120,6 +131,7 @@ class MavlinkBridgeNode(Node):
         self.create_timer(0.1,  self._send_rc)         # 10 Hz
         self.create_timer(1.0,  self._send_sys_status)
         self.create_timer(1.0,  self._send_named_values)
+        self.create_timer(0.4,  self._mission_retry)   # retransmit lost MISSION_REQUEST_INT
 
         self.get_logger().info(
             f'MAVLink bridge sysid={self._rover_id} '
@@ -222,6 +234,11 @@ class MavlinkBridgeNode(Node):
             msg = self._mav.recv_match(blocking=True, timeout=1.0)
             if msg is None:
                 continue
+            # Discover GQC unicast address from first incoming packet so we can
+            # reply directly instead of broadcasting (broadcast is unreliable on WiFi APs).
+            addr = getattr(self._mav, 'last_address', None)
+            if addr:
+                self._gqc_unicast = addr
             mt = msg.get_type()
             if mt == 'RC_CHANNELS_OVERRIDE':
                 self._on_rc_override(msg)
@@ -230,16 +247,42 @@ class MavlinkBridgeNode(Node):
             elif mt == 'MISSION_COUNT':
                 if msg.target_system not in (0, 255, self._rover_id):
                     continue  # not addressed to this rover
-                self._mission_count = msg.count
-                self._mission_buf   = []
+                with self._mission_lock:
+                    self._mission_count      = msg.count
+                    self._mission_buf        = []
+                    self._mission_src        = (msg.get_srcSystem(), msg.get_srcComponent())
+                    self._mission_expect_seq = 0
+                    self._mission_last_req_t = time.monotonic()
                 self.get_logger().info(
                     f'Mission upload started: {msg.count} items '
                     f'from sysid={msg.get_srcSystem()}')
-                # Request first item
-                self._send(self._mav.mav.mission_request_int_encode(
-                    msg.get_srcSystem(), msg.get_srcComponent(), 0))
+                self._send_mission_request(0)
             elif mt == 'MISSION_ITEM_INT':
                 self._on_mission_item(msg)
+
+    def _send_mission_request(self, seq: int):
+        """Send MISSION_REQUEST_INT, preferring unicast over broadcast."""
+        with self._mission_lock:
+            src = self._mission_src
+            self._mission_last_req_t = time.monotonic()
+        if src is None:
+            return
+        packed = self._mav.mav.mission_request_int_encode(src[0], src[1], seq).pack(self._mav.mav)
+        addr = self._gqc_unicast or self._gqc_addr
+        try:
+            self._udp_sock.sendto(packed, addr)
+        except Exception as e:
+            self.get_logger().warn(f'mission_request send error: {e}')
+
+    def _mission_retry(self):
+        """Retransmit MISSION_REQUEST_INT if the expected item hasn't arrived in 400 ms."""
+        with self._mission_lock:
+            seq = self._mission_expect_seq
+            elapsed = time.monotonic() - self._mission_last_req_t
+        if seq is None or elapsed < 0.4:
+            return
+        self.get_logger().debug(f'Retrying MISSION_REQUEST_INT seq={seq}')
+        self._send_mission_request(seq)
 
     def _apply_servo_cmd(self, servo: int, pwm: int):
         """Apply a DO_SET_SERVO command: update servo state and publish to servo_state.
@@ -300,29 +343,34 @@ class MavlinkBridgeNode(Node):
 
     def _on_mission_item(self, msg):
         if msg.command == 183:  # MAV_CMD_DO_SET_SERVO
-            # Apply immediately — servo state persists until the next servo command.
-            # NOTE: For timed playback during mission execution (servo at exact GPS
-            # position), a future enhancement would store these and replay via the
-            # navigator. For now, upload-time application is sufficient for manual
-            # trigger via COMMAND_LONG during AUTO mode.
             self._apply_servo_cmd(int(msg.param1), int(msg.param2))
         else:
             wp = MissionWaypoint()
             wp.seq       = msg.seq
             wp.latitude  = msg.x * 1e-7
             wp.longitude = msg.y * 1e-7
-            wp.speed     = 1.0   # default; GQC can encode speed in param1
+            wp.speed     = 1.0
             wp.acceptance_radius = 1.5
             self._mission_buf.append(wp)
             self.mission_pub.publish(wp)
 
-        if msg.seq + 1 < self._mission_count:
-            self._send(self._mav.mav.mission_request_int_encode(
-                msg.get_srcSystem(), msg.get_srcComponent(), msg.seq + 1))
+        next_seq = msg.seq + 1
+        if next_seq < self._mission_count:
+            with self._mission_lock:
+                self._mission_expect_seq = next_seq
+            self._send_mission_request(next_seq)
         else:
-            self._send(self._mav.mav.mission_ack_encode(
+            with self._mission_lock:
+                self._mission_expect_seq = None
+                self._mission_src        = None
+            addr = self._gqc_unicast or self._gqc_addr
+            packed = self._mav.mav.mission_ack_encode(
                 msg.get_srcSystem(), msg.get_srcComponent(),
-                mavutil.mavlink.MAV_MISSION_ACCEPTED))
+                mavutil.mavlink.MAV_MISSION_ACCEPTED).pack(self._mav.mav)
+            try:
+                self._udp_sock.sendto(packed, addr)
+            except Exception as e:
+                self.get_logger().warn(f'mission_ack send error: {e}')
             self.get_logger().info(
                 f'Mission received: {self._mission_count} items '
                 f'({len(self._mission_buf)} waypoints)')
