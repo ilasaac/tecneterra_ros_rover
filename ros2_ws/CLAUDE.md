@@ -139,7 +139,7 @@ PPM mapping:
 Reads two serial ports in background threads. Publishes at 5 Hz via timer.
 - **Primary** (USB0): position, fix quality from GGA sentences
 - **Secondary** (USB1): position only — baseline vector → heading
-- Heading: `bearing = atan2(dlon, dlat)` (flat-earth approximation, fine for <1 km)
+- Heading: `bearing = atan2(dlon * cos(lat_rad), dlat)` — `cos(lat)` correction is required because `secondary_pos()` scales `dlon` by `1/cos(lat)` when placing the secondary antenna; without the correction heading drifts as the rover moves and latitude changes.
 - Fix quality map: `'0'→NO_FIX, '1'→GPS, '2'→DGPS, '4'→RTK_FIX, '5'→RTK_FLT`
 
 ## bringup — launch conventions

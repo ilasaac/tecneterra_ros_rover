@@ -23,8 +23,9 @@ SEC_SYMLINK=/tmp/rv2_gps_sec
 cleanup() {
     echo ""
     echo "[sim] Stopping..."
-    docker compose down rover2 2>/dev/null || true
-    rm -f "$PRI_SYMLINK" "$SEC_SYMLINK"
+    # Remove symlinks from inside the container (they are owned by root — host rm fails)
+    docker exec agri_rover_rv2 rm -f "$PRI_SYMLINK" "$SEC_SYMLINK" 2>/dev/null || true
+    docker compose down --timeout 5 rover2 2>/dev/null || true
     echo "[sim] Done."
 }
 trap cleanup EXIT INT TERM

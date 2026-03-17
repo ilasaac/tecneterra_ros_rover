@@ -16,7 +16,8 @@ Network targets (rover Jetsons on WiFi):
 
 Heading simulation:
   Secondary antenna is `--baseline` metres ahead of primary along rover heading.
-  gps_driver.py recovers heading via atan2(dlon,dlat) — identical to real hardware.
+  gps_driver.py recovers heading via atan2(dlon*cos(lat), dlat) — identical to real hardware.
+  The cos(lat) correction is required because secondary_pos() scales dlon by 1/cos(lat).
 
 Requirements:
   pip3 install pyserial

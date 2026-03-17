@@ -14,7 +14,8 @@ Hardware topology (simulator Jetson Nano, with USB hub):
 Each rover Jetson runs gps_driver normally (heading_source: baseline).
 The secondary GPS stream carries a position offset `antenna_baseline_m` ahead
 of the primary along the rover's current heading — gps_driver then recovers
-that heading via atan2(dlon, dlat).
+that heading via atan2(dlon * cos(lat), dlat). The cos(lat) correction is required
+because secondary_position() scales dlon by 1/cos(lat) to convert metres to degrees.
 
 Dead-reckoning model (differential/skid-steer kinematic):
   throttle_ppm: 1500 = stop, 2000 = max forward, 1000 = max reverse

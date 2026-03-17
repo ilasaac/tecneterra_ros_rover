@@ -28,6 +28,7 @@ except ImportError:
 @dataclass
 class RoverState:
     rv_id:      int   = 0
+    ip:         str   = '?'
     lat:        float = 0.0
     lon:        float = 0.0
     fix_type:   str   = 'NO_FIX'
@@ -59,6 +60,10 @@ def listen(port: int, rv_id: int):
         t = msg.get_type()
         with _lock:
             rv = RV[rv_id]
+            # Capture source IP from each UDP packet
+            addr = getattr(conn, 'last_address', None)
+            if addr:
+                rv.ip = addr[0]
             if t == 'HEARTBEAT':
                 rv.last_hb  = time.time()
                 rv.armed    = bool(msg.base_mode & MAV_MODE_ARMED)
@@ -94,7 +99,7 @@ def render():
             for rv_id, rv in RV.items():
                 age    = now - rv.last_hb
                 status = 'ONLINE' if age < 3 else f'LOST ({age:.0f}s)'
-                print(f'\n  RV{rv_id}  {status}  {"ARMED" if rv.armed else "DISARMED"}  {rv.mode}')
+                print(f'\n  RV{rv_id}  {status}  {"ARMED" if rv.armed else "DISARMED"}  {rv.mode}  ip={rv.ip}')
                 print(f'  GPS  {rv.fix_type:10s}  {rv.lat:.6f}, {rv.lon:.6f}')
                 print(f'  BAT  {rv.battery_v:.2f}V  {rv.battery_pct:.0f}%')
                 chs = ' '.join(f'{c:4d}' for c in rv.channels)

@@ -41,7 +41,7 @@ ros_agri_rover/
     ├── rtk_forwarder.py             ← NTRIP/E610 RTCM3 → u-blox serial
     ├── start_rover1_sim.sh          ← single-command RV1 simulation launcher
     ├── start_rover2_sim.sh          ← single-command RV2 simulation launcher
-    ├── monitor.py                   ← terminal MAVLink dashboard (both rovers)
+    ├── monitor.py                   ← terminal MAVLink dashboard (both rovers) — shows rover IPs for SSH
     └── mission_uploader.py          ← CSV waypoints → MAVLink mission upload
 ```
 
@@ -362,7 +362,8 @@ Simulator Jetson Orin Nano                 WiFi (UDP)          Rover Jetson Nano
 
 - `nmea_wifi_rx.py` creates two PTY virtual serial ports on the rover Jetson.
 - `gps_driver.py` reads PTYs as if they were physical GPS modules — no code changes.
-- Secondary GGA is offset `antenna_baseline_m` (default 1.00 m, set to match real rover antenna separation) ahead along rover heading → `gps_driver` recovers heading via `atan2(dlon, dlat)`, identical to real hardware.
+- Secondary GGA is offset `antenna_baseline_m` (default 1.00 m, set to match real rover antenna separation) ahead along rover heading → `gps_driver` recovers heading via `atan2(dlon × cos(lat), dlat)`, identical to real hardware.
+- The `cos(lat)` correction is required because `secondary_pos()` scales `dlon` by `1/cos(lat)` to convert metres to longitude degrees; omitting it causes heading to drift as the rover moves and latitude changes.
 
 ### Physics model (skid/differential steer)
 
@@ -438,7 +439,7 @@ All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
 | `simulator.py` | Simulator Jetson | Dead-reckoning physics → NMEA over UDP WiFi |
 | `nmea_wifi_rx.py` | Each rover Jetson | Receives UDP NMEA → PTY virtual serial ports for gps_driver |
 | `rtk_forwarder.py` | Each rover Jetson | NTRIP/E610 RTCM3 → u-blox serial (real hardware) |
-| `monitor.py` | Dev machine | Live MAVLink terminal dashboard |
+| `monitor.py` | Dev machine | Live MAVLink terminal dashboard — displays rover IPs (auto-discovered from UDP source of first packet) |
 | `mission_uploader.py` | Dev machine | CSV waypoints → MAVLink mission upload |
 
 ### NTRIP pitfalls (rtk_forwarder.py)
