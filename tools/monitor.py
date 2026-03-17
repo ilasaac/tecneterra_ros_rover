@@ -32,8 +32,11 @@ class RoverState:
     fix_type:    str   = 'NO_FIX'
     armed:       bool  = False
     mode:        str   = 'UNKNOWN'
+    heading:     float = -1.0   # degrees, -1 = unknown
     battery_v:   float = 0.0
     battery_pct: float = -1.0
+    cmd_thr:     int   = 1500   # navigator throttle PPM
+    cmd_str:     int   = 1500   # navigator steering PPM
     sbus_ch:     list  = field(default_factory=lambda: [1500] * 16)  # raw SBUS, 16 ch
     last_hb:     float = 0.0
     sensors:     dict  = field(default_factory=dict)
@@ -130,13 +133,21 @@ def listen():
                 elif t == 'GLOBAL_POSITION_INT':
                     rv.lat = msg.lat / 1e7
                     rv.lon = msg.lon / 1e7
+                    if msg.hdg != 65535:
+                        rv.heading = msg.hdg / 100.0
                 elif t == 'RC_CHANNELS':
                     rv.sbus_ch = [getattr(msg, f'chan{i}_raw', 1500) for i in range(1, 17)]
                 elif t == 'SYS_STATUS':
                     rv.battery_v   = msg.voltage_battery / 1000.0
                     rv.battery_pct = msg.battery_remaining
                 elif t == 'NAMED_VALUE_FLOAT':
-                    rv.sensors[msg.name] = round(msg.value, 1)
+                    name = msg.name.rstrip('\x00') if isinstance(msg.name, str) else msg.name.rstrip(b'\x00').decode()
+                    if name == 'CMD_T':
+                        rv.cmd_thr = int(msg.value)
+                    elif name == 'CMD_S':
+                        rv.cmd_str = int(msg.value)
+                    else:
+                        rv.sensors[name] = round(msg.value, 1)
                 elif t == 'STATUSTEXT':
                     sev = {0: 'EMERG', 1: 'ALERT', 2: 'CRIT', 3: 'ERR',
                            4: 'WARN',  5: 'NOTE',  6: 'INFO', 7: 'DBG'}.get(msg.severity, '?')
@@ -157,9 +168,17 @@ def render():
             for rv_id, rv in RV.items():
                 age    = now - rv.last_hb
                 status = 'ONLINE' if age < 3 else f'LOST ({age:.0f}s)'
+                hdg_str = f'{rv.heading:.1f}°' if rv.heading >= 0 else '---.-°'
                 print(f'\n  RV{rv_id}  {status}  {"ARMED" if rv.armed else "DISARMED"}  {rv.mode}  ip={rv.ip}')
-                print(f'  GPS  {rv.fix_type:10s}  {rv.lat:.6f}, {rv.lon:.6f}')
+                print(f'  GPS  {rv.fix_type:10s}  {rv.lat:.6f}, {rv.lon:.6f}  hdg={hdg_str}')
                 print(f'  BAT  {rv.battery_v:.2f}V  {rv.battery_pct:.0f}%')
+                if rv.mode == 'AUTONOMOUS':
+                    thr_delta = rv.cmd_thr - 1500
+                    str_delta = rv.cmd_str - 1500
+                    thr_bar = '█' * min(10, abs(thr_delta) // 50)
+                    str_bar = '◄' * (max(0, -str_delta) // 50) + '►' * (max(0, str_delta) // 50)
+                    print(f'  CMD  thr={rv.cmd_thr} ({thr_delta:+d}) {thr_bar}'
+                          f'   str={rv.cmd_str} ({str_delta:+d}) {str_bar or "─"}')
 
                 sbus = rv.sbus_ch
                 # Raw SBUS channels 1-8 as received from RP2040, plus rover-select (ch9)

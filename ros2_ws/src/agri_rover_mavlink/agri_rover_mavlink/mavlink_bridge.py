@@ -90,6 +90,8 @@ class MavlinkBridgeNode(Node):
         self._mode        = 'MANUAL'
         self._heading_deg = None   # None until first heading message received
         self._boot_ms     = int(time.time() * 1000)
+        self._cmd_thr     = 1500   # last cmd_override throttle (CH1), for telemetry
+        self._cmd_str     = 1500   # last cmd_override steering (CH2), for telemetry
         self._mission_buf: list[MissionWaypoint] = []
         self._mission_count = 0
         # Servo state for PPM CH5-CH8 (servo numbers 5-8 → channel indices 4-7).
@@ -108,12 +110,13 @@ class MavlinkBridgeNode(Node):
         self._mission_last_req_t  = 0.0
 
         # ── Subscriptions ────────────────────────────────────────────────────
-        self.create_subscription(NavSatFix,    'fix',         self._cb_fix,     10)
-        self.create_subscription(RCInput,      'rc_input',    self._cb_rc,      10)
-        self.create_subscription(SensorData,   'sensors',     self._cb_sensors, 10)
-        self.create_subscription(RoverStatus,  'status',      self._cb_status,  10)
-        self.create_subscription(String,       'mode',        self._cb_mode,    10)
-        self.create_subscription(Float32,      'heading',     self._cb_heading, 10)
+        self.create_subscription(NavSatFix,    'fix',          self._cb_fix,      10)
+        self.create_subscription(RCInput,      'rc_input',     self._cb_rc,       10)
+        self.create_subscription(SensorData,   'sensors',      self._cb_sensors,  10)
+        self.create_subscription(RoverStatus,  'status',       self._cb_status,   10)
+        self.create_subscription(String,       'mode',         self._cb_mode,     10)
+        self.create_subscription(Float32,      'heading',      self._cb_heading,  10)
+        self.create_subscription(RCInput,      'cmd_override', self._cb_cmd_mon,  10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
         self.cmd_pub      = self.create_publisher(RCInput,          'cmd_override', 10)
@@ -149,6 +152,13 @@ class MavlinkBridgeNode(Node):
 
     def _cb_heading(self, msg: Float32):
         self._heading_deg = msg.data
+
+    def _cb_cmd_mon(self, msg: RCInput):
+        """Track cmd_override throttle/steering for telemetry broadcast."""
+        if len(msg.channels) > 0:
+            self._cmd_thr = msg.channels[0]
+        if len(msg.channels) > 1:
+            self._cmd_str = msg.channels[1]
 
     # ── MAVLink send helpers ──────────────────────────────────────────────────
 
@@ -222,6 +232,8 @@ class MavlinkBridgeNode(Node):
             ('TEMP',     self._sensors.temperature),
             ('HUMID',    self._sensors.humidity),
             ('PRESSURE', self._sensors.pressure),
+            ('CMD_T',    float(self._cmd_thr)),
+            ('CMD_S',    float(self._cmd_str)),
         ]
         for name, value in pairs:
             self._send(self._mav.mav.named_value_float_encode(
