@@ -148,6 +148,29 @@ cmake --build build -j4
 
 - **LoRa payload must be `sbus_ch[]`, not `out_ch[]`:** `out_ch` is already PPM-remapped for local hardware output. Transmitting it causes slave to remap again (double-map = wrong channels). In RELAY mode `out_ch` is also neutralised to 1500, so transmitting it would prevent the slave from receiving real stick values. Fix applied in `master/main.cpp` — always pack `sbus_ch[]` into the LoRa payload.
 
+- **`sx1278_recv()` stack overflow (fix applied):** `SX_REG_RX_NB_BYTES` can return a
+  garbage value (e.g. `0xFF`) if the SPI bus glitches during RF reception. The caller
+  allocates `pkt[CHANNELS*2]` = 32 bytes on the stack; `sx_read_fifo(pkt, 255)` would
+  overflow it by 223 bytes, corrupting Cortex-M0+ return addresses → hard fault → PPM
+  stops, USB CDC silent, requires manual reset. RF timeout (500 ms) is self-recovering;
+  a crash is not.
+
+  **Symptoms that confirm a crash (not RF dropout):**
+  - `/rv2/mode` topic goes completely silent (RF dropout shows `EMERGENCY` first)
+  - `rp2040_bridge` logs no serial error — `in_waiting` returns 0 silently; no `OSError`
+    raised because TinyUSB stops but Linux keeps the CDC device "open" until timeout
+  - PPM pin stops toggling entirely (DMA is single-shot; IRQ can't restart it when CPU is crashed)
+
+  **Fix (applied in `sx1278.h`):** bounds-check `*len` before calling `sx_read_fifo`.
+  `sx1278_start_rx` must be defined **before** `sx1278_recv` in the header (forward
+  reference; moved in both master and slave copies):
+  ```c
+  if (*len == 0 || *len > 64) {
+      sx1278_start_rx();   // re-arm receiver, discard corrupt packet
+      return false;
+  }
+  ```
+
 - **CH9 rover-select / mode logic (3-position switch):**
 
   | CH9 value      | Master              | Slave                    |
