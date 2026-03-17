@@ -222,6 +222,14 @@ static inline bool sx1278_send(const uint8_t *data, uint8_t len) {
     return true;
 }
 
+// Start continuous RX mode (slave). Call once after sx1278_init().
+static inline void sx1278_start_rx(void) {
+    // DIO0 = RxDone (00 in LoRa mode)
+    sx_write_reg(SX_REG_DIO_MAPPING1, 0x00);
+    sx_write_reg(SX_REG_FIFO_ADDR_PTR, 0x00);
+    sx_write_reg(SX_REG_OP_MODE, SX_LORA_MODE | SX_MODE_RX_CONT);
+}
+
 // Poll for received packet (slave). Call from main loop.
 // Returns true if a valid packet is in buf[], length in *len.
 static inline bool sx1278_recv(uint8_t *buf, uint8_t *len) {
@@ -248,12 +256,4 @@ static inline bool sx1278_recv(uint8_t *buf, uint8_t *len) {
     sx_read_fifo(buf, *len);
 
     return true;
-}
-
-// Start continuous RX mode (slave). Call once after sx1278_init().
-static inline void sx1278_start_rx(void) {
-    // DIO0 = RxDone (00 in LoRa mode)
-    sx_write_reg(SX_REG_DIO_MAPPING1, 0x00);
-    sx_write_reg(SX_REG_FIFO_ADDR_PTR, 0x00);
-    sx_write_reg(SX_REG_OP_MODE, SX_LORA_MODE | SX_MODE_RX_CONT);
 }
