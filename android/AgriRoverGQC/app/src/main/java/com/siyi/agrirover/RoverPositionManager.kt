@@ -187,6 +187,29 @@ class RoverPositionManager(
         }
     }
 
+    /**
+     * Send COMMAND_LONG 3× at 100 ms intervals for safety-critical commands
+     * (E-STOP, disarm) where a single dropped UDP packet could be fatal.
+     * Uses `confirmation` field 0, 1, 2 per MAVLink spec for retries.
+     */
+    fun sendCriticalCommand(sysId: Int, commandId: Int, p1: Float, p2: Float) {
+        scope.launch {
+            repeat(3) { attempt ->
+                sendMavlinkTo(
+                    roverIp(sysId),
+                    CommandLong.builder()
+                        .targetSystem(sysId).targetComponent(1)
+                        .command(EnumValue.create(MavCmd::class.java, commandId))
+                        .confirmation(attempt)
+                        .param1(p1).param2(p2).param3(0f).param4(0f)
+                        .param5(0f).param6(0f).param7(0f)
+                        .build()
+                )
+                if (attempt < 2) delay(100L)
+            }
+        }
+    }
+
     /** Upload a mission to a specific rover using the MAVLink mission upload protocol. */
     fun uploadMission(sysId: Int, waypoints: List<Pair<Double, Double>>) {
         scope.launch {

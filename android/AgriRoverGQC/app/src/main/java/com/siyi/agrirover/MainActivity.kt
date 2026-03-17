@@ -300,8 +300,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnConnect.setOnClickListener { showConnectionDialog() }
 
         // EMERGENCY STOP — disarm all rovers immediately (broadcast sysId=0)
+        // Sent 3× at 100 ms intervals — one dropped UDP packet must never prevent E-STOP.
         btnEStop.setOnClickListener {
-            roverManager.sendCommand(0, 400, 0f, 0f)
+            roverManager.sendCriticalCommand(0, 400, 0f, 0f)
             Toast.makeText(this, "EMERGENCY STOP — ALL DISARMED", Toast.LENGTH_LONG).show()
         }
 
@@ -396,8 +397,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
      * both rovers are stopped before dismissing the dialog.
      */
     private fun handleLinkMismatch(reason: String) {
-        // Immediately disarm all rovers
-        roverManager.sendCommand(0, 400, 0f, 0f)
+        // Immediately disarm all rovers (3× for UDP reliability)
+        roverManager.sendCriticalCommand(0, 400, 0f, 0f)
 
         AlertDialog.Builder(this)
             .setTitle("⚠ RC / Slave Link Mismatch — All Stopped")
