@@ -92,6 +92,9 @@ class MavlinkBridgeNode(Node):
         self._boot_ms     = int(time.time() * 1000)
         self._mission_buf: list[MissionWaypoint] = []
         self._mission_count = 0
+        # Servo state for PPM CH5-CH8 (servo numbers 5-8 → channel indices 4-7).
+        # Updated by DO_SET_SERVO commands; forwarded to rp2040_bridge via cmd_override.
+        self._servo_pwm = {5: 1500, 6: 1500, 7: 1500, 8: 1500}
 
         # ── Subscriptions ────────────────────────────────────────────────────
         self.create_subscription(NavSatFix,    'fix',         self._cb_fix,     10)
@@ -231,6 +234,27 @@ class MavlinkBridgeNode(Node):
             elif mt == 'MISSION_ITEM_INT':
                 self._on_mission_item(msg)
 
+    def _apply_servo_cmd(self, servo: int, pwm: int):
+        """Apply a DO_SET_SERVO command: update servo state and publish to cmd_override.
+
+        Servo 5-8 map to PPM channels 4-7 (0-indexed).
+        Channels 0-3 are published as 0 (rp2040_bridge keeps the last throttle/steering).
+        """
+        if servo not in self._servo_pwm:
+            self.get_logger().warn(f'DO_SET_SERVO: servo {servo} out of range (5-8)')
+            return
+        self._servo_pwm[servo] = max(1000, min(2000, pwm))
+        rc = RCInput()
+        # 0 = "keep last value" in rp2040_bridge (throttle/steering unchanged)
+        rc.channels = [0, 0, 0, 0,
+                       self._servo_pwm[5], self._servo_pwm[6],
+                       self._servo_pwm[7], self._servo_pwm[8]]
+        rc.mode  = 'SERVO'
+        rc.stamp = self.get_clock().now().to_msg()
+        self.cmd_pub.publish(rc)
+        self.get_logger().info(
+            f'DO_SET_SERVO servo={servo} pwm={self._servo_pwm[servo]} µs')
+
     def _on_rc_override(self, msg):
         rc = RCInput()
         raw = [msg.chan1_raw, msg.chan2_raw, msg.chan3_raw, msg.chan4_raw,
@@ -246,16 +270,28 @@ class MavlinkBridgeNode(Node):
             self.get_logger().info(f'{"ARM" if self._armed else "DISARM"} command received')
             self._send(self._mav.mav.command_ack_encode(
                 msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
+        elif msg.command == 183:  # MAV_CMD_DO_SET_SERVO
+            self._apply_servo_cmd(int(msg.param1), int(msg.param2))
+            self._send(self._mav.mav.command_ack_encode(
+                msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
 
     def _on_mission_item(self, msg):
-        wp = MissionWaypoint()
-        wp.seq       = msg.seq
-        wp.latitude  = msg.x * 1e-7
-        wp.longitude = msg.y * 1e-7
-        wp.speed     = 1.0   # default; GQC can encode speed in param1
-        wp.acceptance_radius = 1.5
-        self._mission_buf.append(wp)
-        self.mission_pub.publish(wp)
+        if msg.command == 183:  # MAV_CMD_DO_SET_SERVO
+            # Apply immediately — servo state persists until the next servo command.
+            # NOTE: For timed playback during mission execution (servo at exact GPS
+            # position), a future enhancement would store these and replay via the
+            # navigator. For now, upload-time application is sufficient for manual
+            # trigger via COMMAND_LONG during AUTO mode.
+            self._apply_servo_cmd(int(msg.param1), int(msg.param2))
+        else:
+            wp = MissionWaypoint()
+            wp.seq       = msg.seq
+            wp.latitude  = msg.x * 1e-7
+            wp.longitude = msg.y * 1e-7
+            wp.speed     = 1.0   # default; GQC can encode speed in param1
+            wp.acceptance_radius = 1.5
+            self._mission_buf.append(wp)
+            self.mission_pub.publish(wp)
 
         if msg.seq + 1 < self._mission_count:
             self._send(self._mav.mav.mission_request_int_encode(
@@ -265,7 +301,8 @@ class MavlinkBridgeNode(Node):
                 msg.get_srcSystem(), msg.get_srcComponent(),
                 mavutil.mavlink.MAV_MISSION_ACCEPTED))
             self.get_logger().info(
-                f'Mission received: {self._mission_count} waypoints')
+                f'Mission received: {self._mission_count} items '
+                f'({len(self._mission_buf)} waypoints)')
 
 
 def main(args=None):

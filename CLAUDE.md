@@ -212,6 +212,27 @@ Jetson → RP2040:
   <J:c0,c1,c2,c3,c4,c5,c6,c7>   8-channel autonomous command (µs)
 ```
 
+### cmd_override channel convention
+
+`rp2040_bridge` maintains a persistent 8-channel state (`_j_state`). When a
+`cmd_override` message arrives, **channel values of 0 mean "keep last value"**.
+This allows navigator and servo commands to update independent channels without
+overwriting each other:
+
+| Publisher     | Channels 0-1 | Channels 2-3 | Channels 4-7 |
+|---------------|-------------|--------------|--------------|
+| navigator     | throttle, steering (non-zero) | 0 | 0 |
+| mavlink_bridge (DO_SET_SERVO) | 0 | 0 | servo PWM (non-zero) |
+
+`MAV_CMD_DO_SET_SERVO` (cmd=183): `param1` = servo number (5–8), `param2` = PWM µs.
+- Servo 5 → PPM CH5 → `_j_state[4]`
+- Servo 6 → PPM CH6 → `_j_state[5]`
+- Servo 7 → PPM CH7 → `_j_state[6]`
+- Servo 8 → PPM CH8 → `_j_state[7]`
+
+Handled in `mavlink_bridge._apply_servo_cmd()` — called from both `_on_command_long`
+(direct GQC command) and `_on_mission_item` (DO_SET_SERVO in uploaded mission).
+
 ---
 
 ## Build commands
@@ -506,3 +527,4 @@ All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
 - `ppm_tx.pio`: slave uses SM0 (not SM1) — one less state machine needed vs master
 - Android GQC: RTSP dual video screen, settings dialog, STATUSTEXT log screen still TODO (see android/AgriRoverGQC/README.md)
 - Navigator: no obstacle avoidance — pure pursuit only
+- DO_SET_SERVO in missions: applied at upload time, not during execution. For per-waypoint servo timing during replay, navigator needs to sequence through mixed mission items (requires MissionWaypoint interface change or a new ServoEvent topic).

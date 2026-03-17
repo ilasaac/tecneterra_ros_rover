@@ -195,9 +195,9 @@ class NavigatorNode(Node):
 
     def _publish_cmd(self, throttle: int, steering: int):
         msg          = RCInput()
-        channels     = [PPM_CENTER] * 9
-        channels[0]  = throttle
-        channels[1]  = steering
+        channels     = [0] * 9          # 0 = "don't update" in rp2040_bridge
+        channels[0]  = throttle         # PPM CH1 — only control throttle and steering
+        channels[1]  = steering         # PPM CH2 — servo channels 4-7 managed separately
         msg.channels = channels
         msg.mode     = 'AUTONOMOUS'
         msg.stamp    = self.get_clock().now().to_msg()

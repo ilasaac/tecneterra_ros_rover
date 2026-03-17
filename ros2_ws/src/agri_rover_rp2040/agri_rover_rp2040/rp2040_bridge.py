@@ -70,6 +70,9 @@ class Rp2040BridgeNode(Node):
         self._lock = threading.Lock()
         self._hb_seq = 0
         self._rf_link_ok = False
+        # Merged 8-channel state for <J:> command.
+        # Updated by cmd_override messages: 0 in a channel means "keep last value".
+        self._j_state = [PPM_CENTER] * 8
 
         # ── Timers ───────────────────────────────────────────────────────────
         self.create_timer(hb_interval, self._send_heartbeat)
@@ -167,8 +170,16 @@ class Rp2040BridgeNode(Node):
         self._uart_write(f'<HB:{self._hb_seq}>\n')
 
     def _on_cmd_override(self, msg: RCInput):
-        """Forward autonomous command to RP2040 as <J:c0,...,c7>."""
-        chs = ','.join(str(c) for c in list(msg.channels[:8]))
+        """Forward autonomous command to RP2040 as <J:c0,...,c7>.
+
+        Channel values of 0 mean "keep the last value" so navigator (throttle/
+        steering only) and servo commands (auxiliary channels only) can be
+        published independently without overwriting each other.
+        """
+        for i, val in enumerate(msg.channels[:8]):
+            if val != 0:
+                self._j_state[i] = val
+        chs = ','.join(str(c) for c in self._j_state)
         self._uart_write(f'<J:{chs}>\n')
 
     def _uart_write(self, text: str):
