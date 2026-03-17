@@ -13,7 +13,7 @@
 #
 # Heading simulation:
 #   secondary antenna is placed `antenna_baseline_m` ahead of primary along the rover heading.
-#   gps_driver.py computes: bearing = atan2(dlon, dlat) between secondary and primary → correct heading.
+#   gps_driver.py computes: bearing = atan2(dlon*cos(lat), dlat) between secondary and primary → correct heading.
 
 simulator:
   ros__parameters:
@@ -27,12 +27,14 @@ simulator:
     nmea_baud:          115200
 
     # Starting positions (decimal degrees) — set to actual field origin
-    rv1_start_lat:  -23.550520
-    rv1_start_lon:  -46.633308
-    rv1_start_heading_deg: 0.0   # initial heading (0 = north)
-    rv2_start_lat:  -23.550620
-    rv2_start_lon:  -46.633408
-    rv2_start_heading_deg: 0.0
+    # 20°43'39.7"N 103°34'00.4"W  →  secondary at same lat, lon -103.5667874 (1 m west)
+    rv1_start_lat:  20.7276944
+    rv1_start_lon:  -103.5667778
+    rv1_start_heading_deg: 270.0   # west
+    # 20°43'39.6"N 103°34'00.5"W  →  secondary at same lat, lon -103.5668152 (1 m west)
+    rv2_start_lat:  20.7276667
+    rv2_start_lon:  -103.5668056
+    rv2_start_heading_deg: 270.0   # west
 
     # Dead-reckoning physics
     max_speed_mps:        1.5    # m/s at full throttle (PPM 2000)
