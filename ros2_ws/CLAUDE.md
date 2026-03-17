@@ -114,6 +114,18 @@ HEARTBEAT `base_mode` flags:
 
 RC_CHANNELS `chancount` field uses `len(self._rc.channels)` (was incorrectly hardcoded to 9).
 
+Inbound MAVLink command handling (`_on_command_long`):
+- `MAV_CMD_COMPONENT_ARM_DISARM` (400): updates `self._armed`, sends ACK
+- `MAV_CMD_DO_SET_SERVO` (183): calls `_apply_servo_cmd(servo, pwm)`, sends ACK
+
+`_apply_servo_cmd(servo, pwm)`:
+- Validates servo in range 5–8; clamps pwm to 1000–2000
+- Updates `self._servo_pwm[servo]`
+- Publishes full servo state to `servo_state` topic (channels 4-7 set, channels 0-3 = 0)
+- Navigator receives it via `_cb_servo_state` and re-publishes in every cmd_override
+
+`_on_mission_item` skips `DO_SET_SERVO` items for waypoint publishing (lat=0/lon=0 would navigate to null island); calls `_apply_servo_cmd` instead.
+
 ## navigator — pure pursuit
 
 Key parameters (in `config/navigator_params.yaml`):
@@ -133,6 +145,12 @@ PPM mapping:
 - Throttle: `PPM_CENTER + speed_frac * 500`  (1500 neutral, 2000 = max forward)
 - Steering: `PPM_CENTER + steer_frac * 500`  (1500 straight, 1000/2000 = full turn)
 - Heading error → steering: `steer_frac = clamp(heading_error_deg / 45, -max, +max)`
+
+Servo channels (PPM CH5-CH8):
+- Navigator subscribes to `servo_state` (RCInput from mavlink_bridge).
+- `_cb_servo_state()` updates `self._servo_ch[0..3]` (channels 4-7, non-zero values only).
+- `_publish_cmd()` always includes `_servo_ch` in channels 4-7 of every `cmd_override` message.
+- This means servo state is continuously re-sent at 10 Hz — an RP2040 reset does not leave servos in an unknown state.
 
 ## gps_driver — NMEA parsing
 

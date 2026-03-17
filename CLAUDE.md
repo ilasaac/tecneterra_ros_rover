@@ -34,14 +34,14 @@ ros_agri_rover/
 ├── firmware/rc_link_sx1278/
 │   ├── master/                      ← RP2040: SBUS→PIO decode, PPM→PIO+DMA, SX1278 TX
 │   └── slave/                       ← RP2040: SX1278 RX, PPM→PIO+DMA, Jetson serial
-├── android/AgriRoverGQC/            ← Android GQC app (Kotlin scaffold, not yet built)
+├── android/AgriRoverGQC/            ← Android GQC app (Kotlin + Google Maps, fully implemented)
 └── tools/
     ├── simulator.py                 ← standalone GPS simulator (no ROS2 required)
     ├── nmea_wifi_rx.py              ← UDP NMEA → PTY virtual serial ports
     ├── rtk_forwarder.py             ← NTRIP/E610 RTCM3 → u-blox serial
     ├── start_rover1_sim.sh          ← single-command RV1 simulation launcher
     ├── start_rover2_sim.sh          ← single-command RV2 simulation launcher
-    ├── monitor.py                   ← terminal MAVLink dashboard (both rovers) — shows rover IPs for SSH
+    ├── monitor.py                   ← terminal MAVLink dashboard (both rovers) — shows rover IPs, SBUS + PPM channels
     └── mission_uploader.py          ← CSV waypoints → MAVLink mission upload
 ```
 
@@ -203,7 +203,7 @@ The 3-position CH9 switch selects which rover moves in manual:
 
 ```
 RP2040 → Jetson:
-  CH:1500,1500,1700,1500,1500,1500,1500,1500,1500 MODE:MANUAL   (every frame)
+  CH:1500,1500,1700,1500,1500,1500,1500,1500,1500,1500,1500,1500,1500,1500,1500,1500 MODE:MANUAL  (every frame, 16 channels)
   [SBUS_OK] / [SBUS_LOST]                                        (on change)
   [RF_LINK_OK] / [RF_LINK_LOST]                                  (slave, on change)
   <HB:N+1>                                                       (heartbeat echo)
@@ -369,7 +369,8 @@ Implemented at `android/AgriRoverGQC/`. Stack: Kotlin, Google Maps SDK, java-mav
 - `sendCommand(sysId, commandId, p1, p2)` — single COMMAND_LONG fire-and-forget
 - `sendCriticalCommand(sysId, commandId, p1, p2)` — **3× at 100 ms intervals** — use for E-STOP and disarm (UDP packet loss must not prevent stopping)
 - `sendRcChannelsOverride(sysId, channels)` — RC_CHANNELS_OVERRIDE 8×PPM µs
-- `uploadMission(sysId, waypoints)` — MAVLink mission upload handshake
+- `uploadMission(sysId, waypoints)` — plain waypoint-only MAVLink mission upload
+- `uploadRecordedMission(sysId, actions)` — uploads a mixed `List<MissionAction>` containing both `MissionAction.Waypoint` and `MissionAction.ServoCmd` items as interleaved `NAV_WAYPOINT` + `DO_SET_SERVO` MISSION_ITEM_INT messages
 
 **sysId=0 → broadcast to 255.255.255.255:14550** (both rovers).
 
@@ -386,10 +387,34 @@ GQC always sends to broadcast 192.168.100.255:14550 for discovery; unicasts to k
 | Mode | Bottom bar | Behaviour |
 |------|------------|-----------|
 | MANUAL | (none) | Physical RC sticks → HM30 → SBUS → RP2040. App shows map + status only. |
-| PLANNER | Draw / delete / station / save / load / upload | Finger-draw route on satellite map → upload mission |
+| PLANNER | Add-point FABs, ADD, REC, CLEAR, UPLOAD | Finger-draw or record route on satellite map → upload mission |
 | AUTO | R1/R2 toggle, START, PAUSE, CLEAR | ARM + set AUTO mode; mission progress shown on map |
 
 Physical RC control is always active regardless of app mode. The app does NOT send RC override in MANUAL mode (virtual D-pad was removed).
+
+### Mission recording (PLANNER mode)
+
+Two recording methods in PLANNER toolbar:
+
+**ADD button** — tap once to insert the selected rover's current GPS position as a single waypoint.
+
+**REC button** — continuous recording:
+- Samples rover GPS position every 500 ms → appends `MissionAction.Waypoint`
+- Monitors PPM CH5-CH8 (auxiliary switches) from incoming `RC_CHANNELS`; any channel change > 100 µs → appends `MissionAction.ServoCmd(servo, pwm)` immediately
+- Button label toggles `⏺ REC` ↔ `⏹ STOP`
+
+**UPLOAD** — if `recordedMission` contains any `ServoCmd` entries, calls `uploadRecordedMission()`; otherwise uses plain `uploadMission()`.
+
+```kotlin
+sealed class MissionAction {
+    data class Waypoint(val lat: Double, val lon: Double) : MissionAction()
+    data class ServoCmd(val servo: Int, val pwm: Int)     : MissionAction()
+}
+```
+
+Servo numbers 5–8 correspond to PPM CH5–CH8 (auxiliary motors, e.g. sprayer pump).
+Servo state is recorded relative to the **PPM channel values** as reported in `RC_CHANNELS`
+from the rover (post firmware PPM remap — CH5 = SBUS CH11, CH6 = SBUS CH12, CH7 = ~SBUS CH7, CH8 = ~SBUS CH8).
 
 ### Screen always-on
 `window.addFlags(FLAG_KEEP_SCREEN_ON)` is set in `onCreate` — screen never dims while app is running.

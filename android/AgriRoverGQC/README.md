@@ -31,7 +31,7 @@ MainActivity
 | Mode | Toolbar | Notes |
 |------|---------|-------|
 | MANUAL | (none visible) | Physical RC sticks active. App shows map + telemetry only. |
-| PLANNER | FABs + UPLOAD | Finger-draw route on satellite map, save/load CSV, upload mission. |
+| PLANNER | FABs, ADD, REC, CLEAR, UPLOAD | Finger-draw or record route on satellite map; upload mission with optional servo commands. |
 | AUTO | R1/R2 toggle, START, PAUSE, CLEAR | ARM + AUTO mode; waypoint progress shown on map. |
 
 ## Key behaviours
@@ -39,8 +39,18 @@ MainActivity
 - **Screen always on:** `FLAG_KEEP_SCREEN_ON` set in `onCreate`.
 - **E-STOP:** broadcasts DISARM (COMMAND_LONG cmd=400 p1=0) **3× at 100 ms intervals** via `sendCriticalCommand` — a single dropped UDP packet must never prevent stopping.
 - **Link mismatch detector:** if the RC switch state (SWA/SWB from master RC_CHANNELS) disagrees with slave HEARTBEAT for >2 s, the app auto-disarms all rovers and shows a blocking alert.
-- **Mission upload:** standard MAVLink MISSION protocol (COUNT → REQUEST_INT → ITEM_INT handshake).
+- **Mission upload:** standard MAVLink MISSION protocol (COUNT → REQUEST_INT → ITEM_INT handshake). Uses `uploadRecordedMission()` when servo commands are present (mixed `NAV_WAYPOINT` + `DO_SET_SERVO` items), or plain `uploadMission()` for waypoint-only routes.
 - **Rover markers:** red=RV1, blue=RV2; centre dot green=disarmed / orange=armed / yellow=AUTO; white ring = selected rover.
+
+## Mission recording (PLANNER mode)
+
+**ADD** — inserts the rover's current GPS position as a single waypoint.
+
+**REC / STOP** — continuous recording at 500 ms:
+- Saves current rover GPS position every 500 ms
+- Detects PPM CH5-CH8 switch changes > 100 µs and appends `ServoCmd(servo, pwm)` entries immediately
+
+The recorded list is a `List<MissionAction>` (`Waypoint` or `ServoCmd`). On UPLOAD, if any servo commands are present the full interleaved sequence is uploaded; the rover applies servo commands as it receives them.
 
 ## MAVLink commands sent
 
@@ -48,6 +58,7 @@ MainActivity
 |---------|----|--------|---------|
 | MAV_CMD_COMPONENT_ARM_DISARM | 400 | p1=1 arm / p1=0 disarm | START, E-STOP |
 | MAV_CMD_DO_SET_MODE | 176 | p2=0 manual / p2=3 auto | START (AUTO), PAUSE (MANUAL) |
+| MAV_CMD_DO_SET_SERVO | 183 | p1=servo(5-8), p2=pwm µs | Servo/pump control in recorded missions |
 
 ## Build
 
