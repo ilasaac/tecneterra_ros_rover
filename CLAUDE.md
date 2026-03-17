@@ -362,18 +362,23 @@ Simulator Jetson Orin Nano                 WiFi (UDP)          Rover Jetson Nano
 
 - `nmea_wifi_rx.py` creates two PTY virtual serial ports on the rover Jetson.
 - `gps_driver.py` reads PTYs as if they were physical GPS modules — no code changes.
-- Secondary GGA is offset `antenna_baseline_m` (0.30 m) ahead along rover heading → `gps_driver` recovers heading via `atan2(dlon, dlat)`, identical to real hardware.
+- Secondary GGA is offset `antenna_baseline_m` (default 1.00 m, set to match real rover antenna separation) ahead along rover heading → `gps_driver` recovers heading via `atan2(dlon, dlat)`, identical to real hardware.
 
-### Physics model (bicycle kinematic)
+### Physics model (skid/differential steer)
 
 ```python
-speed = (throttle_ppm - 1500) / 500 * max_speed_mps   # m/s, negative = reverse
-steer = (steering_ppm - 1500) / 500                    # -1..+1
-omega = 2 * steer * max_speed_mps / wheelbase_m        # rad/s — skid steer, independent of forward speed
+speed = (throttle_ppm - 1500) / 500 * max_speed_mps          # m/s, negative = reverse
+steer = (steering_ppm - 1500) / 500                           # -1..+1
+omega = turn_scale * 2 * steer * max_speed_mps / wheelbase_m  # rad/s, independent of forward speed
 heading += omega * dt
 lat += speed * cos(heading) * dt / 111320
 lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))
 ```
+
+`turn_scale` (0.0–1.0, default **0.1**): scales the maximum turn rate relative to full differential.
+- `0.1` → ~10% of max (≈ 360° in 17 s at full steer) — default, good for testing
+- `1.0` → full differential (≈ 360° in 1.7 s at full steer)
+- Pass `--turn-scale` to `tools/simulator.py` or set `turn_scale` in `simulator_params.yaml`.
 
 ### Startup order (simulation)
 

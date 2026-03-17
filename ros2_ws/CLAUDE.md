@@ -102,6 +102,18 @@ self._udp_sock.sendto(buf, self._gqc_addr)
 msg = self._mav.recv_match(blocking=True, timeout=1.0)
 ```
 
+Subscriptions and state:
+- Subscribes to `heading` (std_msgs/Float32) in addition to `fix`, `rc_input`, `sensors`, `status`, `mode`
+- `self._heading_deg = None` until first heading message; sent as `hdg` (cdeg) in `GLOBAL_POSITION_INT`
+- `GLOBAL_POSITION_INT.hdg = int(heading_deg * 100) % 36000`  (65535 = unknown, used until first fix)
+
+HEARTBEAT `base_mode` flags:
+- `MAV_MODE_FLAG_SAFETY_ARMED` (128) set when `self._armed`
+- `MAV_MODE_FLAG_GUIDED_ENABLED` (8) set when `self._mode == 'AUTONOMOUS'`
+- Android app `checkLinkMismatch()` reads bit `0x08` to detect slave autonomous state
+
+RC_CHANNELS `chancount` field uses `len(self._rc.channels)` (was incorrectly hardcoded to 9).
+
 ## navigator — pure pursuit
 
 Key parameters (in `config/navigator_params.yaml`):
@@ -184,6 +196,8 @@ sentence = f'${body}*{checksum(body)}\r\n'
   - `'vtg'`: heading from `$GNVTG` COG field on primary port only (single-port mode — optional)
 - Simulator always outputs 4 NMEA streams (primary + secondary per rover). Rover Jetsons need no config changes.
 - PPM timeout: if no ppm_decoder data for >2 s, simulator freezes rovers at current position (uses neutral 1500).
+- Physics model is **skid/differential steer** — `omega = turn_scale * 2 * steer * max_speed / wheelbase` (independent of forward speed, allows in-place spinning).
+- `turn_scale` (0.0–1.0, default 0.1): scales max turn rate. Pass `--turn-scale` in `tools/simulator.py` or set in `simulator_params.yaml`.
 
 ## colcon tips
 

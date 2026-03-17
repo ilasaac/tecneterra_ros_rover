@@ -103,9 +103,13 @@ class RoverState:
 
     def update(self, throttle: int, steering: int,
                max_speed: float, wheelbase: float, dt: float,
-               turn_scale: float = 0.1):
+               turn_scale: float = 0.1, steer_deadband: float = 0.05):
         speed = (throttle - 1500) / 500.0 * max_speed
         steer = (steering - 1500) / 500.0
+        # Apply deadband: ignore tiny stick offsets from center (PPM noise / trim).
+        # Without this, the skid-steer model drifts heading even at neutral sticks.
+        if abs(steer) < steer_deadband:
+            steer = 0.0
         # Skid/differential steer: turn rate is proportional to max_speed,
         # independent of forward speed — allows in-place spinning.
         # turn_scale (0.0–1.0) scales maximum turn rate relative to full differential.

@@ -193,7 +193,8 @@ class GpsDriverNode(Node):
             if p['lat'] != 0.0 and s['lat'] != 0.0:
                 dlat = s['lat'] - p['lat']
                 dlon = s['lon'] - p['lon']
-                bearing = math.degrees(math.atan2(dlon, dlat)) % 360.0
+                lat_rad = math.radians(p['lat'])
+                bearing = math.degrees(math.atan2(dlon * math.cos(lat_rad), dlat)) % 360.0
                 head_msg      = Float32()
                 head_msg.data = bearing
                 self.head_pub.publish(head_msg)

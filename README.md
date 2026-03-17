@@ -152,9 +152,15 @@ and removes the container cleanly.
 
 **Step 2 — Simulator Jetson**:
 ```bash
+# Default turn rate (10% — good for indoor testing)
 python3 tools/simulator.py \
     --rv1-ip <rv1-jetson-ip> --rv2-ip <rv2-jetson-ip> \
     --ppm-port /dev/ttyACM0
+
+# Match real rover turning speed (~360° in 10 s)
+python3 tools/simulator.py \
+    --rv1-ip <rv1-jetson-ip> --rv2-ip <rv2-jetson-ip> \
+    --ppm-port /dev/ttyACM0 --turn-scale 0.17
 ```
 
 The rover containers pick up the simulated GPS automatically — no manual
@@ -162,18 +168,23 @@ configuration of PTY paths is required.
 
 ### Simulator physics model
 
+Skid/differential steer — rover can turn in place (zero throttle + full steer):
+
 ```
 speed  = (throttle_ppm - 1500) / 500 × max_speed_mps
-steer  = (steering_ppm - 1500) / 500          # –1..+1
-omega  = speed × steer / wheelbase_m          # rad/s
+steer  = (steering_ppm - 1500) / 500                            # –1..+1
+omega  = turn_scale × 2 × steer × max_speed_mps / wheelbase_m  # rad/s
 heading += omega × dt
 lat    += speed × cos(heading) × dt / 111320
 lon    += speed × sin(heading) × dt / (111320 × cos(lat_rad))
 ```
 
-Secondary GPS position is offset `antenna_baseline_m` ahead of primary along
-the rover heading, so `gps_driver.py` recovers heading from the baseline vector
-exactly as it does with real hardware.
+`turn_scale` (default `0.1`) scales the turn rate — `1.0` is full differential, `0.1` is 10%.
+Set via `--turn-scale` argument or `turn_scale` in `simulator_params.yaml`.
+
+Secondary GPS position is offset `antenna_baseline_m` (default `1.00 m`, set to match
+real rover antenna separation) ahead of primary along the rover heading, so `gps_driver.py`
+recovers heading from the baseline vector exactly as it does with real hardware.
 
 ---
 
