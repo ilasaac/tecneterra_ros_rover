@@ -19,7 +19,7 @@
     rover_id:  2
     gqc_host:  192.168.100.255  # WiFi broadcast — GQC receives regardless of IP
     gqc_port:  14550            # GQC identifies rovers by sysid, not port
-    bind_port: 14551            # RV2 listens on :14551
+    bind_port: 14550            # RV2 listens on :14550 — same as RV1 (different Jetson, no conflict)
 
 /rv2/sensor_node:
   ros__parameters:

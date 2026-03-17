@@ -261,7 +261,7 @@ python3 tools/rtk_forwarder.py ... --log-file /tmp/rtk.log
 | Component  | sysid | UDP port | Video RTSP          |
 |------------|-------|----------|---------------------|
 | RV1 Jetson | 1     | :14550   | :8554/stream        |
-| RV2 Jetson | 2     | :14551   | :8555/stream        |
+| RV2 Jetson | 2     | :14550   | :8555/stream        |
 | Android GQC| 255   | ephemeral| consumer            |
 
 ## Firmware

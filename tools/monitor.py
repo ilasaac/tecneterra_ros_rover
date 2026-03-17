@@ -51,16 +51,19 @@ MAV_STATE_ACTIVE = 4
 MAV_MODE_ARMED   = 128
 
 
-def listen(port: int, rv_id: int):
-    conn = mavutil.mavlink_connection(f'udpin:0.0.0.0:{port}')
+def listen():
+    # Both rovers broadcast to port 14550 — one listener, dispatch by sysid
+    conn = mavutil.mavlink_connection('udpin:0.0.0.0:14550')
     while True:
         msg = conn.recv_match(blocking=True, timeout=2.0)
         if msg is None:
             continue
+        sysid = msg.get_srcSystem()
+        if sysid not in RV:
+            continue
         t = msg.get_type()
         with _lock:
-            rv = RV[rv_id]
-            # Capture source IP from each UDP packet
+            rv = RV[sysid]
             addr = getattr(conn, 'last_address', None)
             if addr:
                 rv.ip = addr[0]
@@ -117,7 +120,5 @@ def render():
 
 
 if __name__ == '__main__':
-    for rv_id, port in [(1, 14550), (2, 14551)]:
-        t = threading.Thread(target=listen, args=(port, rv_id), daemon=True)
-        t.start()
+    threading.Thread(target=listen, daemon=True).start()
     render()

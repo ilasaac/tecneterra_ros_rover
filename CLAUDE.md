@@ -96,7 +96,7 @@ ros_agri_rover/
 | Item             | Value                  | Notes                                   |
 |------------------|------------------------|-----------------------------------------|
 | RV1 sysid        | 1                      | bind port :14550                        |
-| RV2 sysid        | 2                      | bind port :14551                        |
+| RV2 sysid        | 2                      | bind port :14550 (same as RV1 — different Jetson, no conflict) |
 | GQC sysid        | 255                    | sends to WiFi broadcast (subnet .255)   |
 | RV1 video        | rtsp://rv1-ip:8554/stream |                                      |
 | RV2 video        | rtsp://rv2-ip:8555/stream |                                      |
