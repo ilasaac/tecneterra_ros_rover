@@ -102,12 +102,14 @@ class RoverState:
         self.speed_mps   = 0.0
 
     def update(self, throttle: int, steering: int,
-               max_speed: float, wheelbase: float, dt: float):
+               max_speed: float, wheelbase: float, dt: float,
+               turn_scale: float = 0.1):
         speed = (throttle - 1500) / 500.0 * max_speed
         steer = (steering - 1500) / 500.0
         # Skid/differential steer: turn rate is proportional to max_speed,
         # independent of forward speed — allows in-place spinning.
-        omega = (2.0 * steer * max_speed / wheelbase) if wheelbase > 0 else 0.0
+        # turn_scale (0.0–1.0) scales maximum turn rate relative to full differential.
+        omega = (turn_scale * 2.0 * steer * max_speed / wheelbase) if wheelbase > 0 else 0.0
         self.heading_rad += omega * dt
         lat_rad = math.radians(self.lat)
         cos_lat = math.cos(lat_rad) or 1e-9
@@ -252,9 +254,11 @@ def parse_args():
     p.add_argument('--rv2-hdg',   default=0.0,        type=float)
 
     # Physics
-    p.add_argument('--max-speed', default=1.5,  type=float, metavar='M/S')
-    p.add_argument('--wheelbase', default=0.50, type=float, metavar='M')
-    p.add_argument('--baseline',  default=0.30, type=float, metavar='M',
+    p.add_argument('--max-speed',   default=1.5,  type=float, metavar='M/S')
+    p.add_argument('--wheelbase',   default=0.50, type=float, metavar='M')
+    p.add_argument('--turn-scale',  default=0.1,  type=float, metavar='0-1',
+                   help='Turn rate scale (1.0=full differential, 0.1=10%% — default)')
+    p.add_argument('--baseline',    default=0.30, type=float, metavar='M',
                    help='Antenna separation in metres')
     p.add_argument('--alt',       default=45.0, type=float, metavar='M')
     p.add_argument('--rate',      default=10.0, type=float, metavar='HZ')
@@ -324,8 +328,8 @@ def main():
         if ppm_age > 2.0:
             rv1_thr = rv1_str = rv2_thr = rv2_str = 1500
 
-        rv1.update(rv1_thr, rv1_str, args.max_speed, args.wheelbase, dt)
-        rv2.update(rv2_thr, rv2_str, args.max_speed, args.wheelbase, dt)
+        rv1.update(rv1_thr, rv1_str, args.max_speed, args.wheelbase, dt, args.turn_scale)
+        rv2.update(rv2_thr, rv2_str, args.max_speed, args.wheelbase, dt, args.turn_scale)
 
         s1_lat, s1_lon = rv1.secondary_pos(args.baseline)
         s2_lat, s2_lon = rv2.secondary_pos(args.baseline)

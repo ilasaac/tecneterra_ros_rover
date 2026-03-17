@@ -114,12 +114,13 @@ class RoverState:
         self.speed_mps   = 0.0   # current speed, updated each tick
 
     def update(self, throttle_ppm: int, steering_ppm: int,
-               max_speed: float, wheelbase: float, dt: float):
+               max_speed: float, wheelbase: float, dt: float,
+               turn_scale: float = 0.1):
         speed = (throttle_ppm - 1500) / 500.0 * max_speed
         steer = (steering_ppm - 1500) / 500.0       # -1..+1
         # Differential/skid-steer: turn rate proportional to max_speed, not current speed.
-        # This allows in-place spinning (steer with zero throttle), matching real rover.
-        omega = (2.0 * steer * max_speed / wheelbase) if wheelbase > 0 else 0.0
+        # turn_scale (0.0–1.0) scales maximum turn rate relative to full differential.
+        omega = (turn_scale * 2.0 * steer * max_speed / wheelbase) if wheelbase > 0 else 0.0
 
         self.heading_rad += omega * dt
         lat_rad = math.radians(self.lat)
@@ -164,14 +165,16 @@ class SimulatorNode(Node):
         self.declare_parameter('rv2_start_heading_deg', 0.0)
         self.declare_parameter('max_speed_mps',      1.5)
         self.declare_parameter('wheelbase_m',        0.5)
+        self.declare_parameter('turn_scale',         0.1)
         self.declare_parameter('antenna_baseline_m', 0.3)
         self.declare_parameter('nmea_rate_hz',       10.0)
         self.declare_parameter('throttle_ch',        0)
         self.declare_parameter('steering_ch',        1)
 
         p = self.get_parameter
-        self._max_speed  = p('max_speed_mps').value
-        self._wheelbase  = p('wheelbase_m').value
+        self._max_speed   = p('max_speed_mps').value
+        self._wheelbase   = p('wheelbase_m').value
+        self._turn_scale  = p('turn_scale').value
         self._baseline   = p('antenna_baseline_m').value
         self._thr_ch     = p('throttle_ch').value
         self._str_ch     = p('steering_ch').value
@@ -270,9 +273,9 @@ class SimulatorNode(Node):
             rv2_ch = [1500] * 8
 
         self._rv1.update(rv1_ch[self._thr_ch], rv1_ch[self._str_ch],
-                         self._max_speed, self._wheelbase, self._dt)
+                         self._max_speed, self._wheelbase, self._dt, self._turn_scale)
         self._rv2.update(rv2_ch[self._thr_ch], rv2_ch[self._str_ch],
-                         self._max_speed, self._wheelbase, self._dt)
+                         self._max_speed, self._wheelbase, self._dt, self._turn_scale)
 
         self._send_nmea(self._rv1,
                         self._nmea_ports['rv1_primary_port'],
