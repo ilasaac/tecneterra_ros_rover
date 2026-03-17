@@ -113,7 +113,7 @@ class RoverState:
         # Skid/differential steer: turn rate is proportional to max_speed,
         # independent of forward speed — allows in-place spinning.
         # turn_scale (0.0–1.0) scales maximum turn rate relative to full differential.
-        omega = (turn_scale * 2.0 * steer * max_speed / wheelbase) if wheelbase > 0 else 0.0
+        omega = -(turn_scale * 2.0 * steer * max_speed / wheelbase) if wheelbase > 0 else 0.0
         self.heading_rad += omega * dt
         lat_rad = math.radians(self.lat)
         cos_lat = math.cos(lat_rad) or 1e-9
