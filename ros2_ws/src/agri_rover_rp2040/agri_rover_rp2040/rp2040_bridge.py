@@ -154,7 +154,10 @@ class Rp2040BridgeNode(Node):
             self.rc_pub.publish(msg)
 
             mode_msg      = String()
-            mode_msg.data = msg.mode
+            # AUTO-TIMEOUT means CH5 in AUTO position + HB alive but no fresh cmd yet.
+            # Treat it as AUTONOMOUS so the navigator starts publishing cmd_override,
+            # which immediately transitions the RP2040 to true AUTONOMOUS state.
+            mode_msg.data = 'AUTONOMOUS' if msg.mode == 'AUTO-TIMEOUT' else msg.mode
             self.mode_pub.publish(mode_msg)
 
         except (ValueError, IndexError):
