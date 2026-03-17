@@ -40,14 +40,6 @@
         <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1"/>
 
         <Button
-            android:id="@+id/btnConnect"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="CONNECT"
-            android:backgroundTint="#2196F3"
-            android:layout_marginEnd="4dp" />
-
-        <Button
             android:id="@+id/btnEStop"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -156,20 +148,5 @@
         <Button android:id="@+id/btnClear" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="CLEAR" android:layout_margin="5dp"/>
     </LinearLayout>
 
-    <!-- ── Virtual joystick (manual mode, bottom-left) ─────────────────── -->
-    <RelativeLayout
-        android:id="@+id/virtualJoystickLayout"
-        android:layout_width="200dp"
-        android:layout_height="200dp"
-        android:layout_marginBottom="20dp"
-        android:layout_marginStart="20dp"
-        android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-        <Button android:id="@+id/btnUp"    android:layout_width="60dp" android:layout_height="60dp" android:text="▲" android:layout_centerHorizontal="true" android:layout_alignParentTop="true"/>
-        <Button android:id="@+id/btnDown"  android:layout_width="60dp" android:layout_height="60dp" android:text="▼" android:layout_centerHorizontal="true" android:layout_alignParentBottom="true"/>
-        <Button android:id="@+id/btnLeft"  android:layout_width="60dp" android:layout_height="60dp" android:text="◀" android:layout_alignParentStart="true" android:layout_centerVertical="true"/>
-        <Button android:id="@+id/btnRight" android:layout_width="60dp" android:layout_height="60dp" android:text="▶" android:layout_alignParentEnd="true" android:layout_centerVertical="true"/>
-    </RelativeLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

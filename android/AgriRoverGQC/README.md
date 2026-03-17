@@ -1,48 +1,63 @@
 # AgriRover GQC — Android Ground Control App
 
-Custom Android ground control station for the AgriRover dual-rover system.
+Custom Android GCS for the dual-rover AgriRover system.
 
 ## Stack
 
 - **Language:** Kotlin
-- **MAVLink:** [java-mavlink](https://github.com/DroneFleet/mavlink) or hand-rolled UDP parser
-- **Video:** ExoPlayer with RTSP source
-- **Map:** OSMDroid (offline tiles) or Google Maps SDK
-- **UI:** Jetpack Compose
+- **UI:** XML layouts + AppCompat (no Jetpack Compose)
+- **MAVLink:** [java-mavlink / DroneFleet](https://github.com/DroneFleet/mavlink)
+- **Map:** Google Maps SDK (satellite default, Jalisco field origin)
 
-## Screens
+## Architecture
 
-| Screen | Purpose |
-|--------|---------|
-| Dashboard | Split map showing both rovers, battery, mode, GPS fix |
-| Video | Dual RTSP feeds (RV1 + RV2 side by side or switchable) |
-| Control | Virtual joystick → RC_CHANNELS_OVERRIDE MAVLink |
-| Mission | Tap-to-place waypoints on map → upload via MAVLink MISSION protocol |
-| Alerts | STATUSTEXT log with severity colour coding |
-| Settings | IPs, ports, video quality |
+```
+MainActivity
+  └── RoverPositionManager   (all MAVLink UDP I/O on Dispatchers.IO)
+        ├── heartbeatLoop()  1 Hz GCS heartbeat → broadcast :14550
+        ├── watchdogLoop()   3 s rover disconnection detection
+        └── receiveLoop()    parse incoming MAVLink, dispatch callbacks
+```
 
-## MAVLink connections
+## Network
 
-| Rover | MAVLink sysid | UDP port | Video |
-|-------|--------------|----------|-------|
-| RV1   | 1            | :14550   | rtsp://rv1-ip:8554/stream |
-| RV2   | 2            | :14551   | rtsp://rv2-ip:8555/stream |
+- App binds UDP **:14550** — same port used by both rovers (different Jetsons).
+- Broadcasts GCS heartbeat to **255.255.255.255:14550** at 1 Hz.
+- Rover IPs are **auto-discovered** from the first inbound packet of each sysid.
+- GQC identifies rovers by **sysid in HEARTBEAT** (RV1=1, RV2=2), not by port.
 
-The app sends to broadcast (192.168.1.255:14550) and listens on :14550/:14551.
-Rovers are identified by sysid in HEARTBEAT.
+## App Modes
+
+| Mode | Toolbar | Notes |
+|------|---------|-------|
+| MANUAL | (none visible) | Physical RC sticks active. App shows map + telemetry only. |
+| PLANNER | FABs + UPLOAD | Finger-draw route on satellite map, save/load CSV, upload mission. |
+| AUTO | R1/R2 toggle, START, PAUSE, CLEAR | ARM + AUTO mode; waypoint progress shown on map. |
+
+## Key behaviours
+
+- **Screen always on:** `FLAG_KEEP_SCREEN_ON` set in `onCreate`.
+- **E-STOP:** broadcasts DISARM (COMMAND_LONG cmd=400 p1=0) **3× at 100 ms intervals** via `sendCriticalCommand` — a single dropped UDP packet must never prevent stopping.
+- **Link mismatch detector:** if the RC switch state (SWA/SWB from master RC_CHANNELS) disagrees with slave HEARTBEAT for >2 s, the app auto-disarms all rovers and shows a blocking alert.
+- **Mission upload:** standard MAVLink MISSION protocol (COUNT → REQUEST_INT → ITEM_INT handshake).
+- **Rover markers:** red=RV1, blue=RV2; centre dot green=disarmed / orange=armed / yellow=AUTO; white ring = selected rover.
+
+## MAVLink commands sent
+
+| Command | ID | Params | Used for |
+|---------|----|--------|---------|
+| MAV_CMD_COMPONENT_ARM_DISARM | 400 | p1=1 arm / p1=0 disarm | START, E-STOP |
+| MAV_CMD_DO_SET_MODE | 176 | p2=0 manual / p2=3 auto | START (AUTO), PAUSE (MANUAL) |
 
 ## Build
 
-1. Open in Android Studio Hedgehog or later
-2. Set `local.properties` with SDK path
+1. Open `android/AgriRoverGQC/` in Android Studio Hedgehog or later.
+2. Add a Google Maps API key to `app/src/main/res/values/secrets.xml` (see Maps SDK docs).
 3. `./gradlew assembleDebug`
 
 ## TODO
 
-- [ ] MAVLink UDP socket handler (dual-rover)
-- [ ] ExoPlayer RTSP integration
-- [ ] Virtual joystick composable
-- [ ] OSMDroid map with dual rover markers
-- [ ] Mission editor (tap to add waypoints)
-- [ ] MAVLink MISSION upload protocol
-- [ ] Alert notification system
+- [ ] ExoPlayer RTSP dual video feed screen
+- [ ] Per-rover settings dialog (IP override, video quality)
+- [ ] Alert/STATUSTEXT log screen
+- [ ] Wire real I2C sensors to SensorData (BME280 + tank)

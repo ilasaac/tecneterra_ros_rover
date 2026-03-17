@@ -50,7 +50,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var btnModeMenu: Button
     private lateinit var plannerToolbar: LinearLayout
     private lateinit var autoToolbar: LinearLayout
-    private lateinit var virtualJoystickLayout: RelativeLayout
 
     // Status & Buttons
     private lateinit var txtBattery:     TextView
@@ -67,7 +66,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var btnCenter:      FloatingActionButton
     private lateinit var btnEStop:       Button
     private lateinit var btnClearMap:    Button
-    private lateinit var btnConnect:     Button
 
     // Auto Buttons
     private lateinit var btnUpload:   Button
@@ -87,36 +85,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var isFollowingRover  = false
     private var lastAddedPoint:   LatLng? = null
     private val MIN_DRAW_DISTANCE = 2.0
-
-    // Joystick (virtual — physical RC goes HM30→SBUS→RP2040, this is MAVLink override)
-    // Sends RC_CHANNELS_OVERRIDE (#70) with all 8 PPM channels (µs, 1000–2000).
-    // CH1=throttle CH2=steering CH3=SWA(2000=safe) CH4=SWB(2000=AUTONOMOUS) CH5-8=neutral
-    private val joystickHandler = Handler(Looper.getMainLooper())
-    private var joyThrottle = 1500   // PPM µs: 1000=full-back, 1500=center, 2000=full-fwd
-    private var joySteering = 1500   // PPM µs: 1000=full-left, 1500=center, 2000=full-right
-    private var isJoystickActive = false
-
-    private val joystickRunnable = object : Runnable {
-        override fun run() {
-            if (isJoystickActive) {
-                roverManager.sendRcChannelsOverride(
-                    selectedRoverId,
-                    intArrayOf(
-                        joyThrottle, joySteering,
-                        2000,   // CH3 SWA=2000 → no emergency
-                        2000,   // CH4 SWB=2000 → AUTONOMOUS (rover applies Jetson commands)
-                        1500, 1500, 1500, 1500   // CH5–8 neutral
-                    )
-                )
-                joystickHandler.postDelayed(this, 100)
-            }
-        }
-    }
-
-    private lateinit var btnUp: Button
-    private lateinit var btnDown: Button
-    private lateinit var btnLeft: Button
-    private lateinit var btnRight: Button
 
     // --- ROVER MANAGER ---
     private val roverManager = RoverPositionManager(
@@ -194,12 +162,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         touchOverlay          = findViewById(R.id.touchOverlay)
         btnModeMenu           = findViewById(R.id.btnModeMenu)
         plannerToolbar        = findViewById(R.id.plannerToolbar)
         autoToolbar           = findViewById(R.id.autoToolbar)
-        virtualJoystickLayout = findViewById(R.id.virtualJoystickLayout)
         txtBattery            = findViewById(R.id.txtBattery)
         txtTank               = findViewById(R.id.txtTank)
         txtTemp               = findViewById(R.id.txtTemp)
@@ -215,17 +183,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnCenter             = findViewById(R.id.btnCenter)
         btnEStop              = findViewById(R.id.btnEStop)
         btnClearMap           = findViewById(R.id.btnClearMap)
-        btnConnect            = findViewById(R.id.btnConnect)
         btnUpload             = findViewById(R.id.btnUpload)
         btnStart              = findViewById(R.id.btnStart)
         btnStop               = findViewById(R.id.btnStop)
         btnClear              = findViewById(R.id.btnClear)
         btnToggleR1           = findViewById(R.id.btnToggleR1)
         btnToggleR2           = findViewById(R.id.btnToggleR2)
-        btnUp                 = findViewById(R.id.btnUp)
-        btnDown               = findViewById(R.id.btnDown)
-        btnLeft               = findViewById(R.id.btnLeft)
-        btnRight              = findViewById(R.id.btnRight)
 
         loadStations()
 
@@ -239,7 +202,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         mapFragment.getMapAsync(this)
 
         setupListeners()
-        setupVirtualJoystick()
         setMode(AppMode.MANUAL)
         roverManager.startListening()
     }
@@ -296,9 +258,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 map.animateCamera(CameraUpdateFactory.newLatLng(target))
         }
 
-        // CONNECT — show hotspot connection status and tips
-        btnConnect.setOnClickListener { showConnectionDialog() }
-
         // EMERGENCY STOP — disarm all rovers immediately (broadcast sysId=0)
         // Sent 3× at 100 ms intervals — one dropped UDP packet must never prevent E-STOP.
         btnEStop.setOnClickListener {
@@ -350,24 +309,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnToggleR2.setOnClickListener { toggleRoverMission(2, btnToggleR2) }
     }
 
-    // ─── Connection dialog ────────────────────────────────────────────────────
 
-    private fun showConnectionDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("Rover Network Connection")
-            .setMessage(
-                "Connection mode: WiFi hotspot on master rover\n\n" +
-                "1. On the MK32, go to Settings → WiFi and connect to the\n" +
-                "   master rover's hotspot (e.g. \"AgriRover-1\").\n\n" +
-                "2. This app broadcasts MAVLink heartbeats on UDP port 14550.\n" +
-                "   Both rovers will auto-discover the GCS and reply.\n\n" +
-                "3. Joystick control: physical RC sticks → HM30 → SBUS → RP2040\n" +
-                "   (the virtual D-pad below sends MAVLink MANUAL_CONTROL only).\n\n" +
-                "The ● dot turns green when a rover heartbeat is received."
-            )
-            .setPositiveButton("OK", null)
-            .show()
-    }
 
     // ─── Connection indicator ────────────────────────────────────────────────
 
@@ -634,41 +576,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    // ─── Virtual joystick ────────────────────────────────────────────────────
-
-    private fun setupVirtualJoystick() {
-        val listener = View.OnTouchListener { v, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    isJoystickActive = true
-                    when (v.id) {
-                        R.id.btnUp    -> joyThrottle = 2000
-                        R.id.btnDown  -> joyThrottle = 1000
-                        R.id.btnLeft  -> joySteering = 1000
-                        R.id.btnRight -> joySteering = 2000
-                    }
-                    joystickHandler.post(joystickRunnable)
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    isJoystickActive = false
-                    joyThrottle      = 1500
-                    joySteering      = 1500
-                    joystickHandler.removeCallbacks(joystickRunnable)
-                    // Send one final neutral packet to stop the rover
-                    roverManager.sendRcChannelsOverride(
-                        selectedRoverId,
-                        intArrayOf(1500, 1500, 2000, 2000, 1500, 1500, 1500, 1500)
-                    )
-                }
-            }
-            true
-        }
-        btnUp.setOnTouchListener(listener)
-        btnDown.setOnTouchListener(listener)
-        btnLeft.setOnTouchListener(listener)
-        btnRight.setOnTouchListener(listener)
-    }
-
     // ─── Helpers ──────────────────────────────────────────────────────────────
 
     private fun distanceBetween(a: LatLng, b: LatLng): Double {
@@ -734,11 +641,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         currentTool = PlannerTool.NONE
         touchOverlay.visibility           = View.GONE
         toggleTool(PlannerTool.NONE)
-        virtualJoystickLayout.visibility  = View.GONE
         plannerToolbar.visibility         = View.GONE
         autoToolbar.visibility            = View.GONE
         when (mode) {
-            AppMode.MANUAL  -> { btnModeMenu.text = "MODE: MANUAL";  virtualJoystickLayout.visibility = View.VISIBLE }
+            AppMode.MANUAL  -> { btnModeMenu.text = "MODE: MANUAL" }
             AppMode.PLANNER -> { btnModeMenu.text = "MODE: PLANNER"; plannerToolbar.visibility = View.VISIBLE }
             AppMode.AUTO    -> { btnModeMenu.text = "MODE: AUTO";    autoToolbar.visibility = View.VISIBLE; redrawRoverMissions() }
         }

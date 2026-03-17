@@ -326,8 +326,55 @@ subscribes to the output topic (`sensor_msgs/CompressedImage`, format `"h264"`).
 
 ## Android GQC — status
 
-Scaffold only at `android/AgriRoverGQC/`. Not yet built. See `android/AgriRoverGQC/README.md`.
-Planned stack: Kotlin, Jetpack Compose, java-mavlink, ExoPlayer (RTSP), OSMDroid.
+Implemented at `android/AgriRoverGQC/`. Stack: Kotlin, Google Maps SDK, java-mavlink (io.dronefleet), AppCompat. No Jetpack Compose — standard XML layouts.
+
+### Key classes
+
+| Class | Responsibility |
+|-------|----------------|
+| `MainActivity` | UI, map, mode switching, listeners |
+| `RoverPositionManager` | All MAVLink UDP I/O (send + receive) |
+
+### RoverPositionManager API
+
+- `startListening()` / `stopListening()` — bind UDP :14550, start heartbeat + watchdog loops
+- `sendCommand(sysId, commandId, p1, p2)` — single COMMAND_LONG fire-and-forget
+- `sendCriticalCommand(sysId, commandId, p1, p2)` — **3× at 100 ms intervals** — use for E-STOP and disarm (UDP packet loss must not prevent stopping)
+- `sendRcChannelsOverride(sysId, channels)` — RC_CHANNELS_OVERRIDE 8×PPM µs
+- `uploadMission(sysId, waypoints)` — MAVLink mission upload handshake
+
+**sysId=0 → broadcast to 255.255.255.255:14550** (both rovers).
+
+Rover IPs are auto-discovered from first incoming packet of each sysid — no manual IP configuration needed.
+
+### MAVLink ports (both rovers)
+Both rovers bind :14550 (same port, different Jetsons on the network).
+GQC identifies rovers by **sysid** in HEARTBEAT, not by port.
+GQC always sends to broadcast 192.168.100.255:14550 for discovery; unicasts to known rover IP once discovered.
+**Do not change RV2 bind_port back to 14551** — GQC hardcodes port 14550 for all outbound packets.
+
+### Modes
+
+| Mode | Bottom bar | Behaviour |
+|------|------------|-----------|
+| MANUAL | (none) | Physical RC sticks → HM30 → SBUS → RP2040. App shows map + status only. |
+| PLANNER | Draw / delete / station / save / load / upload | Finger-draw route on satellite map → upload mission |
+| AUTO | R1/R2 toggle, START, PAUSE, CLEAR | ARM + set AUTO mode; mission progress shown on map |
+
+Physical RC control is always active regardless of app mode. The app does NOT send RC override in MANUAL mode (virtual D-pad was removed).
+
+### Screen always-on
+`window.addFlags(FLAG_KEEP_SCREEN_ON)` is set in `onCreate` — screen never dims while app is running.
+
+### Safety
+- E-STOP button broadcasts DISARM (cmd 400, p1=0) to all rovers via `sendCriticalCommand` (3× UDP retry).
+- `checkLinkMismatch()` detects RC switch ≠ slave HEARTBEAT mismatch after 2 s and auto-disarms via `sendCriticalCommand`.
+
+### Map
+- Default view: Jalisco field (`20.727715, -103.566782`, zoom 18)
+- Satellite map by default; toggle to standard via layers FAB
+- Per-rover markers: red=RV1, blue=RV2. Centre dot: green=disarmed, orange=armed, yellow=AUTO.
+- White ring around selected rover marker.
 
 ---
 
@@ -457,5 +504,5 @@ All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
 - `sensor_node.py`: stub returns hardcoded values — wire real I2C sensors (BME280, ultrasonic tank)
 - `firmware/*/main.cpp`: SX1278 driver is complete but needs `pico_sdk_import.cmake` copied from `$PICO_SDK_PATH/external/`
 - `ppm_tx.pio`: slave uses SM0 (not SM1) — one less state machine needed vs master
-- Android GQC: all screens need implementing (see README checklist)
+- Android GQC: RTSP dual video screen, settings dialog, STATUSTEXT log screen still TODO (see android/AgriRoverGQC/README.md)
 - Navigator: no obstacle avoidance — pure pursuit only
