@@ -8,9 +8,10 @@ Subscribes:
   ~/heading      (std_msgs/Float32)        — degrees from north
   ~/mode         (std_msgs/String)         — only active in AUTONOMOUS mode
   ~/mission      (MissionWaypoint)         — waypoints arrive sequentially
+  ~/servo_state  (RCInput)                 — channels 4-7 from mavlink_bridge DO_SET_SERVO
 
 Publishes:
-  ~/cmd_override (RCInput)                 — PPM override to rp2040_bridge
+  ~/cmd_override (RCInput)                 — PPM override to rp2040_bridge (all 8 channels)
 
 Services:
   ~/pause_mission  (std_srvs/Trigger)
@@ -88,12 +89,16 @@ class NavigatorNode(Node):
         self._waypoints:    deque[MissionWaypoint] = deque()
         self._paused:       bool             = False
         self._active_wp:    MissionWaypoint | None = None
+        # Servo state (PPM CH5-CH8) updated from servo_state topic; re-published
+        # in every cmd_override so the RP2040 always has the current servo values.
+        self._servo_ch:     list[int]        = [PPM_CENTER] * 4
 
         # ── Subscriptions ────────────────────────────────────────────────────
-        self.create_subscription(NavSatFix,       'fix',     self._cb_fix,     10)
-        self.create_subscription(Float32,         'heading', self._cb_heading,  10)
-        self.create_subscription(String,          'mode',    self._cb_mode,    10)
-        self.create_subscription(MissionWaypoint, 'mission', self._cb_mission, 10)
+        self.create_subscription(NavSatFix,       'fix',         self._cb_fix,         10)
+        self.create_subscription(Float32,         'heading',     self._cb_heading,      10)
+        self.create_subscription(String,          'mode',        self._cb_mode,         10)
+        self.create_subscription(MissionWaypoint, 'mission',     self._cb_mission,      10)
+        self.create_subscription(RCInput,         'servo_state', self._cb_servo_state,  10)
 
         # ── Publisher ────────────────────────────────────────────────────────
         self.cmd_pub = self.create_publisher(RCInput, 'cmd_override', 10)
@@ -119,6 +124,13 @@ class NavigatorNode(Node):
 
     def _cb_mode(self, msg: String):
         self._mode = msg.data
+
+    def _cb_servo_state(self, msg: RCInput):
+        """Update servo state from mavlink_bridge DO_SET_SERVO commands."""
+        for i in range(4):
+            val = msg.channels[i + 4] if i + 4 < len(msg.channels) else 0
+            if val != 0:
+                self._servo_ch[i] = val
 
     def _cb_mission(self, msg: MissionWaypoint):
         self._waypoints.append(msg)
@@ -195,9 +207,13 @@ class NavigatorNode(Node):
 
     def _publish_cmd(self, throttle: int, steering: int):
         msg          = RCInput()
-        channels     = [0] * 9          # 0 = "don't update" in rp2040_bridge
-        channels[0]  = throttle         # PPM CH1 — only control throttle and steering
-        channels[1]  = steering         # PPM CH2 — servo channels 4-7 managed separately
+        channels     = [PPM_CENTER] * 9
+        channels[0]  = throttle
+        channels[1]  = steering
+        channels[4]  = self._servo_ch[0]   # PPM CH5 — servo 5
+        channels[5]  = self._servo_ch[1]   # PPM CH6 — servo 6
+        channels[6]  = self._servo_ch[2]   # PPM CH7 — servo 7
+        channels[7]  = self._servo_ch[3]   # PPM CH8 — servo 8
         msg.channels = channels
         msg.mode     = 'AUTONOMOUS'
         msg.stamp    = self.get_clock().now().to_msg()

@@ -105,8 +105,9 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(Float32,      'heading',     self._cb_heading, 10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
-        self.cmd_pub     = self.create_publisher(RCInput,          'cmd_override', 10)
-        self.mission_pub = self.create_publisher(MissionWaypoint,  'mission',      10)
+        self.cmd_pub      = self.create_publisher(RCInput,          'cmd_override', 10)
+        self.mission_pub  = self.create_publisher(MissionWaypoint,  'mission',      10)
+        self.servo_pub    = self.create_publisher(RCInput,          'servo_state',  10)
 
         # ── MAVLink receive thread ────────────────────────────────────────────
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
@@ -235,23 +236,23 @@ class MavlinkBridgeNode(Node):
                 self._on_mission_item(msg)
 
     def _apply_servo_cmd(self, servo: int, pwm: int):
-        """Apply a DO_SET_SERVO command: update servo state and publish to cmd_override.
+        """Apply a DO_SET_SERVO command: update servo state and publish to servo_state.
 
         Servo 5-8 map to PPM channels 4-7 (0-indexed).
-        Channels 0-3 are published as 0 (rp2040_bridge keeps the last throttle/steering).
+        Published on servo_state topic — navigator subscribes, maintains the values,
+        and includes them in every cmd_override tick so they are sent continuously.
         """
         if servo not in self._servo_pwm:
             self.get_logger().warn(f'DO_SET_SERVO: servo {servo} out of range (5-8)')
             return
         self._servo_pwm[servo] = max(1000, min(2000, pwm))
         rc = RCInput()
-        # 0 = "keep last value" in rp2040_bridge (throttle/steering unchanged)
         rc.channels = [0, 0, 0, 0,
                        self._servo_pwm[5], self._servo_pwm[6],
                        self._servo_pwm[7], self._servo_pwm[8]]
         rc.mode  = 'SERVO'
         rc.stamp = self.get_clock().now().to_msg()
-        self.cmd_pub.publish(rc)
+        self.servo_pub.publish(rc)
         self.get_logger().info(
             f'DO_SET_SERVO servo={servo} pwm={self._servo_pwm[servo]} µs')
 
