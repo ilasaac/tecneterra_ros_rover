@@ -64,8 +64,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var btnLoad:        FloatingActionButton
     private lateinit var btnLayers:      FloatingActionButton
     private lateinit var btnCenter:      FloatingActionButton
-    private lateinit var btnEStop:       Button
-    private lateinit var btnClearMap:    Button
+    private lateinit var btnEStop:          Button
+    private lateinit var btnClearMap:       Button
+    private lateinit var btnAddRoverPoint:  Button
+    private lateinit var btnRec:            Button
 
     // Auto Buttons
     private lateinit var btnUpload:   Button
@@ -85,6 +87,28 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var isFollowingRover  = false
     private var lastAddedPoint:   LatLng? = null
     private val MIN_DRAW_DISTANCE = 2.0
+
+    // --- RECORDING ---
+    // recordedMission stores the full sequence including servo commands.
+    // routePoints stores only waypoints (for map display and plain uploads).
+    private var isRecording = false
+    private val recordedMission = mutableListOf<MissionAction>()
+    // Last PPM µs values for aux channels (PPM CH5–CH8, logical indices 4–7).
+    // Initialised to 1500 (neutral) and updated when a >100 µs change is detected.
+    private val lastAuxPwm = IntArray(4) { 1500 }
+
+    private val recordHandler = Handler(Looper.getMainLooper())
+    private val recordRunnable = object : Runnable {
+        override fun run() {
+            if (!isRecording) return
+            roverPositions[selectedRoverId]?.let { pos ->
+                recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude))
+                routePoints.add(pos)
+                redrawMap()
+            }
+            recordHandler.postDelayed(this, 500)
+        }
+    }
 
     // --- ROVER MANAGER ---
     private val roverManager = RoverPositionManager(
@@ -147,7 +171,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         onRcChannels = { sysId, channels ->
             runOnUiThread {
                 roverPpmChannels[sysId] = channels
-                if (sysId == selectedRoverId) updateRcStrip(sysId)
+                if (sysId == selectedRoverId) {
+                    updateRcStrip(sysId)
+                    if (isRecording) checkAuxChannelChanges(channels)
+                }
             }
         },
 
@@ -183,6 +210,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnCenter             = findViewById(R.id.btnCenter)
         btnEStop              = findViewById(R.id.btnEStop)
         btnClearMap           = findViewById(R.id.btnClearMap)
+        btnAddRoverPoint      = findViewById(R.id.btnAddRoverPoint)
+        btnRec                = findViewById(R.id.btnRec)
         btnUpload             = findViewById(R.id.btnUpload)
         btnStart              = findViewById(R.id.btnStart)
         btnStop               = findViewById(R.id.btnStop)
@@ -244,8 +273,27 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnSave.setOnClickListener      { showSaveDialog() }
         btnLoad.setOnClickListener      { showLoadDialog() }
         btnClearMap.setOnClickListener  {
-            nextWaypointIndex = 0; routePoints.clear(); redrawMap()
+            if (isRecording) stopRecording()
+            nextWaypointIndex = 0; routePoints.clear(); recordedMission.clear(); redrawMap()
             Toast.makeText(this, "Map Cleared", Toast.LENGTH_SHORT).show()
+        }
+
+        // ADD — inserts the selected rover's current GPS position as a single waypoint
+        btnAddRoverPoint.setOnClickListener {
+            val pos = roverPositions[selectedRoverId]
+            if (pos == null) {
+                Toast.makeText(this, "No rover position yet", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            routePoints.add(pos)
+            // Keep recordedMission in sync so UPLOAD uses the right items
+            recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude))
+            redrawMap()
+        }
+
+        // REC — toggles timed position recording with aux-channel servo capture
+        btnRec.setOnClickListener {
+            if (isRecording) stopRecording() else startRecording()
         }
 
         // Map Controls
@@ -267,18 +315,30 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         // PLANNER: UPLOAD
         btnUpload.setOnClickListener {
-            if (routePoints.isNotEmpty()) {
-                redrawMap()
-                roverMissions[selectedRoverId]        = ArrayList(routePoints)
-                roverMissionVisible[selectedRoverId]  = true
+            if (isRecording) stopRecording()
+            if (routePoints.isEmpty()) {
+                Toast.makeText(this, "No waypoints to upload", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            roverMissions[selectedRoverId]       = ArrayList(routePoints)
+            roverMissionVisible[selectedRoverId] = true
+            redrawMap()
+            redrawRoverMissions()
+
+            val servoCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
+            if (servoCount > 0) {
+                // Recorded mission: mixed waypoints + DO_SET_SERVO commands
+                roverManager.uploadRecordedMission(selectedRoverId, recordedMission)
+                Toast.makeText(this,
+                    "Uploading ${routePoints.size} WPs + $servoCount servo cmds to Rover $selectedRoverId…",
+                    Toast.LENGTH_SHORT).show()
+            } else {
+                // Waypoints-only path (tap-draw or ADD button, no servo changes)
                 roverManager.uploadMission(selectedRoverId,
                     routePoints.map { Pair(it.latitude, it.longitude) })
-                redrawRoverMissions()
                 Toast.makeText(this,
                     "Uploading ${routePoints.size} WPs to Rover $selectedRoverId…",
                     Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "No waypoints drawn", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -301,7 +361,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
 
         btnClear.setOnClickListener {
-            nextWaypointIndex = 0; routePoints.clear(); redrawMap()
+            nextWaypointIndex = 0; routePoints.clear(); recordedMission.clear(); redrawMap()
             roverManager.uploadMission(selectedRoverId, emptyList())
         }
 
@@ -310,6 +370,55 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
 
+
+    // ─── Recording ───────────────────────────────────────────────────────────
+
+    private fun startRecording() {
+        // Stop any manual draw mode so touches don't add map points while recording
+        toggleTool(PlannerTool.NONE)
+        isRecording = true
+        routePoints.clear()
+        recordedMission.clear()
+        nextWaypointIndex = 0
+        // Snapshot current aux channel states so only future *changes* are recorded
+        roverPpmChannels[selectedRoverId]?.let { ch ->
+            for (i in 0..3) lastAuxPwm[i] = if (i + 4 < ch.size) ch[i + 4] else 1500
+        }
+        btnRec.text = "⏹ STOP"
+        btnRec.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#607D8B"))
+        recordHandler.post(recordRunnable)
+        Toast.makeText(this, "Recording…", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun stopRecording() {
+        isRecording = false
+        recordHandler.removeCallbacks(recordRunnable)
+        btnRec.text = "⏺ REC"
+        btnRec.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#F44336"))
+        val wpCount  = recordedMission.filterIsInstance<MissionAction.Waypoint>().size
+        val srvCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
+        Toast.makeText(this,
+            "Recorded $wpCount waypoints" + if (srvCount > 0) " + $srvCount servo cmds" else "",
+            Toast.LENGTH_LONG).show()
+    }
+
+    /**
+     * Called on every RC_CHANNELS update while recording is active.
+     * channels[4..7] = PPM CH5–CH8 (aux outputs, logical/SBUS order, no inversion).
+     * A change of >100 µs triggers a DO_SET_SERVO entry in the recorded mission.
+     * Servo numbers 5–8 match the RP2040 PPM CH5–CH8 outputs.
+     */
+    private fun checkAuxChannelChanges(channels: IntArray) {
+        for (i in 0..3) {
+            val ppmIdx = i + 4
+            if (ppmIdx >= channels.size) break
+            val newPwm = channels[ppmIdx]
+            if (Math.abs(newPwm - lastAuxPwm[i]) > 100) {
+                lastAuxPwm[i] = newPwm
+                recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = newPwm))
+            }
+        }
+    }
 
     // ─── Connection indicator ────────────────────────────────────────────────
 

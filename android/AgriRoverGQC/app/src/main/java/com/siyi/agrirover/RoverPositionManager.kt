@@ -12,6 +12,16 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
 /**
+ * A recorded mission item — either a GPS waypoint or a servo state change.
+ * Built by MainActivity during recording and passed to uploadRecordedMission().
+ */
+sealed class MissionAction {
+    data class Waypoint(val lat: Double, val lon: Double) : MissionAction()
+    /** servo: 5–8 (PPM CH5–CH8).  pwm: µs value to set on that channel. */
+    data class ServoCmd(val servo: Int, val pwm: Int) : MissionAction()
+}
+
+/**
  * Manages all MAVLink UDP communication with rover(s) over the master rover's WiFi hotspot.
  *
  * Discovery:
@@ -230,6 +240,51 @@ class RoverPositionManager(
 
             pendingMissions[sysId] = items
 
+            sendMavlinkTo(
+                roverIp(sysId),
+                MissionCount.builder()
+                    .targetSystem(sysId).targetComponent(1)
+                    .count(items.size)
+                    .build()
+            )
+        }
+    }
+
+    /**
+     * Upload a recorded mission that may contain both NAV_WAYPOINT and DO_SET_SERVO items.
+     *
+     * Waypoints → MAV_CMD_NAV_WAYPOINT (frame GLOBAL_RELATIVE_ALT_INT)
+     * ServoCmds → MAV_CMD_DO_SET_SERVO (frame MISSION, param1=servo 5-8, param2=pwm µs)
+     *
+     * DO_SET_SERVO items are executed by the autopilot when it reaches the preceding
+     * waypoint, following standard MAVLink mission DO-command sequencing.
+     */
+    fun uploadRecordedMission(sysId: Int, actions: List<MissionAction>) {
+        scope.launch {
+            var seq = 0
+            val items = actions.map { action ->
+                when (action) {
+                    is MissionAction.Waypoint ->
+                        MissionItemInt.builder()
+                            .seq(seq).targetSystem(sysId).targetComponent(1)
+                            .frame(MavFrame.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT)
+                            .command(MavCmd.MAV_CMD_NAV_WAYPOINT)
+                            .current(if (seq++ == 0) 1 else 0).autocontinue(1)
+                            .x((action.lat * 1e7).toInt()).y((action.lon * 1e7).toInt())
+                            .z(0f).param1(0f).param2(0f).param3(0f).param4(0f)
+                            .build()
+                    is MissionAction.ServoCmd ->
+                        MissionItemInt.builder()
+                            .seq(seq).targetSystem(sysId).targetComponent(1)
+                            .frame(MavFrame.MAV_FRAME_MISSION)
+                            .command(MavCmd.MAV_CMD_DO_SET_SERVO)
+                            .current(if (seq++ == 0) 1 else 0).autocontinue(1)
+                            .param1(action.servo.toFloat()).param2(action.pwm.toFloat())
+                            .param3(0f).param4(0f).x(0).y(0).z(0f)
+                            .build()
+                }
+            }
+            pendingMissions[sysId] = items
             sendMavlinkTo(
                 roverIp(sysId),
                 MissionCount.builder()
