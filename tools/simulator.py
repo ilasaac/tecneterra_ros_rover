@@ -24,8 +24,8 @@ Requirements:
 
 Usage:
   python3 simulator.py --rv1-ip 192.168.1.10 --rv2-ip 192.168.1.11 \\
-                        --rv1-lat -23.550520  --rv1-lon -46.633308   \\
-                        --rv2-lat -23.550620  --rv2-lon -46.633408
+                        --rv1-lat 20.7276944  --rv1-lon -103.5667778 \\
+                        --rv2-lat 20.7276667  --rv2-lon -103.5668056
 
   # Dry-run: print sample NMEA to stdout, do not send UDP
   python3 simulator.py --dry-run
@@ -320,12 +320,12 @@ def parse_args():
                    help='UDP port for secondary GPS stream (same on both rovers)')
 
     # Start positions
-    p.add_argument('--rv1-lat',   default=-23.550520, type=float)
-    p.add_argument('--rv1-lon',   default=-46.633308, type=float)
-    p.add_argument('--rv1-hdg',   default=0.0,        type=float)
-    p.add_argument('--rv2-lat',   default=-23.550620, type=float)
-    p.add_argument('--rv2-lon',   default=-46.633408, type=float)
-    p.add_argument('--rv2-hdg',   default=0.0,        type=float)
+    p.add_argument('--rv1-lat',   default=20.7276944,   type=float)
+    p.add_argument('--rv1-lon',   default=-103.5667778, type=float)
+    p.add_argument('--rv1-hdg',   default=270.0,        type=float)
+    p.add_argument('--rv2-lat',   default=20.7276667,   type=float)
+    p.add_argument('--rv2-lon',   default=-103.5668056, type=float)
+    p.add_argument('--rv2-hdg',   default=270.0,        type=float)
 
     # Physics
     p.add_argument('--max-speed',   default=1.5,  type=float, metavar='M/S')
