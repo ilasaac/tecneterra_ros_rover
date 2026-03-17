@@ -121,15 +121,10 @@
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent">
 
-        <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/btnAddPoint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:src="@android:drawable/ic_input_add" android:layout_margin="5dp"/>
-        <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/btnDelPoint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:src="@android:drawable/ic_delete" android:layout_margin="5dp"/>
-        <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/btnRecord" android:layout_width="wrap_content" android:layout_height="wrap_content" android:src="@android:drawable/ic_menu_save" android:layout_margin="5dp"/>
         <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/btnSave" android:layout_width="wrap_content" android:layout_height="wrap_content" android:src="@android:drawable/ic_menu_save" android:layout_margin="5dp"/>
         <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/btnLoad" android:layout_width="wrap_content" android:layout_height="wrap_content" android:src="@android:drawable/ic_menu_upload" android:layout_margin="5dp"/>
-        <Button android:id="@+id/btnAddRoverPoint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="ADD" android:backgroundTint="#4CAF50" android:layout_margin="5dp"/>
         <Button android:id="@+id/btnRec" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="⏺ REC" android:backgroundTint="#F44336" android:layout_margin="5dp"/>
-        <Button android:id="@+id/btnClearMap" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="CLEAR" android:layout_margin="5dp"/>
-        <Button android:id="@+id/btnUpload" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="UPLOAD" />
+        <Button android:id="@+id/btnUpload" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="UPLOAD" android:backgroundTint="#2196F3" android:layout_margin="5dp"/>
     </LinearLayout>
 
     <!-- ── Auto toolbar (bottom) ───────────────────────────────────────── -->

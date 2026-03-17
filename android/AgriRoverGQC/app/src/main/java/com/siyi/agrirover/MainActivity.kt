@@ -3,11 +3,9 @@ package com.siyi.agrirover
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.*
-import android.location.Location
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.MotionEvent
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
@@ -26,10 +24,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     // --- ENUMS & STATE ---
     enum class AppMode { MANUAL, PLANNER, AUTO }
-    enum class PlannerTool { NONE, ADD, DELETE, SET_WATER, SET_BATTERY }
 
     private var currentMode = AppMode.MANUAL
-    private var currentTool = PlannerTool.NONE
 
     // --- MULTI-ROVER STATE ---
     private var selectedRoverId = 1
@@ -57,17 +53,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var txtTemp:        TextView
     private lateinit var txtConnection:  TextView   // ● connection dot
     private lateinit var txtRcChannels:  TextView   // RC PPM strip
-    private lateinit var btnAddPoint:    FloatingActionButton
-    private lateinit var btnDelPoint:    FloatingActionButton
-    private lateinit var btnSetStations: FloatingActionButton
     private lateinit var btnSave:        FloatingActionButton
     private lateinit var btnLoad:        FloatingActionButton
     private lateinit var btnLayers:      FloatingActionButton
     private lateinit var btnCenter:      FloatingActionButton
-    private lateinit var btnEStop:          Button
-    private lateinit var btnClearMap:       Button
-    private lateinit var btnAddRoverPoint:  Button
-    private lateinit var btnRec:            Button
+    private lateinit var btnEStop:       Button
+    private lateinit var btnRec:         Button
 
     // Auto Buttons
     private lateinit var btnUpload:   Button
@@ -85,8 +76,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var isReturningHome   = false
     private val routeOverlays     = mutableListOf<Any>()
     private var isFollowingRover  = false
-    private var lastAddedPoint:   LatLng? = null
-    private val MIN_DRAW_DISTANCE = 2.0
 
     // --- RECORDING ---
     // recordedMission stores the full sequence including servo commands.
@@ -171,6 +160,18 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         onRcChannels = { sysId, channels ->
             runOnUiThread {
                 roverPpmChannels[sysId] = channels
+                // CH9 (index 8) selects active rover: <1250 → RV1, >1750 → RV2, mid → no change
+                if (channels.size > 8 && channels[8] != 65535) {
+                    val newId = when {
+                        channels[8] < 1250 -> 1
+                        channels[8] > 1750 -> 2
+                        else               -> selectedRoverId
+                    }
+                    if (newId != selectedRoverId) {
+                        selectedRoverId = newId
+                        updateRcStrip(newId)
+                    }
+                }
                 if (sysId == selectedRoverId) {
                     updateRcStrip(sysId)
                     if (isRecording) checkAuxChannelChanges(channels)
@@ -200,17 +201,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         txtTemp               = findViewById(R.id.txtTemp)
         txtConnection         = findViewById(R.id.txtConnection)
         txtRcChannels         = findViewById(R.id.txtRcChannels)
-        btnAddPoint           = findViewById(R.id.btnAddPoint)
-        btnDelPoint           = findViewById(R.id.btnDelPoint)
-        btnSetStations        = findViewById(R.id.btnRecord)
-        btnSetStations.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_water_drop))
         btnSave               = findViewById(R.id.btnSave)
         btnLoad               = findViewById(R.id.btnLoad)
         btnLayers             = findViewById(R.id.btnLayers)
         btnCenter             = findViewById(R.id.btnCenter)
         btnEStop              = findViewById(R.id.btnEStop)
-        btnClearMap           = findViewById(R.id.btnClearMap)
-        btnAddRoverPoint      = findViewById(R.id.btnAddRoverPoint)
         btnRec                = findViewById(R.id.btnRec)
         btnUpload             = findViewById(R.id.btnUpload)
         btnStart              = findViewById(R.id.btnStart)
@@ -267,29 +262,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnModeMenu.setOnClickListener { showModeMenu(it) }
 
         // Planner Actions
-        btnAddPoint.setOnClickListener  { toggleTool(PlannerTool.ADD) }
-        btnDelPoint.setOnClickListener  { toggleTool(PlannerTool.DELETE) }
-        btnSetStations.setOnClickListener { showStationMenu(it) }
         btnSave.setOnClickListener      { showSaveDialog() }
         btnLoad.setOnClickListener      { showLoadDialog() }
-        btnClearMap.setOnClickListener  {
-            if (isRecording) stopRecording()
-            nextWaypointIndex = 0; routePoints.clear(); recordedMission.clear(); redrawMap()
-            Toast.makeText(this, "Map Cleared", Toast.LENGTH_SHORT).show()
-        }
-
-        // ADD — inserts the selected rover's current GPS position as a single waypoint
-        btnAddRoverPoint.setOnClickListener {
-            val pos = roverPositions[selectedRoverId]
-            if (pos == null) {
-                Toast.makeText(this, "No rover position yet", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            routePoints.add(pos)
-            // Keep recordedMission in sync so UPLOAD uses the right items
-            recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude))
-            redrawMap()
-        }
 
         // REC — toggles timed position recording with aux-channel servo capture
         btnRec.setOnClickListener {
@@ -374,8 +348,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     // ─── Recording ───────────────────────────────────────────────────────────
 
     private fun startRecording() {
-        // Stop any manual draw mode so touches don't add map points while recording
-        toggleTool(PlannerTool.NONE)
         isRecording = true
         routePoints.clear()
         recordedMission.clear()
@@ -481,19 +453,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             val marker = map.addMarker(
                 MarkerOptions().position(pos).anchor(0.5f, 0.5f).flat(true)
             )
-            if (marker != null) {
-                roverMarkers[sysId] = marker
-                map.setOnMarkerClickListener { m ->
-                    roverMarkers.forEach { (id, mk) ->
-                        if (mk == m) {
-                            selectedRoverId = id
-                            updateRcStrip(id)
-                            Toast.makeText(this, "Selected Rover $id", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    false
-                }
-            }
+            if (marker != null) roverMarkers[sysId] = marker
         }
 
         val isAuto     = roverModes[sysId] == AppMode.AUTO
@@ -562,42 +522,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
         }
 
-        touchOverlay.setOnTouchListener { _, event ->
-            if (currentMode == AppMode.PLANNER && currentTool != PlannerTool.NONE) {
-                val point = android.graphics.Point(event.x.toInt(), event.y.toInt())
-                val p     = map.projection.fromScreenLocation(point)
-                when (event.action) {
-                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                        if (currentTool == PlannerTool.ADD) {
-                            if (lastAddedPoint == null ||
-                                distanceBetween(p, lastAddedPoint!!) > MIN_DRAW_DISTANCE) {
-                                routePoints.add(p)
-                                lastAddedPoint = p
-                                redrawMap()
-                            }
-                        } else if (currentTool == PlannerTool.DELETE) {
-                            for (i in routePoints.indices.reversed())
-                                if (distanceBetween(routePoints[i], p) < 5.0)
-                                    routePoints.removeAt(i)
-                            redrawMap()
-                        }
-                        return@setOnTouchListener true
-                    }
-                    MotionEvent.ACTION_UP -> {
-                        if (currentTool == PlannerTool.SET_WATER) {
-                            waterPoint = p; saveStations(); redrawMap()
-                            toggleTool(PlannerTool.NONE)
-                        } else if (currentTool == PlannerTool.SET_BATTERY) {
-                            batteryPoint = p; saveStations(); redrawMap()
-                            toggleTool(PlannerTool.NONE)
-                        }
-                        lastAddedPoint = null
-                        return@setOnTouchListener true
-                    }
-                }
-            }
-            false
-        }
     }
 
     // ─── Map drawing ─────────────────────────────────────────────────────────
@@ -692,35 +616,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     // ─── Helpers ──────────────────────────────────────────────────────────────
 
-    private fun distanceBetween(a: LatLng, b: LatLng): Double {
-        val results = FloatArray(1)
-        Location.distanceBetween(a.latitude, a.longitude, b.latitude, b.longitude, results)
-        return results[0].toDouble()
-    }
-
     private fun updateFollowButtonState() {
         btnCenter.backgroundTintList = ColorStateList.valueOf(
             if (isFollowingRover) Color.GREEN else Color.WHITE)
-    }
-
-    private fun toggleTool(tool: PlannerTool) {
-        currentTool = if (currentTool == tool) PlannerTool.NONE else tool
-        touchOverlay.visibility =
-            if (currentTool != PlannerTool.NONE) View.VISIBLE else View.GONE
-        updateToolUI()
-    }
-
-    private fun updateToolUI() {
-        btnAddPoint.backgroundTintList    = ColorStateList.valueOf(Color.GRAY)
-        btnDelPoint.backgroundTintList    = ColorStateList.valueOf(Color.GRAY)
-        btnSetStations.backgroundTintList = ColorStateList.valueOf(Color.GRAY)
-        when (currentTool) {
-            PlannerTool.ADD         -> btnAddPoint.backgroundTintList    = ColorStateList.valueOf(Color.GREEN)
-            PlannerTool.DELETE      -> btnDelPoint.backgroundTintList    = ColorStateList.valueOf(Color.RED)
-            PlannerTool.SET_WATER   -> btnSetStations.backgroundTintList = ColorStateList.valueOf(Color.BLUE)
-            PlannerTool.SET_BATTERY -> btnSetStations.backgroundTintList = ColorStateList.valueOf(Color.YELLOW)
-            else -> {}
-        }
     }
 
     private fun toggleMapLayer() {
@@ -752,9 +650,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun setMode(mode: AppMode) {
         currentMode = mode
-        currentTool = PlannerTool.NONE
         touchOverlay.visibility           = View.GONE
-        toggleTool(PlannerTool.NONE)
         plannerToolbar.visibility         = View.GONE
         autoToolbar.visibility            = View.GONE
         when (mode) {
@@ -762,20 +658,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             AppMode.PLANNER -> { btnModeMenu.text = "MODE: PLANNER"; plannerToolbar.visibility = View.VISIBLE }
             AppMode.AUTO    -> { btnModeMenu.text = "MODE: AUTO";    autoToolbar.visibility = View.VISIBLE; redrawRoverMissions() }
         }
-    }
-
-    private fun showStationMenu(v: View) {
-        val popup = PopupMenu(this, v)
-        popup.menu.add("Set Water Station")
-        popup.menu.add("Set Battery Station")
-        popup.setOnMenuItemClickListener { item ->
-            when (item.title) {
-                "Set Water Station"   -> { toggleTool(PlannerTool.SET_WATER);   Toast.makeText(this, "Tap Map for Water",   Toast.LENGTH_SHORT).show() }
-                "Set Battery Station" -> { toggleTool(PlannerTool.SET_BATTERY); Toast.makeText(this, "Tap Map for Battery", Toast.LENGTH_SHORT).show() }
-            }
-            true
-        }
-        popup.show()
     }
 
     private fun saveStations() {
