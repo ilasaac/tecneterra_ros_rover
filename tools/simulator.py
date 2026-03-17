@@ -194,6 +194,69 @@ def udp_send(sock: socket.socket, data: bytes, addr: tuple, label: str):
         print(f'\n[WARN] UDP send to {label} {addr}: {e}', file=sys.stderr)
 
 
+# ── Rover IP discovery ─────────────────────────────────────────────────────────
+
+def _parse_sysid(data: bytes) -> int:
+    """Extract MAVLink sysid from a raw UDP payload. Returns 0 on failure."""
+    if not data:
+        return 0
+    if data[0] == 0xFD and len(data) >= 6:   # MAVLink v2
+        return data[5]
+    if data[0] == 0xFE and len(data) >= 4:   # MAVLink v1
+        return data[3]
+    return 0
+
+
+class AddrBook:
+    """Auto-discovers rover IPs from MAVLink broadcasts (passive listener only).
+
+    Both rovers broadcast MAVLink telemetry to 192.168.100.255:14550 at ~18 Hz.
+    Binding to that port lets the simulator capture each rover's source IP without
+    manual configuration.  The listener generates zero additional network traffic
+    and keeps addresses current if a rover reboots with a new DHCP IP mid-session.
+    """
+
+    def __init__(self):
+        self._ips: dict = {}   # sysid → ip_str
+        self._lock = threading.Lock()
+
+    def set_ip(self, sysid: int, ip: str):
+        with self._lock:
+            old = self._ips.get(sysid)
+        if old != ip:
+            print(f'  [NET] RV{sysid} → {ip}')
+            with self._lock:
+                self._ips[sysid] = ip
+
+    def get_ip(self, sysid: int):
+        with self._lock:
+            return self._ips.get(sysid)
+
+    def ready(self, sysids=(1, 2)) -> bool:
+        with self._lock:
+            return all(s in self._ips for s in sysids)
+
+    def start_listener(self, port: int):
+        """Passive background thread: update rover IPs from incoming MAVLink broadcasts."""
+        def _run():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.settimeout(2.0)
+            sock.bind(('', port))
+            while True:
+                try:
+                    data, (src_ip, _) = sock.recvfrom(512)
+                except OSError:
+                    break
+                except socket.timeout:
+                    continue
+                sysid = _parse_sysid(data)
+                if sysid in (1, 2):
+                    self.set_ip(sysid, src_ip)
+        threading.Thread(target=_run, daemon=True).start()
+
+
 # ── Status display ────────────────────────────────────────────────────────────
 
 ANSI_CLR  = '\033[2J\033[H'
@@ -205,7 +268,7 @@ ANSI_RED  = '\033[31m'
 
 
 def _status_str(rv1: RoverState, rv2: RoverState,
-                ppm_age: float, tick: int, args, dry_run: bool) -> str:
+                ppm_age: float, tick: int, args, dry_run: bool, addrs: AddrBook) -> str:
     def ppm_col(age):
         if age < 0.5:  return ANSI_GRN
         if age < 2.0:  return ANSI_YLW
@@ -213,11 +276,13 @@ def _status_str(rv1: RoverState, rv2: RoverState,
 
     mode    = f'{ANSI_YLW}DRY-RUN{ANSI_RST}' if dry_run else f'{ANSI_GRN}LIVE{ANSI_RST}'
     ppm_str = f'{ppm_col(ppm_age)}{ppm_age*1000:.0f} ms{ANSI_RST}'
+    rv1_ip  = addrs.get_ip(1) or '?'
+    rv2_ip  = addrs.get_ip(2) or '?'
     lines = [
         f'{ANSI_BOLD}AgriRover GPS Simulator{ANSI_RST}  [{mode}]  tick={tick}  rate={args.rate:.0f} Hz',
         f'  PPM age : {ppm_str}  (>2 s → rovers frozen)',
-        f'  Targets : RV1 {args.rv1_ip}:{args.pri_port}/{args.sec_port}'
-        f'  RV2 {args.rv2_ip}:{args.pri_port}/{args.sec_port}',
+        f'  Targets : RV1 {rv1_ip}:{args.pri_port}/{args.sec_port}'
+        f'  RV2 {rv2_ip}:{args.pri_port}/{args.sec_port}',
         '',
         f'  {"Rover":<6} {"Lat":>14} {"Lon":>14} {"Heading":>10} {"Speed":>10}',
         f'  {"─"*6} {"─"*14} {"─"*14} {"─"*10} {"─"*10}',
@@ -241,10 +306,14 @@ def parse_args():
     p.add_argument('--ppm-baud',  default=115200, type=int)
 
     # WiFi targets
-    p.add_argument('--rv1-ip',    default='192.168.1.10',
-                   help='RV1 Jetson IP address')
-    p.add_argument('--rv2-ip',    default='192.168.1.11',
-                   help='RV2 Jetson IP address')
+    p.add_argument('--rv1-ip',    default=None,
+                   help='RV1 Jetson IP (auto-discovered from MAVLink broadcast if omitted)')
+    p.add_argument('--rv2-ip',    default=None,
+                   help='RV2 Jetson IP (auto-discovered from MAVLink broadcast if omitted)')
+    p.add_argument('--mavlink-port', default=14550, type=int, metavar='PORT',
+                   help='UDP port rovers broadcast MAVLink on (used for IP discovery)')
+    p.add_argument('--discovery-timeout', default=30.0, type=float, metavar='S',
+                   help='Max seconds to wait for rover IPs via MAVLink broadcast')
     p.add_argument('--pri-port',  default=5000, type=int,
                    help='UDP port for primary GPS stream (same on both rovers)')
     p.add_argument('--sec-port',  default=5001, type=int,
@@ -279,17 +348,36 @@ def parse_args():
 def main():
     args = parse_args()
 
-    print('\nAgriRover GPS Simulator (WiFi mode)')
-    print(f'  Targets: RV1={args.rv1_ip}  RV2={args.rv2_ip}'
-          f'  ports pri:{args.pri_port} sec:{args.sec_port}')
+    print('\nAgriRover GPS Simulator')
+
+    # ── Rover IP discovery ────────────────────────────────────────────────────
+    addrs = AddrBook()
+    if args.rv1_ip:
+        addrs.set_ip(1, args.rv1_ip)
+    if args.rv2_ip:
+        addrs.set_ip(2, args.rv2_ip)
+
+    if not args.dry_run:
+        addrs.start_listener(port=args.mavlink_port)
+
+        if not addrs.ready():
+            missing = [f'RV{i}' for i in (1, 2) if not addrs.get_ip(i)]
+            print(f'  Waiting for {", ".join(missing)} via MAVLink broadcast'
+                  f' on :{args.mavlink_port} (timeout {args.discovery_timeout:.0f}s)...')
+            deadline = time.monotonic() + args.discovery_timeout
+            while not addrs.ready() and time.monotonic() < deadline:
+                time.sleep(0.2)
+            if not addrs.ready():
+                missing = [f'RV{i}' for i in (1, 2) if not addrs.get_ip(i)]
+                sys.exit(f'[ERR] Not discovered: {", ".join(missing)}'
+                         f' — is mavlink_bridge running?')
+
+    print(f'  RV1={addrs.get_ip(1) or args.rv1_ip or "?"}  '
+          f'RV2={addrs.get_ip(2) or args.rv2_ip or "?"}  '
+          f'ports pri:{args.pri_port} sec:{args.sec_port}')
 
     ppm  = PpmReader(args.ppm_port, args.ppm_baud, args.thr_ch, args.str_ch)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    rv1_pri_addr = (args.rv1_ip, args.pri_port)
-    rv1_sec_addr = (args.rv1_ip, args.sec_port)
-    rv2_pri_addr = (args.rv2_ip, args.pri_port)
-    rv2_sec_addr = (args.rv2_ip, args.sec_port)
 
     rv1 = RoverState(args.rv1_lat, args.rv1_lon, args.rv1_hdg)
     rv2 = RoverState(args.rv2_lat, args.rv2_lon, args.rv2_hdg)
@@ -346,13 +434,18 @@ def main():
         rv1_sec_pkt = make_gga(s1_lat, s1_lon, args.alt)
         rv2_sec_pkt = make_gga(s2_lat, s2_lon, args.alt)
 
-        udp_send(sock, rv1_pri_pkt, rv1_pri_addr, 'rv1_pri')
-        udp_send(sock, rv1_sec_pkt, rv1_sec_addr, 'rv1_sec')
-        udp_send(sock, rv2_pri_pkt, rv2_pri_addr, 'rv2_pri')
-        udp_send(sock, rv2_sec_pkt, rv2_sec_addr, 'rv2_sec')
+        # Resolve current IPs (updated live by AddrBook listener)
+        rv1_ip = addrs.get_ip(1)
+        rv2_ip = addrs.get_ip(2)
+        if rv1_ip:
+            udp_send(sock, rv1_pri_pkt, (rv1_ip, args.pri_port), 'rv1_pri')
+            udp_send(sock, rv1_sec_pkt, (rv1_ip, args.sec_port), 'rv1_sec')
+        if rv2_ip:
+            udp_send(sock, rv2_pri_pkt, (rv2_ip, args.pri_port), 'rv2_pri')
+            udp_send(sock, rv2_sec_pkt, (rv2_ip, args.sec_port), 'rv2_sec')
 
         if tick % max(1, round(args.rate)) == 0:
-            sys.stdout.write(_status_str(rv1, rv2, ppm_age, tick, args, args.dry_run))
+            sys.stdout.write(_status_str(rv1, rv2, ppm_age, tick, args, args.dry_run, addrs))
             sys.stdout.flush()
 
     print('\n\nSimulator stopped.')
