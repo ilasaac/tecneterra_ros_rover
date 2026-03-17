@@ -13,6 +13,10 @@ Serial protocol (RP2040 → Jetson):
 Serial protocol (Jetson → RP2040):
   <HB:N>          heartbeat (must arrive within 300 ms or AUTO drops)
   <J:c0,...,c7>   8-channel autonomous override (PPM µs)
+
+Reconnect behaviour:
+  If the USB-CDC device disconnects (RP2040 reset, cable pull, OSError/EIO),
+  the node closes the port and retries every 2 s.  No restart required.
 """
 
 from __future__ import annotations
@@ -35,6 +39,9 @@ from agri_rover_interfaces.msg import RCInput
 PPM_CENTER = 1500
 CHANNELS   = 16
 
+# Both SerialException and OSError (errno 5 / EIO) can occur on USB disconnect
+_SERIAL_ERRORS = (serial.SerialException, OSError)
+
 
 class Rp2040BridgeNode(Node):
 
@@ -46,8 +53,8 @@ class Rp2040BridgeNode(Node):
         self.declare_parameter('uart_baud',          115200)
         self.declare_parameter('heartbeat_interval', 0.2)   # seconds
 
-        port     = self.get_parameter('uart_port').value
-        baud     = self.get_parameter('uart_baud').value
+        self._port  = self.get_parameter('uart_port').value
+        self._baud  = self.get_parameter('uart_baud').value
         hb_interval = self.get_parameter('heartbeat_interval').value
 
         # ── Publishers ───────────────────────────────────────────────────────
@@ -55,12 +62,11 @@ class Rp2040BridgeNode(Node):
         self.mode_pub = self.create_publisher(String,  'mode',     10)
 
         # ── Subscribers ──────────────────────────────────────────────────────
-        # Autonomous command from navigator — forwarded to RP2040 as <J:...>
         self.cmd_sub = self.create_subscription(
             RCInput, 'cmd_override', self._on_cmd_override, 10)
 
-        # ── Serial ───────────────────────────────────────────────────────────
-        self._ser  = serial.Serial(port, baud, timeout=0.05)
+        # ── Serial state ─────────────────────────────────────────────────────
+        self._ser  = None
         self._lock = threading.Lock()
         self._hb_seq = 0
         self._rf_link_ok = False
@@ -69,18 +75,53 @@ class Rp2040BridgeNode(Node):
         self.create_timer(hb_interval, self._send_heartbeat)
         # UART read at 200 Hz — RP2040 sends at 50 Hz so we never miss a frame
         self.create_timer(0.005, self._read_uart)
+        # Reconnect check — tries to reopen port when disconnected
+        self.create_timer(2.0, self._reconnect)
 
-        self.get_logger().info(f'RP2040 bridge ready on {port} @ {baud}')
+        # Open serial immediately; _reconnect will retry if unavailable
+        self._try_open()
+
+    # ── Serial open / reconnect ────────────────────────────────────────────────
+
+    def _try_open(self):
+        try:
+            ser = serial.Serial(self._port, self._baud, timeout=0.05)
+            with self._lock:
+                self._ser = ser
+            self.get_logger().info(f'RP2040 bridge ready on {self._port} @ {self._baud}')
+        except serial.SerialException as e:
+            self.get_logger().warn(f'Cannot open {self._port}: {e} — retrying in 2 s')
+
+    def _reconnect(self):
+        with self._lock:
+            connected = self._ser is not None
+        if not connected:
+            self._try_open()
+
+    def _serial_error(self, e):
+        """Close the port on any serial/IO error and let _reconnect reopen it."""
+        self.get_logger().warn(
+            f'Serial error ({type(e).__name__} {getattr(e, "errno", "")}): {e}'
+            f' — port closed, reconnecting in 2 s')
+        with self._lock:
+            try:
+                if self._ser and self._ser.is_open:
+                    self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
 
     # ── UART read ─────────────────────────────────────────────────────────────
 
     def _read_uart(self):
-        if not self._ser.in_waiting:
+        if self._ser is None:
             return
         try:
+            if not self._ser.in_waiting:
+                return
             raw = self._ser.readline().decode('ascii', errors='ignore').strip()
-        except serial.SerialException as e:
-            self.get_logger().warn(f'UART read error: {e}')
+        except _SERIAL_ERRORS as e:
+            self._serial_error(e)
             return
 
         if raw.startswith('CH:'):
@@ -132,16 +173,28 @@ class Rp2040BridgeNode(Node):
 
     def _uart_write(self, text: str):
         with self._lock:
+            if self._ser is None:
+                return
             try:
                 self._ser.write(text.encode())
-            except serial.SerialException as e:
+            except _SERIAL_ERRORS as e:
                 self.get_logger().warn(f'UART write error: {e}')
+                try:
+                    if self._ser.is_open:
+                        self._ser.close()
+                except Exception:
+                    pass
+                self._ser = None
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def destroy_node(self):
-        if self._ser.is_open:
-            self._ser.close()
+        with self._lock:
+            try:
+                if self._ser and self._ser.is_open:
+                    self._ser.close()
+            except Exception:
+                pass
         super().destroy_node()
 
 

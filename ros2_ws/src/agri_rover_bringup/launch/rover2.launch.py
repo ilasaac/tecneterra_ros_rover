@@ -53,7 +53,9 @@ def generate_launch_description():
              executable='rp2040_bridge',
              namespace=ns,
              parameters=[config],
-             output='screen'),
+             output='screen',
+             respawn=True,
+             respawn_delay=2.0),
 
         Node(package='agri_rover_gps',
              executable='gps_driver',
