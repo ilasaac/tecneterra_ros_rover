@@ -31,7 +31,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, Float32
 from sensor_msgs.msg import NavSatFix
 
 os.environ['MAVLINK20'] = '1'
@@ -88,6 +88,7 @@ class MavlinkBridgeNode(Node):
         self._status      = RoverStatus()
         self._armed       = False
         self._mode        = 'MANUAL'
+        self._heading_deg = None   # None until first heading message received
         self._boot_ms     = int(time.time() * 1000)
         self._mission_buf: list[MissionWaypoint] = []
         self._mission_count = 0
@@ -98,6 +99,7 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(SensorData,   'sensors',     self._cb_sensors, 10)
         self.create_subscription(RoverStatus,  'status',      self._cb_status,  10)
         self.create_subscription(String,       'mode',        self._cb_mode,    10)
+        self.create_subscription(Float32,      'heading',     self._cb_heading, 10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
         self.cmd_pub     = self.create_publisher(RCInput,          'cmd_override', 10)
@@ -120,13 +122,16 @@ class MavlinkBridgeNode(Node):
 
     # ── Subscription callbacks ────────────────────────────────────────────────
 
-    def _cb_fix(self, msg: NavSatFix):     self._fix = msg
-    def _cb_rc(self, msg: RCInput):        self._rc = msg
+    def _cb_fix(self, msg: NavSatFix):      self._fix = msg
+    def _cb_rc(self, msg: RCInput):         self._rc = msg
     def _cb_sensors(self, msg: SensorData): self._sensors = msg
     def _cb_status(self, msg: RoverStatus): self._status = msg
 
     def _cb_mode(self, msg: String):
         self._mode = msg.data
+
+    def _cb_heading(self, msg: Float32):
+        self._heading_deg = msg.data
 
     # ── MAVLink send helpers ──────────────────────────────────────────────────
 
@@ -164,6 +169,9 @@ class MavlinkBridgeNode(Node):
     def _send_gps(self):
         if self._fix.latitude == 0.0:
             return
+        # hdg field: cdeg (0-35999), or 65535 if unknown
+        hdg = int(self._heading_deg * 100) % 36000 \
+              if self._heading_deg is not None else 0xFFFF
         self._send(self._mav.mav.global_position_int_encode(
             self._uptime_ms(),
             int(self._fix.latitude  * 1e7),
@@ -171,7 +179,7 @@ class MavlinkBridgeNode(Node):
             0,       # alt MSL mm — TODO
             0,       # relative alt mm
             0, 0, 0, # vx, vy, vz cm/s
-            0xFFFF,  # hdg unknown
+            hdg,
         ))
 
     def _send_rc(self):

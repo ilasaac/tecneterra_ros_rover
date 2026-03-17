@@ -37,7 +37,7 @@ simulator:
     # Dead-reckoning physics
     max_speed_mps:        1.5    # m/s at full throttle (PPM 2000)
     wheelbase_m:          0.50   # rover wheelbase — controls turning radius
-    antenna_baseline_m:   0.30   # separation between primary and secondary antenna (metres)
+    antenna_baseline_m:   1.00   # separation between primary and secondary antenna (metres)
                                   # secondary is placed ahead of primary along rover heading
 
     # Output rate
