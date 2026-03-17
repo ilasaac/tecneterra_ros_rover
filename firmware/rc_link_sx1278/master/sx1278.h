@@ -235,6 +235,14 @@ static inline bool sx1278_recv(uint8_t *buf, uint8_t *len) {
     if (irq & SX_IRQ_PAYLOAD_CRC_ERR) return false;      // discard CRC errors
 
     *len = sx_read_reg(SX_REG_RX_NB_BYTES);
+
+    // Guard against corrupted RX_NB_BYTES (SPI glitch → overflow of caller's buffer).
+    // Expected payload is always CHANNELS*2 = 32 bytes. Anything outside 1–64 is garbage.
+    if (*len == 0 || *len > 64) {
+        sx1278_start_rx();   // re-arm receiver and discard
+        return false;
+    }
+
     uint8_t rx_ptr = sx_read_reg(SX_REG_FIFO_RX_CURRENT);
     sx_write_reg(SX_REG_FIFO_ADDR_PTR, rx_ptr);
     sx_read_fifo(buf, *len);
