@@ -651,10 +651,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun toggleRoverMission(roverId: Int, button: Button) {
-        val current = roverMissionVisible[roverId] ?: true
-        roverMissionVisible[roverId] = !current
-        button.alpha = if (!current) 1.0f else 0.4f
+        // Select rover for ARM / SET_MODE / UPLOAD commands
+        selectedRoverId = roverId
+        updateRcStrip(roverId)
+        // Visual: selected button bright, other dimmed
+        btnToggleR1.alpha = if (roverId == 1) 1.0f else 0.4f
+        btnToggleR2.alpha = if (roverId == 2) 1.0f else 0.4f
+        roverMissionVisible[roverId] = true
         redrawRoverMissions()
+        Toast.makeText(this, "Rover $roverId selected", Toast.LENGTH_SHORT).show()
     }
 
     private fun redrawRoverMissions() {

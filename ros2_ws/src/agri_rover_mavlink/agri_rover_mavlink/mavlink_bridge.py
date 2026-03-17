@@ -108,6 +108,7 @@ class MavlinkBridgeNode(Node):
         self.cmd_pub      = self.create_publisher(RCInput,          'cmd_override', 10)
         self.mission_pub  = self.create_publisher(MissionWaypoint,  'mission',      10)
         self.servo_pub    = self.create_publisher(RCInput,          'servo_state',  10)
+        self.mode_pub     = self.create_publisher(String,           'mode',         10)
 
         # ── MAVLink receive thread ────────────────────────────────────────────
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
@@ -227,8 +228,13 @@ class MavlinkBridgeNode(Node):
             elif mt == 'COMMAND_LONG':
                 self._on_command_long(msg)
             elif mt == 'MISSION_COUNT':
+                if msg.target_system not in (0, 255, self._rover_id):
+                    continue  # not addressed to this rover
                 self._mission_count = msg.count
                 self._mission_buf   = []
+                self.get_logger().info(
+                    f'Mission upload started: {msg.count} items '
+                    f'from sysid={msg.get_srcSystem()}')
                 # Request first item
                 self._send(self._mav.mav.mission_request_int_encode(
                     msg.get_srcSystem(), msg.get_srcComponent(), 0))
@@ -269,6 +275,22 @@ class MavlinkBridgeNode(Node):
         if msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
             self._armed = (msg.param1 == 1.0)
             self.get_logger().info(f'{"ARM" if self._armed else "DISARM"} command received')
+            if not self._armed:
+                # Disarm exits autonomous mode so navigator stops
+                self._mode = 'MANUAL'
+                m = String()
+                m.data = 'MANUAL'
+                self.mode_pub.publish(m)
+            self._send(self._mav.mav.command_ack_encode(
+                msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
+        elif msg.command == 176:  # MAV_CMD_DO_SET_MODE
+            # param2 = custom_mode: 0 → MANUAL, non-zero → AUTONOMOUS
+            new_mode = 'AUTONOMOUS' if int(msg.param2) != 0 else 'MANUAL'
+            self._mode = new_mode
+            m = String()
+            m.data = new_mode
+            self.mode_pub.publish(m)
+            self.get_logger().info(f'SET_MODE → {new_mode}')
             self._send(self._mav.mav.command_ack_encode(
                 msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
         elif msg.command == 183:  # MAV_CMD_DO_SET_SERVO

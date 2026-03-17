@@ -81,7 +81,7 @@ ros_agri_rover/
 | Topic           | Type                            | Producer       | Consumers                  |
 |-----------------|---------------------------------|----------------|----------------------------|
 | rc_input        | agri_rover_interfaces/RCInput   | rp2040_bridge  | mavlink_bridge             |
-| mode            | std_msgs/String                 | rp2040_bridge  | navigator, mavlink_bridge  |
+| mode            | std_msgs/String                 | rp2040_bridge, mavlink_bridge | navigator, mavlink_bridge |
 | cmd_override    | agri_rover_interfaces/RCInput   | navigator                   | rp2040_bridge |
 | servo_state     | agri_rover_interfaces/RCInput   | mavlink_bridge              | navigator     |
 | fix             | sensor_msgs/NavSatFix           | gps_driver     | navigator, mavlink_bridge  |

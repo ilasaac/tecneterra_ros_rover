@@ -115,7 +115,8 @@ HEARTBEAT `base_mode` flags:
 RC_CHANNELS `chancount` field uses `len(self._rc.channels)` (was incorrectly hardcoded to 9).
 
 Inbound MAVLink command handling (`_on_command_long`):
-- `MAV_CMD_COMPONENT_ARM_DISARM` (400): updates `self._armed`, sends ACK
+- `MAV_CMD_COMPONENT_ARM_DISARM` (400): updates `self._armed`, sends ACK; DISARM also publishes `'MANUAL'` to `mode` topic (stops navigator)
+- `MAV_CMD_DO_SET_MODE` (176): param2=0 → `'MANUAL'`, param2≠0 → `'AUTONOMOUS'`; publishes to `mode` topic and sends ACK. **Required in simulation** (no rp2040_bridge serial) to activate the navigator.
 - `MAV_CMD_DO_SET_SERVO` (183): calls `_apply_servo_cmd(servo, pwm)`, sends ACK
 
 `_apply_servo_cmd(servo, pwm)`:
