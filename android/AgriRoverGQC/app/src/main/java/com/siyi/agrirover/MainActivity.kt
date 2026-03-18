@@ -352,9 +352,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         routePoints.clear()
         recordedMission.clear()
         nextWaypointIndex = 0
-        // Snapshot current aux channel states so only future *changes* are recorded
-        roverPpmChannels[selectedRoverId]?.let { ch ->
-            for (i in 0..3) lastAuxPwm[i] = if (i + 4 < ch.size) ch[i + 4] else 1500
+        // Snapshot current aux channel states and prepend as initial DO_SET_SERVO
+        // items so the rover restores servo positions at mission start.
+        val ch = roverPpmChannels[selectedRoverId]
+        for (i in 0..3) {
+            val pwm = if (ch != null && i + 4 < ch.size) ch[i + 4] else 1500
+            lastAuxPwm[i] = pwm
+            recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = pwm))
         }
         btnRec.text = "⏹ STOP"
         btnRec.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#607D8B"))
