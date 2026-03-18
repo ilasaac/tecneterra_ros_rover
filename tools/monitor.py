@@ -8,12 +8,16 @@ Also snoops GQC (sysid=255) mission uploads, runs a software-in-the-loop
 simulation (via sim_navigator.py) as soon as a mission is fully uploaded, and
 writes a Leaflet.js map to monitor_map.html that refreshes every 5 s.
 
+The map is served over HTTP on MAP_PORT (default 8088) so it can be opened
+from any machine on the network:  http://<this-host-ip>:8088/monitor_map.html
+
 Usage:
-  python tools/monitor.py
+  python tools/monitor.py [--map-port PORT]
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import os
@@ -21,8 +25,8 @@ import socket
 import sys
 import threading
 import time
-import webbrowser
 from dataclasses import dataclass, field
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 os.environ['MAVLINK20'] = '1'
 try:
@@ -75,8 +79,8 @@ RV    = {1: RoverState(rv_id=1), 2: RoverState(rv_id=2)}
 _lock = threading.Lock()
 
 MAV_MODE_ARMED = 128
-_MAP_PATH      = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'monitor_map.html')
-_map_opened    = False
+_MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'monitor_map.html')
+_MAP_PORT = 8088   # overridden by --map-port arg
 
 
 def _sbus_to_ppm(ch: list) -> list:
@@ -272,19 +276,28 @@ document.getElementById('info').innerHTML = infoHtml;
 
 
 def map_gen_loop():
-    """Write monitor_map.html every 5 s; open in browser on first write."""
-    global _map_opened
+    """Write monitor_map.html every 5 s."""
     while True:
         time.sleep(5)
         try:
             html = _build_map_html()
             with open(_MAP_PATH, 'w', encoding='utf-8') as f:
                 f.write(html)
-            if not _map_opened:
-                webbrowser.open(_MAP_PATH)
-                _map_opened = True
         except Exception:
             pass
+
+
+class _QuietHandler(SimpleHTTPRequestHandler):
+    """Serve tools/ directory; suppress access log noise."""
+    def log_message(self, *_):
+        pass
+
+
+def map_http_loop():
+    """Serve the tools/ directory over HTTP so the map is accessible from any machine."""
+    os.chdir(os.path.dirname(_MAP_PATH))
+    server = HTTPServer(('', _MAP_PORT), _QuietHandler)
+    server.serve_forever()
 
 
 # ── MAVLink listener ──────────────────────────────────────────────────────────
@@ -479,9 +492,7 @@ def render():
                     print(f'  LOG  {rv.log[-1]}')
 
         print('\n' + '─' * 72)
-        map_status = ('map: monitor_map.html (open in browser)' if _map_opened
-                      else 'map: will open automatically on first mission upload')
-        print(f'  {map_status}')
+        print(f'  map: http://<this-ip>:{_MAP_PORT}/monitor_map.html  (auto-refresh 5 s)')
         print('  Ctrl+C to exit')
 
 
@@ -509,8 +520,15 @@ def save_xte_csv():
 
 
 if __name__ == '__main__':
-    threading.Thread(target=listen,       daemon=True).start()
-    threading.Thread(target=map_gen_loop, daemon=True).start()
+    ap = argparse.ArgumentParser(description='AgriRover live monitor')
+    ap.add_argument('--map-port', type=int, default=8088,
+                    help='HTTP port for map server (default 8088)')
+    args = ap.parse_args()
+    _MAP_PORT = args.map_port
+
+    threading.Thread(target=listen,        daemon=True).start()
+    threading.Thread(target=map_gen_loop,  daemon=True).start()
+    threading.Thread(target=map_http_loop, daemon=True).start()
     try:
         render()
     except KeyboardInterrupt:
