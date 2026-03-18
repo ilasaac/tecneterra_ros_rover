@@ -109,17 +109,27 @@ class NavigatorNode(Node):
         self.declare_parameter('align_threshold',           30.0)
         self.declare_parameter('stanley_k',                 1.0)
         self.declare_parameter('stanley_softening',         0.3)
+        # Pivot-turn parameters:
+        #   pivot_threshold    — turn angle (degrees) above which an in-place pivot
+        #                        is performed instead of curving through the waypoint.
+        #   pivot_approach_dist — distance (metres) at which the rover switches from
+        #                        path-lookahead to direct-to-waypoint aiming and begins
+        #                        slowing to min_speed, ensuring it arrives precisely.
+        self.declare_parameter('pivot_threshold',           60.0)
+        self.declare_parameter('pivot_approach_dist',        2.0)
 
-        self._lookahead         = self.get_parameter('lookahead_distance').value
-        self._accept_r          = self.get_parameter('default_acceptance_radius').value
-        self._max_speed         = self.get_parameter('max_speed').value
-        self._min_speed         = self.get_parameter('min_speed').value
-        self._max_steer         = self.get_parameter('max_steering').value
-        self._gps_timeout       = self.get_parameter('gps_timeout').value
-        self._hdb               = self.get_parameter('heading_deadband').value
-        self._align_thresh      = self.get_parameter('align_threshold').value
-        self._stanley_k         = self.get_parameter('stanley_k').value
-        self._stanley_softening = self.get_parameter('stanley_softening').value
+        self._lookahead           = self.get_parameter('lookahead_distance').value
+        self._accept_r            = self.get_parameter('default_acceptance_radius').value
+        self._max_speed           = self.get_parameter('max_speed').value
+        self._min_speed           = self.get_parameter('min_speed').value
+        self._max_steer           = self.get_parameter('max_steering').value
+        self._gps_timeout         = self.get_parameter('gps_timeout').value
+        self._hdb                 = self.get_parameter('heading_deadband').value
+        self._align_thresh        = self.get_parameter('align_threshold').value
+        self._stanley_k           = self.get_parameter('stanley_k').value
+        self._stanley_softening   = self.get_parameter('stanley_softening').value
+        self._pivot_threshold     = self.get_parameter('pivot_threshold').value
+        self._pivot_approach_dist = self.get_parameter('pivot_approach_dist').value
 
         # ── State ────────────────────────────────────────────────────────────
         self._fix:       NavSatFix | None = None
@@ -144,6 +154,11 @@ class NavigatorNode(Node):
         # Hold state — rover waits at a waypoint for hold_secs before advancing.
         self._holding:  bool  = False
         self._hold_end: float = 0.0
+
+        # Pivot-turn state — rover spins in place to the outgoing heading before
+        # advancing past a sharp-turn waypoint.
+        self._pivoting:         bool  = False
+        self._pivot_target_hdg: float = 0.0
 
         self._dt = 1.0 / self.get_parameter('control_rate').value
 
@@ -225,6 +240,7 @@ class NavigatorNode(Node):
         self._path_origin_lat = None
         self._path_origin_lon = None
         self._holding         = False
+        self._pivoting        = False
         self._publish_halt()
         self.get_logger().info('Mission cleared — path reset')
 
@@ -236,6 +252,7 @@ class NavigatorNode(Node):
             self._path_s.clear()
             self._path_idx = 0
             self._holding  = False
+            self._pivoting = False
             # Record rover centre as path origin (start of virtual segment → wp[0]).
             if self._fix is not None:
                 self._path_origin_lat, self._path_origin_lon = self._center_pos()
@@ -278,6 +295,28 @@ class NavigatorNode(Node):
         return response
 
     # ── Full-path geometry ────────────────────────────────────────────────────
+
+    def _turn_angle_at(self, idx: int) -> float:
+        """
+        Absolute heading change at waypoint _path[idx] (degrees, 0–180).
+        Returns 0 for the last waypoint (no outgoing segment).
+        Uses path origin as the incoming direction for the first waypoint.
+        """
+        if idx >= len(self._path) - 1:
+            return 0.0
+        # Outgoing segment: path[idx] → path[idx+1]
+        hdg_out = bearing_to(self._path[idx].latitude,     self._path[idx].longitude,
+                             self._path[idx + 1].latitude, self._path[idx + 1].longitude)
+        # Incoming segment
+        if idx == 0:
+            if self._path_origin_lat is None:
+                return 0.0
+            hdg_in = bearing_to(self._path_origin_lat,      self._path_origin_lon,
+                                self._path[0].latitude,     self._path[0].longitude)
+        else:
+            hdg_in = bearing_to(self._path[idx - 1].latitude, self._path[idx - 1].longitude,
+                                self._path[idx].latitude,     self._path[idx].longitude)
+        return abs(((hdg_out - hdg_in + 180) % 360) - 180)
 
     def _nearest_on_path(self, lat: float, lon: float) -> tuple[float, int]:
         """
@@ -461,10 +500,30 @@ class NavigatorNode(Node):
                 self._advance_path()
             return
 
-        wp               = self._path[self._path_idx]
-        accept           = wp.acceptance_radius if wp.acceptance_radius > 0 else self._accept_r
-        rlat, rlon       = self._center_pos()
-        flat, flon       = self._front_pos()
+        # ── Pivot turn ───────────────────────────────────────────────────────
+        # Rover has reached a sharp-turn waypoint and is spinning in place to
+        # align with the outgoing segment before continuing.
+        if self._pivoting:
+            pivot_err = ((self._pivot_target_hdg - self._heading + 180) % 360) - 180
+            if abs(pivot_err) < self._hdb:
+                self._pivoting = False
+                self.get_logger().info('Pivot complete — continuing')
+                self._advance_path()
+            else:
+                spin_dir  = math.copysign(1.0, pivot_err)
+                steer_ppm = int(PPM_CENTER - spin_dir * self._max_steer * 500)
+                self._publish_cmd(PPM_CENTER, steer_ppm)
+            return
+
+        wp          = self._path[self._path_idx]
+        accept      = wp.acceptance_radius if wp.acceptance_radius > 0 else self._accept_r
+        rlat, rlon  = self._center_pos()
+        flat, flon  = self._front_pos()
+
+        # Pre-compute pivot need for this waypoint so approach and advance can use it.
+        turn_angle  = self._turn_angle_at(self._path_idx)
+        needs_pivot = (turn_angle >= self._pivot_threshold
+                       and self._path_idx < len(self._path) - 1)
 
         # ── Full-path nearest-point projection ───────────────────────────────
         s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
@@ -472,27 +531,51 @@ class NavigatorNode(Node):
         dist_to_wp          = haversine(rlat, rlon, wp.latitude, wp.longitude)
 
         # ── Waypoint advance ─────────────────────────────────────────────────
-        # Two triggers: direct proximity OR arc-length has passed the waypoint.
-        if dist_to_wp < accept or s_nearest > wp_s + accept:
+        # For pivot waypoints: only proximity triggers advance (arc-length shortcut
+        # disabled) so the rover must physically arrive at the turn point.
+        # For normal waypoints: both proximity and arc-length overshoot trigger.
+        reached = dist_to_wp < accept or (not needs_pivot and s_nearest > wp_s + accept)
+
+        if reached:
             if wp.hold_secs > 0.0:
                 self.get_logger().info(
                     f'Waypoint {wp.seq} reached — holding {wp.hold_secs:.1f} s')
                 self._holding  = True
                 self._hold_end = time.monotonic() + wp.hold_secs
                 self._publish_halt()
+            elif needs_pivot:
+                nxt = self._path[self._path_idx + 1]
+                self._pivot_target_hdg = bearing_to(
+                    wp.latitude, wp.longitude, nxt.latitude, nxt.longitude)
+                self._pivoting = True
+                self.get_logger().info(
+                    f'Waypoint {wp.seq} reached — pivot {turn_angle:.0f}° '
+                    f'to {self._pivot_target_hdg:.0f}°')
+                self._publish_halt()
             else:
                 self.get_logger().info(f'Waypoint {wp.seq} reached ({dist_to_wp:.2f} m)')
                 self._advance_path()
             return
 
-        # ── Lookahead: point at s_nearest + lookahead_distance on the path ───
-        la_lat, la_lon = self._point_at_s(s_nearest + self._lookahead)
+        # ── Lookahead and speed ───────────────────────────────────────────────
+        # Precision approach: when within pivot_approach_dist of a sharp-turn
+        # waypoint, aim directly at the waypoint and slow to min_speed so the
+        # rover arrives precisely instead of cutting the corner.
+        target_spd = wp.speed if wp.speed > 0 else self._max_speed
+
+        if needs_pivot and dist_to_wp < self._pivot_approach_dist:
+            la_lat     = wp.latitude
+            la_lon     = wp.longitude
+            # Scale speed linearly from target_spd down to min_speed
+            approach_t = dist_to_wp / self._pivot_approach_dist   # 1.0 → 0.0
+            target_spd = max(self._min_speed, target_spd * approach_t)
+        else:
+            la_lat, la_lon = self._point_at_s(s_nearest + self._lookahead)
+
         target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
         heading_err    = ((target_bearing - self._heading + 180) % 360) - 180
 
         # ── Stanley CTE: front antenna projected onto best_seg ───────────────
-        # Using front-axle reference eliminates the rear-swing oscillation that
-        # occurs when CTE is measured at the rear antenna.
         cte = self._cte_to_seg(flat, flon, best_seg)
 
         # XTE telemetry
@@ -507,7 +590,6 @@ class NavigatorNode(Node):
             throttle_ppm = PPM_CENTER
         else:
             # Stanley controller: δ = θ_e + arctan(k · e_cte / (v + ε))
-            target_spd   = wp.speed if wp.speed > 0 else self._max_speed
             v_mps        = max(target_spd, self._min_speed)
             throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
 

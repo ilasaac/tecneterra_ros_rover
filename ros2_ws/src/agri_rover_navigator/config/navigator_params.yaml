@@ -37,3 +37,15 @@ navigator:
     # Speed softening (m/s) — prevents division by zero at very low speed.
     # Should be ≤ min_speed so it rarely activates.
     stanley_softening: 0.3
+
+    # Pivot-turn parameters
+    # pivot_threshold (degrees): turn angle at a waypoint above which the rover
+    #   stops and spins in place to the new heading instead of trying to curve.
+    #   90° field turns typically need this. Set lower (e.g. 45°) for tighter
+    #   course changes; set higher (e.g. 120°) to only pivot on very sharp turns.
+    pivot_threshold: 60.0
+
+    # pivot_approach_dist (metres): distance from a pivot waypoint at which the
+    #   rover switches from path-lookahead to direct-to-waypoint aiming and begins
+    #   slowing to min_speed. Ensures precise arrival at the turn point.
+    pivot_approach_dist: 2.0
