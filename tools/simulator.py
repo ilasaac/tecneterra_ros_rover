@@ -148,12 +148,12 @@ class PpmReader:
         self.port_ok    = False
         threading.Thread(target=self._run, args=(port, baud), daemon=True).start()
 
-    def get(self):
+    def get_all(self):
         with self._lock:
-            r1  = (self._rv1_ch[self._thr_ch], self._rv1_ch[self._str_ch])
-            r2  = (self._rv2_ch[self._thr_ch], self._rv2_ch[self._str_ch])
+            rv1 = list(self._rv1_ch)
+            rv2 = list(self._rv2_ch)
             age = time.monotonic() - self._last_time if self._ok else 999.0
-        return r1, r2, age
+        return rv1, rv2, age
 
     def _run(self, port: str, baud: int):
         try:
@@ -267,7 +267,13 @@ ANSI_YLW  = '\033[33m'
 ANSI_RED  = '\033[31m'
 
 
+def _ppm_row(label: str, ch: list) -> str:
+    vals = '  '.join(f'{v:4d}' for v in ch[:8])
+    return f'  {label:<5} {vals}'
+
+
 def _status_str(rv1: RoverState, rv2: RoverState,
+                rv1_ch: list, rv2_ch: list,
                 ppm_age: float, tick: int, args, dry_run: bool, addrs: AddrBook) -> str:
     def ppm_col(age):
         if age < 0.5:  return ANSI_GRN
@@ -288,6 +294,11 @@ def _status_str(rv1: RoverState, rv2: RoverState,
         f'  {"─"*6} {"─"*14} {"─"*14} {"─"*10} {"─"*10}',
         f'  {"RV1":<6} {rv1.lat:>14.7f} {rv1.lon:>14.7f} {rv1.heading_deg:>9.1f}° {rv1.speed_mps:>9.2f} m/s',
         f'  {"RV2":<6} {rv2.lat:>14.7f} {rv2.lon:>14.7f} {rv2.heading_deg:>9.1f}° {rv2.speed_mps:>9.2f} m/s',
+        '',
+        f'  {"":5} {"Ch1":>4}  {"Ch2":>4}  {"Ch3":>4}  {"Ch4":>4}  {"Ch5":>4}  {"Ch6":>4}  {"Ch7":>4}  {"Ch8":>4}',
+        f'  {"":5} {"thr":>4}  {"str":>4}  {"SWA":>4}  {"SWB":>4}  {"sv5":>4}  {"sv6":>4}  {"sv7":>4}  {"sv8":>4}',
+        _ppm_row('RV1', rv1_ch),
+        _ppm_row('RV2', rv2_ch),
         '',
         '  Ctrl-C to stop',
     ]
@@ -417,12 +428,15 @@ def main():
         t_next += dt
         tick   += 1
 
-        (rv1_thr, rv1_str), (rv2_thr, rv2_str), ppm_age = ppm.get()
+        rv1_ch, rv2_ch, ppm_age = ppm.get_all()
         if ppm_age > 2.0:
-            rv1_thr = rv1_str = rv2_thr = rv2_str = 1500
+            rv1_ch = [1500] * 8
+            rv2_ch = [1500] * 8
 
-        rv1.update(rv1_thr, rv1_str, args.max_speed, args.wheelbase, dt, args.turn_scale)
-        rv2.update(rv2_thr, rv2_str, args.max_speed, args.wheelbase, dt, args.turn_scale)
+        rv1.update(rv1_ch[args.thr_ch], rv1_ch[args.str_ch],
+                   args.max_speed, args.wheelbase, dt, args.turn_scale)
+        rv2.update(rv2_ch[args.thr_ch], rv2_ch[args.str_ch],
+                   args.max_speed, args.wheelbase, dt, args.turn_scale)
 
         s1_lat, s1_lon = rv1.secondary_pos(args.baseline)
         s2_lat, s2_lon = rv2.secondary_pos(args.baseline)
@@ -445,7 +459,8 @@ def main():
             udp_send(sock, rv2_sec_pkt, (rv2_ip, args.sec_port), 'rv2_sec')
 
         if tick % max(1, round(args.rate)) == 0:
-            sys.stdout.write(_status_str(rv1, rv2, ppm_age, tick, args, args.dry_run, addrs))
+            sys.stdout.write(_status_str(rv1, rv2, rv1_ch, rv2_ch,
+                                         ppm_age, tick, args, args.dry_run, addrs))
             sys.stdout.flush()
 
     print('\n\nSimulator stopped.')

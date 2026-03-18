@@ -125,6 +125,7 @@
         <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/btnLoad" android:layout_width="wrap_content" android:layout_height="wrap_content" android:src="@android:drawable/ic_menu_upload" android:layout_margin="5dp"/>
         <Button android:id="@+id/btnRec" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="⏺ REC" android:backgroundTint="#F44336" android:layout_margin="5dp"/>
         <Button android:id="@+id/btnUpload" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="UPLOAD" android:backgroundTint="#2196F3" android:layout_margin="5dp"/>
+        <Button android:id="@+id/btnClearPlanner" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="CLEAR" android:layout_margin="5dp"/>
     </LinearLayout>
 
     <!-- ── Auto toolbar (bottom) ───────────────────────────────────────── -->

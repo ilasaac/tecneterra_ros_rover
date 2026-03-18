@@ -60,13 +60,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var btnEStop:       Button
     private lateinit var btnRec:         Button
 
-    // Auto Buttons
-    private lateinit var btnUpload:   Button
-    private lateinit var btnStart:    Button
-    private lateinit var btnStop:     Button
-    private lateinit var btnClear:    Button
-    private lateinit var btnToggleR1: Button
-    private lateinit var btnToggleR2: Button
+    // Planner / Auto Buttons
+    private lateinit var btnUpload:        Button
+    private lateinit var btnStart:         Button
+    private lateinit var btnStop:          Button
+    private lateinit var btnClear:         Button
+    private lateinit var btnClearPlanner:  Button
+    private lateinit var btnToggleR1:      Button
+    private lateinit var btnToggleR2:      Button
 
     // Data
     private val routePoints      = ArrayList<LatLng>()
@@ -211,6 +212,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnStart              = findViewById(R.id.btnStart)
         btnStop               = findViewById(R.id.btnStop)
         btnClear              = findViewById(R.id.btnClear)
+        btnClearPlanner       = findViewById(R.id.btnClearPlanner)
         btnToggleR1           = findViewById(R.id.btnToggleR1)
         btnToggleR2           = findViewById(R.id.btnToggleR2)
 
@@ -334,10 +336,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             Toast.makeText(this, "Rover $selectedRoverId: MANUAL", Toast.LENGTH_SHORT).show()
         }
 
-        btnClear.setOnClickListener {
-            nextWaypointIndex = 0; routePoints.clear(); recordedMission.clear(); redrawMap()
-            roverManager.uploadMission(selectedRoverId, emptyList())
-        }
+        btnClear.setOnClickListener        { clearMission() }
+        btnClearPlanner.setOnClickListener { clearMission() }
 
         btnToggleR1.setOnClickListener { toggleRoverMission(1, btnToggleR1) }
         btnToggleR2.setOnClickListener { toggleRoverMission(2, btnToggleR2) }
@@ -376,6 +376,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         Toast.makeText(this,
             "Recorded $wpCount waypoints" + if (srvCount > 0) " + $srvCount servo cmds" else "",
             Toast.LENGTH_LONG).show()
+    }
+
+    private fun clearMission() {
+        if (isRecording) stopRecording()
+        nextWaypointIndex = 0
+        routePoints.clear()
+        recordedMission.clear()
+        redrawMap()
+        roverManager.uploadMission(selectedRoverId, emptyList())
     }
 
     /**
