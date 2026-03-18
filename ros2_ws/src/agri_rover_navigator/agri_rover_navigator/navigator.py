@@ -1,48 +1,52 @@
 """
-agri_rover_navigator — navigator node
-
-Stanley path follower for ground rover navigation.
+agri_rover_navigator — navigator node (full-path Stanley)
 
 Strategy
 --------
-Rather than seeking each waypoint position directly, the rover follows the
-*path segment* between waypoints using the Stanley lateral controller:
+The rover follows the COMPLETE uploaded path using a full-path Stanley lateral
+controller:
 
-  1. A lookahead point is projected `lookahead_distance` metres ahead of the
-     rover's position along the current path segment, used to compute the
-     heading error θ_e toward the path.
+  1. At every control tick the rover's centre position is projected onto the
+     entire remaining path (not just the current segment) to find:
+       - s_nearest  : arc-length progress along the path
+       - best_seg   : which path segment is closest
 
-  2. Stanley steering: δ = θ_e + arctan(k·e_cte / (v + ε))
-     where e_cte is the signed cross-track error (perpendicular distance from
-     rover to segment).  This corrects both heading AND lateral drift.
+  2. The lookahead point is taken at arc-length (s_nearest + lookahead_distance)
+     on the path.  When the lookahead extends past a segment boundary it
+     naturally follows the curve into the next segment, producing smooth steering
+     through curves without the "snap-to-waypoint" artefact of single-segment
+     tracking.
 
-  3. A waypoint is considered *reached* either by acceptance radius (GPS
-     precision) OR by a projection test: when the rover has physically passed
-     the waypoint along the path direction (overshoot detection).  This
-     prevents the rover from turning 180° to go back to a missed point.
+  3. Stanley steering: δ = θ_e + arctan(k·e_cte / (v + ε))
+     e_cte is computed from the FRONT antenna to best_seg (front-axle reference
+     as per the original Stanley paper).  This eliminates the rear-swing
+     oscillation caused by measuring CTE at the rear antenna.
 
-  4. Stop-and-spin (spin in place) is reserved for large initial heading errors
-     only (> align_threshold, default 30°).  Normal course corrections use
-     Stanley steering while moving at the recorded speed.
+  4. Rover centre = midpoint(fix, fix_front) is used for arc-length progress,
+     acceptance radius, and lookahead projection.
 
-  5. Cross-track error (XTE) is published on the `xte` topic (Float32, metres)
-     at every control tick for telemetry monitoring.
+  5. A waypoint is considered reached when the rover centre is within
+     acceptance_radius of it (direct distance), OR when arc-length progress
+     has passed that waypoint's arc-length by more than acceptance_radius
+     (overshoot / corner-cut detection).
+
+  6. Stop-and-spin is reserved for large initial heading errors (> align_threshold).
+
+  7. Cross-track error (XTE) is published on the `xte` topic at every tick.
 
 Subscribes:
   ~/fix          (sensor_msgs/NavSatFix)   — rear antenna position
-  ~/fix_front    (sensor_msgs/NavSatFix)   — front antenna position (dual-antenna)
+  ~/fix_front    (sensor_msgs/NavSatFix)   — front antenna position
   ~/heading      (std_msgs/Float32)        — degrees from north (dual-antenna baseline)
   ~/mode         (std_msgs/String)         — only active in AUTONOMOUS mode
   ~/mission      (MissionWaypoint)         — waypoints arrive sequentially
   ~/servo_state  (RCInput)                 — channels 4-7 from mavlink_bridge DO_SET_SERVO
-
-Dual-antenna control:
-  Rover center  = midpoint(fix, fix_front) — used for acceptance radius, overshoot, lookahead
-  Stanley CTE   = cross_track_error(fix_front) — front axle reference per the Stanley paper,
-                  eliminates the rear-swing oscillation caused by using the rear antenna
+  ~/mission_clear (std_msgs/Bool)          — clear path on empty-mission upload
 
 Publishes:
-  ~/cmd_override (RCInput)                 — PPM override to rp2040_bridge (all 8 channels)
+  ~/cmd_override (RCInput)                 — PPM override to rp2040_bridge
+  ~/wp_active    (std_msgs/Int32)          — seq of last reached waypoint (-1=complete)
+  ~/xte          (std_msgs/Float32)        — absolute cross-track error in metres
 
 Services:
   ~/pause_mission  (std_srvs/Trigger)
@@ -53,7 +57,6 @@ from __future__ import annotations
 
 import math
 import time
-from collections import deque
 
 import rclpy
 from rclpy.node import Node
@@ -103,55 +106,59 @@ class NavigatorNode(Node):
         self.declare_parameter('control_rate',              25.0)
         self.declare_parameter('gps_timeout',               2.0)
         self.declare_parameter('heading_deadband',          3.0)
-        # Stop-and-spin only when heading error exceeds this — keeps the rover
-        # moving through normal curves instead of stopping at every bend.
         self.declare_parameter('align_threshold',           30.0)
-        # Stanley controller parameters
         self.declare_parameter('stanley_k',                 1.0)
         self.declare_parameter('stanley_softening',         0.3)
 
-        self._lookahead        = self.get_parameter('lookahead_distance').value
-        self._accept_r         = self.get_parameter('default_acceptance_radius').value
-        self._max_speed        = self.get_parameter('max_speed').value
-        self._min_speed        = self.get_parameter('min_speed').value
-        self._max_steer        = self.get_parameter('max_steering').value
-        self._gps_timeout      = self.get_parameter('gps_timeout').value
-        self._hdb              = self.get_parameter('heading_deadband').value
-        self._align_thresh     = self.get_parameter('align_threshold').value
-        self._stanley_k        = self.get_parameter('stanley_k').value
+        self._lookahead         = self.get_parameter('lookahead_distance').value
+        self._accept_r          = self.get_parameter('default_acceptance_radius').value
+        self._max_speed         = self.get_parameter('max_speed').value
+        self._min_speed         = self.get_parameter('min_speed').value
+        self._max_steer         = self.get_parameter('max_steering').value
+        self._gps_timeout       = self.get_parameter('gps_timeout').value
+        self._hdb               = self.get_parameter('heading_deadband').value
+        self._align_thresh      = self.get_parameter('align_threshold').value
+        self._stanley_k         = self.get_parameter('stanley_k').value
         self._stanley_softening = self.get_parameter('stanley_softening').value
 
         # ── State ────────────────────────────────────────────────────────────
-        self._fix:          NavSatFix | None = None
-        self._fix_front:    NavSatFix | None = None   # front (secondary) antenna
-        self._fix_time:     float            = 0.0
-        self._heading:      float            = 0.0
-        self._mode:         str              = 'MANUAL'
-        self._armed:        bool             = False
-        self._waypoints:    deque[MissionWaypoint] = deque()
-        self._paused:       bool             = False
-        self._active_wp:    MissionWaypoint | None = None
-        # Previous waypoint (or rover position at mission start) — used to
-        # define the current path segment for lookahead and overshoot detection.
-        self._prev_lat:     float | None     = None
-        self._prev_lon:     float | None     = None
+        self._fix:       NavSatFix | None = None
+        self._fix_front: NavSatFix | None = None   # front (secondary) antenna
+        self._fix_time:  float            = 0.0
+        self._heading:   float            = 0.0
+        self._mode:      str              = 'MANUAL'
+        self._armed:     bool             = False
+        self._paused:    bool             = False
+
+        # Full-path state — replaces single-segment prev/active_wp/deque.
+        # _path[i]  : i-th waypoint in mission order
+        # _path_s[i]: cumulative arc-length from path origin to _path[i]
+        #             (origin = rover centre at mission start, or _path[0] if GPS unavailable)
+        # _path_idx : index of the next waypoint not yet reached
+        self._path:            list[MissionWaypoint] = []
+        self._path_s:          list[float]           = []
+        self._path_origin_lat: float | None          = None
+        self._path_origin_lon: float | None          = None
+        self._path_idx:        int                   = 0
+
         # Hold state — rover waits at a waypoint for hold_secs before advancing.
-        self._holding:      bool             = False
-        self._hold_end:     float            = 0.0   # monotonic time when hold expires
-        self._dt:           float            = 1.0 / self.get_parameter('control_rate').value
-        # Servo state (PPM CH5-CH8) updated from servo_state topic; re-published
-        # in every cmd_override so the RP2040 always has the current servo values.
-        self._servo_ch:     list[int]        = [PPM_CENTER] * 4
+        self._holding:  bool  = False
+        self._hold_end: float = 0.0
+
+        self._dt = 1.0 / self.get_parameter('control_rate').value
+
+        # Servo state (PPM CH5-CH8) re-published in every cmd_override.
+        self._servo_ch: list[int] = [PPM_CENTER] * 4
 
         # ── Subscriptions ────────────────────────────────────────────────────
-        self.create_subscription(NavSatFix,       'fix',           self._cb_fix,           10)
-        self.create_subscription(NavSatFix,       'fix_front',     self._cb_fix_front,     10)
-        self.create_subscription(Float32,         'heading',       self._cb_heading,        10)
-        self.create_subscription(String,          'mode',          self._cb_mode,           10)
-        self.create_subscription(Bool,            'armed',         self._cb_armed,          10)
-        self.create_subscription(MissionWaypoint, 'mission',       self._cb_mission,        10)
-        self.create_subscription(RCInput,         'servo_state',   self._cb_servo_state,    10)
-        self.create_subscription(Bool,            'mission_clear', self._cb_mission_clear,  10)
+        self.create_subscription(NavSatFix,       'fix',           self._cb_fix,          10)
+        self.create_subscription(NavSatFix,       'fix_front',     self._cb_fix_front,    10)
+        self.create_subscription(Float32,         'heading',       self._cb_heading,      10)
+        self.create_subscription(String,          'mode',          self._cb_mode,         10)
+        self.create_subscription(Bool,            'armed',         self._cb_armed,        10)
+        self.create_subscription(MissionWaypoint, 'mission',       self._cb_mission,      10)
+        self.create_subscription(RCInput,         'servo_state',   self._cb_servo_state,  10)
+        self.create_subscription(Bool,            'mission_clear', self._cb_mission_clear, 10)
 
         # ── Publishers ───────────────────────────────────────────────────────
         self.cmd_pub = self.create_publisher(RCInput,  'cmd_override', 10)
@@ -166,9 +173,9 @@ class NavigatorNode(Node):
         rate = self.get_parameter('control_rate').value
         self.create_timer(1.0 / rate, self._control_loop)
 
-        self.get_logger().info('Navigator ready')
+        self.get_logger().info('Navigator ready (full-path Stanley)')
 
-    # ── Callbacks ─────────────────────────────────────────────────────────────
+    # ── Sensor callbacks ──────────────────────────────────────────────────────
 
     def _cb_fix(self, msg: NavSatFix):
         self._fix      = msg
@@ -179,14 +186,14 @@ class NavigatorNode(Node):
 
     def _center_pos(self) -> tuple[float, float]:
         """Midpoint between rear and front antenna — best estimate of rover centre."""
-        f = self._fix
+        f  = self._fix
         ff = self._fix_front
         if ff is None or ff.latitude == 0.0:
             return f.latitude, f.longitude
         return (f.latitude + ff.latitude) / 2.0, (f.longitude + ff.longitude) / 2.0
 
     def _front_pos(self) -> tuple[float, float]:
-        """Front antenna position — reference point for Stanley CTE (front-axle rule)."""
+        """Front antenna position — reference point for Stanley CTE."""
         ff = self._fix_front
         if ff is None or ff.latitude == 0.0:
             return self._fix.latitude, self._fix.longitude
@@ -202,159 +209,244 @@ class NavigatorNode(Node):
         self._armed = msg.data
 
     def _cb_servo_state(self, msg: RCInput):
-        """Update servo state from mavlink_bridge DO_SET_SERVO commands."""
         for i in range(4):
             val = msg.channels[i + 4] if i + 4 < len(msg.channels) else 0
             if val != 0:
                 self._servo_ch[i] = val
 
+    # ── Mission callbacks ─────────────────────────────────────────────────────
+
     def _cb_mission_clear(self, msg: Bool):
-        """Clear all queued waypoints and reset navigation state (triggered by CLEAR mission)."""
         if not msg.data:
             return
-        self._waypoints.clear()
-        self._active_wp = None
-        self._prev_lat  = None
-        self._prev_lon  = None
-        self._holding   = False
+        self._path.clear()
+        self._path_s.clear()
+        self._path_idx        = 0
+        self._path_origin_lat = None
+        self._path_origin_lon = None
+        self._holding         = False
         self._publish_halt()
-        self.get_logger().info('Mission cleared — waypoint queue reset')
+        self.get_logger().info('Mission cleared — path reset')
 
     def _cb_mission(self, msg: MissionWaypoint):
-        # seq=0 means a new mission is starting — discard any stale waypoints from
-        # a previous mission that was never fully executed.
+        """Append waypoint to path and update cumulative arc-lengths."""
         if msg.seq == 0:
-            self._waypoints.clear()
-            self._active_wp = None
-            self._prev_lat  = None
-            self._prev_lon  = None
-            self._holding   = False
-        self._waypoints.append(msg)
-        if self._active_wp is None:
-            self._advance_waypoint()
+            # New mission — discard any previous path
+            self._path.clear()
+            self._path_s.clear()
+            self._path_idx = 0
+            self._holding  = False
+            # Record rover centre as path origin (start of virtual segment → wp[0]).
+            if self._fix is not None:
+                self._path_origin_lat, self._path_origin_lon = self._center_pos()
+            else:
+                self._path_origin_lat = None
+                self._path_origin_lon = None
+
+        self._path.append(msg)
+
+        if len(self._path) == 1:
+            # Arc-length from origin to first waypoint
+            if self._path_origin_lat is not None:
+                d = haversine(self._path_origin_lat, self._path_origin_lon,
+                              msg.latitude, msg.longitude)
+            else:
+                d = 0.0
+            self._path_s.append(d)
+        else:
+            prev = self._path[-2]
+            d    = haversine(prev.latitude, prev.longitude,
+                             msg.latitude, msg.longitude)
+            self._path_s.append(self._path_s[-1] + d)
+
         self.get_logger().info(
-            f'Waypoint {msg.seq} queued ({len(self._waypoints)} pending)')
+            f'Waypoint {msg.seq} loaded '
+            f'({len(self._path)} total, path length {self._path_s[-1]:.1f} m)')
 
     # ── Services ──────────────────────────────────────────────────────────────
 
     def _svc_pause(self, _, response):
-        self._paused       = True
-        response.success   = True
-        response.message   = 'Mission paused'
+        self._paused     = True
+        response.success = True
+        response.message = 'Mission paused'
         return response
 
     def _svc_resume(self, _, response):
-        self._paused       = False
-        response.success   = True
-        response.message   = 'Mission resumed'
+        self._paused     = False
+        response.success = True
+        response.message = 'Mission resumed'
         return response
 
-    # ── Path geometry ──────────────────────────────────────────────────────────
+    # ── Full-path geometry ────────────────────────────────────────────────────
 
-    def _lookahead_target(self, rover_lat: float, rover_lon: float,
-                          wp: MissionWaypoint) -> tuple[float, float]:
+    def _nearest_on_path(self, lat: float, lon: float) -> tuple[float, int]:
         """
-        Return the lookahead point: a position `lookahead_distance` metres
-        ahead of the rover's projection onto the current path segment
-        (prev_wp → active_wp).
+        Find the nearest point on the remaining path (segments from _path_idx onward).
 
-        Falls back to the waypoint itself when:
-          - no previous waypoint is known (first segment)
-          - the segment is very short
-          - the lookahead extends past the end of the segment
+        Returns (s_nearest, seg_idx):
+          s_nearest — arc-length of the nearest projected point on the path
+          seg_idx   — segment index (0 = virtual origin→wp[0], k = wp[k-1]→wp[k])
+
+        The search never looks back past _path_idx, preventing the controller
+        from snapping to already-completed segments.
         """
-        if self._prev_lat is None:
-            return wp.latitude, wp.longitude
+        if not self._path:
+            return 0.0, 0
 
-        # Flat-earth Cartesian (valid for segments < ~500 m)
-        mid_lat  = math.radians((rover_lat + self._prev_lat) / 2.0)
-        cos_lat  = math.cos(mid_lat) or 1e-9
-        m_lat    = 111_320.0
-        m_lon    = 111_320.0 * cos_lat
+        best_s    = 0.0
+        best_seg  = self._path_idx
+        best_dist = float('inf')
 
-        # Segment vector (metres)
-        seg_dlat = (wp.latitude  - self._prev_lat) * m_lat
-        seg_dlon = (wp.longitude - self._prev_lon) * m_lon
-        seg_len  = math.hypot(seg_dlat, seg_dlon)
-        if seg_len < 0.1:
-            return wp.latitude, wp.longitude
+        for seg_k in range(self._path_idx, len(self._path)):
+            # Segment endpoints and arc-length bounds
+            if seg_k == 0:
+                if self._path_origin_lat is None:
+                    continue
+                a_lat = self._path_origin_lat
+                a_lon = self._path_origin_lon
+                s_a   = 0.0
+            else:
+                a_lat = self._path[seg_k - 1].latitude
+                a_lon = self._path[seg_k - 1].longitude
+                s_a   = self._path_s[seg_k - 1]
 
-        # Rover offset from segment start (metres)
-        rv_dlat  = (rover_lat  - self._prev_lat) * m_lat
-        rv_dlon  = (rover_lon  - self._prev_lon) * m_lon
+            b_lat = self._path[seg_k].latitude
+            b_lon = self._path[seg_k].longitude
+            s_b   = self._path_s[seg_k]
 
-        # Scalar projection of rover onto segment unit vector
-        t_proj = (rv_dlat * seg_dlat + rv_dlon * seg_dlon) / seg_len
+            # Flat-earth Cartesian (valid for segments < ~500 m)
+            mid_lat = math.radians((a_lat + b_lat) / 2)
+            cos_lat = math.cos(mid_lat) or 1e-9
+            m_lat   = 111_320.0
+            m_lon   = 111_320.0 * cos_lat
 
-        # Lookahead point: clamp so it never falls before the segment start
-        t_la = max(t_proj, 0.0) + self._lookahead
+            seg_dy  = (b_lat - a_lat) * m_lat
+            seg_dx  = (b_lon - a_lon) * m_lon
+            seg_len = math.hypot(seg_dx, seg_dy)
 
-        if t_la >= seg_len:
-            # Lookahead reaches beyond this waypoint — aim at the waypoint
-            return wp.latitude, wp.longitude
+            if seg_len < 0.01:
+                # Degenerate segment — use endpoint distance
+                d = haversine(lat, lon, b_lat, b_lon)
+                if d < best_dist:
+                    best_dist = d
+                    best_s    = s_b
+                    best_seg  = seg_k
+                continue
 
-        frac   = t_la / seg_len
-        la_lat = self._prev_lat + frac * (wp.latitude  - self._prev_lat)
-        la_lon = self._prev_lon + frac * (wp.longitude - self._prev_lon)
-        return la_lat, la_lon
+            rv_dy = (lat - a_lat) * m_lat
+            rv_dx = (lon - a_lon) * m_lon
 
-    def _cross_track_error(self, rover_lat: float, rover_lon: float,
-                           wp: MissionWaypoint) -> float:
+            # Scalar projection of rover onto segment, clamped to [0, 1]
+            t = (rv_dx * seg_dx + rv_dy * seg_dy) / (seg_len ** 2)
+            t = max(0.0, min(1.0, t))
+
+            # Distance from rover to nearest point on segment
+            d = math.hypot(t * seg_dx - rv_dx, t * seg_dy - rv_dy)
+
+            if d < best_dist:
+                best_dist = d
+                best_s    = s_a + t * (s_b - s_a)
+                best_seg  = seg_k
+
+        return best_s, best_seg
+
+    def _cte_to_seg(self, lat: float, lon: float, seg_idx: int) -> float:
         """
-        Signed cross-track error in metres.
-
-        Positive = rover is to the LEFT of the path segment (prev_wp → wp).
-        Zero when no previous waypoint is known.
-
-        Uses flat-earth approximation (valid for segments < ~500 m).
+        Signed cross-track error of (lat, lon) to segment seg_idx.
+        Positive = point is to the LEFT of the segment direction.
         """
-        if self._prev_lat is None:
-            return 0.0
+        if seg_idx == 0:
+            if self._path_origin_lat is None or not self._path:
+                return 0.0
+            a_lat = self._path_origin_lat
+            a_lon = self._path_origin_lon
+        else:
+            if seg_idx >= len(self._path):
+                return 0.0
+            a_lat = self._path[seg_idx - 1].latitude
+            a_lon = self._path[seg_idx - 1].longitude
 
-        mid_lat = math.radians((rover_lat + self._prev_lat) / 2.0)
+        b_lat = self._path[seg_idx].latitude
+        b_lon = self._path[seg_idx].longitude
+
+        mid_lat = math.radians((a_lat + b_lat) / 2)
         cos_lat = math.cos(mid_lat) or 1e-9
         m_lat   = 111_320.0
         m_lon   = 111_320.0 * cos_lat
 
-        # Segment vector (metres, East/North)
-        seg_dx = (wp.longitude  - self._prev_lon) * m_lon
-        seg_dy = (wp.latitude   - self._prev_lat) * m_lat
+        seg_dy  = (b_lat - a_lat) * m_lat
+        seg_dx  = (b_lon - a_lon) * m_lon
         seg_len = math.hypot(seg_dx, seg_dy)
-        if seg_len < 0.1:
+        if seg_len < 0.01:
             return 0.0
 
-        # Rover relative to segment start (metres)
-        rv_dx = (rover_lon - self._prev_lon) * m_lon
-        rv_dy = (rover_lat - self._prev_lat) * m_lat
-
+        rv_dy = (lat - a_lat) * m_lat
+        rv_dx = (lon - a_lon) * m_lon
         # 2-D cross product gives signed perpendicular distance
         return (seg_dx * rv_dy - seg_dy * rv_dx) / seg_len
 
-    def _rover_past_waypoint(self, rover_lat: float, rover_lon: float,
-                              wp: MissionWaypoint) -> bool:
+    def _point_at_s(self, s_target: float) -> tuple[float, float]:
         """
-        Return True when the rover has passed the waypoint along the path
-        direction (overshoot detection).
+        Return (lat, lon) at arc-length s_target on the path.
+        Clamps to the last waypoint if s_target exceeds total path length.
+        """
+        if not self._path:
+            return 0.0, 0.0
 
-        Uses a bearing projection: bearing from wp→rover vs bearing of the
-        incoming segment.  If they agree within ±90°, the rover is in the
-        'beyond' half-plane.
-        """
-        if self._prev_lat is None:
-            return False
-        bearing_path     = bearing_to(self._prev_lat, self._prev_lon,
-                                      wp.latitude, wp.longitude)
-        bearing_wp_rover = bearing_to(wp.latitude, wp.longitude,
-                                      rover_lat, rover_lon)
-        angle = ((bearing_wp_rover - bearing_path + 180) % 360) - 180
-        return abs(angle) < 90.0
+        if s_target >= self._path_s[-1]:
+            return self._path[-1].latitude, self._path[-1].longitude
+
+        # Check virtual segment (arc-length 0 → _path_s[0])
+        if (self._path_origin_lat is not None
+                and self._path_s
+                and s_target <= self._path_s[0]):
+            s0   = self._path_s[0]
+            frac = s_target / s0 if s0 > 0.01 else 0.0
+            return (self._path_origin_lat + frac * (self._path[0].latitude  - self._path_origin_lat),
+                    self._path_origin_lon + frac * (self._path[0].longitude - self._path_origin_lon))
+
+        # Walk numbered segments (1 … N-1)
+        for k in range(1, len(self._path)):
+            s_a = self._path_s[k - 1]
+            s_b = self._path_s[k]
+            if s_target <= s_b:
+                seg_len = s_b - s_a
+                if seg_len < 0.01:
+                    return self._path[k].latitude, self._path[k].longitude
+                frac = (s_target - s_a) / seg_len
+                return (self._path[k - 1].latitude  + frac * (self._path[k].latitude  - self._path[k - 1].latitude),
+                        self._path[k - 1].longitude + frac * (self._path[k].longitude - self._path[k - 1].longitude))
+
+        return self._path[-1].latitude, self._path[-1].longitude
+
+    # ── Waypoint advance ──────────────────────────────────────────────────────
+
+    def _advance_path(self):
+        """Publish waypoint-reached event and advance _path_idx."""
+        if self._path_idx >= len(self._path):
+            return
+        wp = self._path[self._path_idx]
+        m  = Int32(); m.data = wp.seq
+        self.wp_pub.publish(m)
+        self._path_idx += 1
+
+        if self._path_idx >= len(self._path):
+            self.get_logger().info('Mission complete')
+            m = Int32(); m.data = -1
+            self.wp_pub.publish(m)
+            self._publish_halt()
+        else:
+            nxt = self._path[self._path_idx]
+            self.get_logger().info(
+                f'Waypoint {wp.seq} reached — navigating to {nxt.seq}')
 
     # ── Control loop ──────────────────────────────────────────────────────────
 
     def _control_loop(self):
-        if self._mode != 'AUTONOMOUS' or not self._armed or self._paused or self._active_wp is None:
+        if self._mode != 'AUTONOMOUS' or not self._armed or self._paused:
             return
-
+        if not self._path or self._path_idx >= len(self._path):
+            return
         if self._fix is None or (time.time() - self._fix_time) > self._gps_timeout:
             self.get_logger().warn('GPS stale — halting')
             self._publish_halt()
@@ -366,20 +458,22 @@ class NavigatorNode(Node):
             if time.monotonic() >= self._hold_end:
                 self._holding = False
                 self.get_logger().info('Hold complete — advancing')
-                self._advance_waypoint()
+                self._advance_path()
             return
 
-        wp = self._active_wp
+        wp               = self._path[self._path_idx]
+        accept           = wp.acceptance_radius if wp.acceptance_radius > 0 else self._accept_r
+        rlat, rlon       = self._center_pos()
+        flat, flon       = self._front_pos()
 
-        # Rover centre (midpoint) — used for acceptance radius, overshoot, lookahead.
-        # Falls back to primary antenna if fix_front not yet available.
-        rlat, rlon = self._center_pos()
-
-        dist   = haversine(rlat, rlon, wp.latitude, wp.longitude)
-        accept = wp.acceptance_radius if wp.acceptance_radius > 0 else self._accept_r
+        # ── Full-path nearest-point projection ───────────────────────────────
+        s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
+        wp_s                = self._path_s[self._path_idx]
+        dist_to_wp          = haversine(rlat, rlon, wp.latitude, wp.longitude)
 
         # ── Waypoint advance ─────────────────────────────────────────────────
-        if dist < accept:
+        # Two triggers: direct proximity OR arc-length has passed the waypoint.
+        if dist_to_wp < accept or s_nearest > wp_s + accept:
             if wp.hold_secs > 0.0:
                 self.get_logger().info(
                     f'Waypoint {wp.seq} reached — holding {wp.hold_secs:.1f} s')
@@ -387,43 +481,32 @@ class NavigatorNode(Node):
                 self._hold_end = time.monotonic() + wp.hold_secs
                 self._publish_halt()
             else:
-                self.get_logger().info(f'Waypoint {wp.seq} reached ({dist:.2f} m)')
-                self._advance_waypoint()
+                self.get_logger().info(f'Waypoint {wp.seq} reached ({dist_to_wp:.2f} m)')
+                self._advance_path()
             return
 
-        # Overshoot: rover has passed the waypoint along the path direction.
-        # Advance immediately instead of turning 180° to go back.
-        if dist < self._lookahead * 2.0 and self._rover_past_waypoint(rlat, rlon, wp):
-            self.get_logger().info(
-                f'Waypoint {wp.seq} passed ({dist:.2f} m overshoot) — advancing')
-            self._advance_waypoint()
-            return
+        # ── Lookahead: point at s_nearest + lookahead_distance on the path ───
+        la_lat, la_lon = self._point_at_s(s_nearest + self._lookahead)
+        target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
+        heading_err    = ((target_bearing - self._heading + 180) % 360) - 180
 
-        # ── Steering toward lookahead target (Stanley controller) ─────────────
-        tgt_lat, tgt_lon = self._lookahead_target(rlat, rlon, wp)
-        target_bearing   = bearing_to(rlat, rlon, tgt_lat, tgt_lon)
-        heading_err      = ((target_bearing - self._heading + 180) % 360) - 180
+        # ── Stanley CTE: front antenna projected onto best_seg ───────────────
+        # Using front-axle reference eliminates the rear-swing oscillation that
+        # occurs when CTE is measured at the rear antenna.
+        cte = self._cte_to_seg(flat, flon, best_seg)
 
-        # Stanley CTE uses the FRONT antenna (front-axle reference per the Stanley paper).
-        # This eliminates the rear-swing oscillation that occurs when the rear antenna is
-        # used: as the rover steers to correct CTE, the rear swings outward and appears as
-        # increasing error, causing over-correction and oscillation.
-        flat, flon = self._front_pos()
-        cte = self._cross_track_error(flat, flon, wp)
-
-        # Publish XTE for telemetry monitoring
-        xte_msg = Float32()
+        # XTE telemetry
+        xte_msg      = Float32()
         xte_msg.data = abs(cte)
         self.xte_pub.publish(xte_msg)
 
         if abs(heading_err) > self._align_thresh:
-            # Large error (e.g. mission start facing wrong way) — spin in place
+            # Large error — spin in place
             spin_dir     = math.copysign(1.0, heading_err)
             steer_ppm    = int(PPM_CENTER - spin_dir * self._max_steer * 500)
             throttle_ppm = PPM_CENTER
         else:
             # Stanley controller: δ = θ_e + arctan(k · e_cte / (v + ε))
-            # Uses recorded waypoint speed directly — no reduction for curves.
             target_spd   = wp.speed if wp.speed > 0 else self._max_speed
             v_mps        = max(target_spd, self._min_speed)
             throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
@@ -438,40 +521,17 @@ class NavigatorNode(Node):
 
         self._publish_cmd(throttle_ppm, steer_ppm)
 
-    def _advance_waypoint(self):
-        # Record current waypoint as the new segment start before advancing
-        if self._active_wp is not None:
-            self._prev_lat = self._active_wp.latitude
-            self._prev_lon = self._active_wp.longitude
-        elif self._fix is not None:
-            # First waypoint: use rover centre as segment start
-            self._prev_lat, self._prev_lon = self._center_pos()
-
-        if self._waypoints:
-            self._active_wp = self._waypoints.popleft()
-            self.get_logger().info(
-                f'Navigating to waypoint {self._active_wp.seq}')
-            m = Int32(); m.data = self._active_wp.seq
-            self.wp_pub.publish(m)
-        else:
-            self._active_wp = None
-            self._prev_lat  = None
-            self._prev_lon  = None
-            self._holding   = False
-            self.get_logger().info('Mission complete')
-            m = Int32(); m.data = -1
-            self.wp_pub.publish(m)
-            self._publish_halt()
+    # ── Output helpers ────────────────────────────────────────────────────────
 
     def _publish_cmd(self, throttle: int, steering: int):
         msg          = RCInput()
         channels     = [PPM_CENTER] * 9
         channels[0]  = throttle
         channels[1]  = steering
-        channels[4]  = self._servo_ch[0]   # PPM CH5 — servo 5
-        channels[5]  = self._servo_ch[1]   # PPM CH6 — servo 6
-        channels[6]  = self._servo_ch[2]   # PPM CH7 — servo 7
-        channels[7]  = self._servo_ch[3]   # PPM CH8 — servo 8
+        channels[4]  = self._servo_ch[0]   # PPM CH5
+        channels[5]  = self._servo_ch[1]   # PPM CH6
+        channels[6]  = self._servo_ch[2]   # PPM CH7
+        channels[7]  = self._servo_ch[3]   # PPM CH8
         msg.channels = channels
         msg.mode     = 'AUTONOMOUS'
         msg.stamp    = self.get_clock().now().to_msg()

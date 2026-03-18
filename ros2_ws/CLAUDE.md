@@ -192,9 +192,22 @@ Speed is held constant at the recorded waypoint speed. No steering-based slowdow
 - `_front_pos()` = front antenna — used for Stanley CTE only
 - Falls back to `fix` alone when `fix_front` is unavailable (e.g. single-GPS mode or startup)
 
+**Full-path state:**
+- `_path`: list of all waypoints in order (built incrementally as mission items arrive)
+- `_path_s[i]`: cumulative arc-length from path origin to `_path[i]`
+- `_path_origin_lat/lon`: rover centre position captured when seq=0 arrives; defines start of virtual segment 0 (origin → wp[0])
+- `_path_idx`: index of next waypoint not yet reached
+
+**`_nearest_on_path(lat, lon)`** — searches segments from `_path_idx` onward (never backtracks). Returns `(s_nearest, seg_idx)`.
+
+**`_cte_to_seg(lat, lon, seg_idx)`** — signed perpendicular distance from given point to given segment. Used with front antenna for Stanley CTE.
+
+**`_point_at_s(s_target)`** — interpolates (lat, lon) at any arc-length along the full path, spanning segment boundaries naturally.
+
 **Waypoint advance logic:**
-- `dist < acceptance_radius` → reached; if `hold_secs > 0` pause then advance
-- Overshoot detection: rover past waypoint along segment direction → advance (no 180° turn)
+- `dist_to_wp < acceptance_radius` OR `s_nearest > wp_s + acceptance_radius` → reached
+- No separate overshoot detection needed — arc-length advance handles corner-cut and overshoot automatically
+- If `hold_secs > 0`: halt, wait, then call `_advance_path()`
 
 **XTE publication:**
 - `_cross_track_error()` uses 2D cross product in flat-earth metres
