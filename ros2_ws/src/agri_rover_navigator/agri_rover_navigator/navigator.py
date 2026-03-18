@@ -26,7 +26,7 @@ from collections import deque
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Float32, Int32, String
 from sensor_msgs.msg import NavSatFix
 from std_srvs.srv import Trigger
 
@@ -100,8 +100,9 @@ class NavigatorNode(Node):
         self.create_subscription(MissionWaypoint, 'mission',     self._cb_mission,      10)
         self.create_subscription(RCInput,         'servo_state', self._cb_servo_state,  10)
 
-        # ── Publisher ────────────────────────────────────────────────────────
+        # ── Publishers ───────────────────────────────────────────────────────
         self.cmd_pub = self.create_publisher(RCInput, 'cmd_override', 10)
+        self.wp_pub  = self.create_publisher(Int32,   'wp_active',    10)
 
         # ── Services ─────────────────────────────────────────────────────────
         self.create_service(Trigger, 'pause_mission',  self._svc_pause)
@@ -200,9 +201,13 @@ class NavigatorNode(Node):
             self._active_wp = self._waypoints.popleft()
             self.get_logger().info(
                 f'Navigating to waypoint {self._active_wp.seq}')
+            m = Int32(); m.data = self._active_wp.seq
+            self.wp_pub.publish(m)
         else:
             self._active_wp = None
             self.get_logger().info('Mission complete')
+            m = Int32(); m.data = -1
+            self.wp_pub.publish(m)
             self._publish_halt()
 
     def _publish_cmd(self, throttle: int, steering: int):

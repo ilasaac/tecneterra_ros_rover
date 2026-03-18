@@ -37,6 +37,8 @@ class RoverState:
     battery_pct: float = -1.0
     cmd_thr:     int   = 1500   # navigator throttle PPM
     cmd_str:     int   = 1500   # navigator steering PPM
+    wp_active:   int   = -1    # active waypoint seq (-1 = none)
+    wp_total:    int   = 0     # total waypoints in mission
     sbus_ch:     list  = field(default_factory=lambda: [1500] * 16)  # raw SBUS, 16 ch
     last_hb:     float = 0.0
     sensors:     dict  = field(default_factory=dict)
@@ -146,6 +148,10 @@ def listen():
                         rv.cmd_thr = int(msg.value)
                     elif name == 'CMD_S':
                         rv.cmd_str = int(msg.value)
+                    elif name == 'WP_ACT':
+                        rv.wp_active = int(msg.value)
+                    elif name == 'WP_TOT':
+                        rv.wp_total = int(msg.value)
                     else:
                         rv.sensors[name] = round(msg.value, 1)
                 elif t == 'STATUSTEXT':
@@ -177,8 +183,10 @@ def render():
                     str_delta = rv.cmd_str - 1500
                     thr_bar = '█' * min(10, abs(thr_delta) // 50)
                     str_bar = '◄' * (max(0, -str_delta) // 50) + '►' * (max(0, str_delta) // 50)
+                    wp_str = f'wp={rv.wp_active}/{rv.wp_total - 1}' if rv.wp_total > 0 else 'wp=--'
                     print(f'  CMD  thr={rv.cmd_thr} ({thr_delta:+d}) {thr_bar}'
-                          f'   str={rv.cmd_str} ({str_delta:+d}) {str_bar or "─"}')
+                          f'   str={rv.cmd_str} ({str_delta:+d}) {str_bar or "─"}'
+                          f'   {wp_str}')
 
                 sbus = rv.sbus_ch
                 # Raw SBUS channels 1-8 as received from RP2040, plus rover-select (ch9)
