@@ -227,7 +227,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         setupListeners()
         setMode(AppMode.MANUAL)
-        roverManager.startListening()
+        roverManager.startListening(this)
     }
 
     override fun onDestroy() {

@@ -1,5 +1,7 @@
 package com.siyi.agrirover
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import android.util.Log
 import io.dronefleet.mavlink.MavlinkConnection
 import io.dronefleet.mavlink.common.*
@@ -68,6 +70,7 @@ class RoverPositionManager(
     private var isRunning  = false
     private val scope      = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var socket: DatagramSocket? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     // Broadcast address — reaches all rovers on the hotspot LAN without knowing their IPs
     private val broadcastAddress: InetAddress = InetAddress.getByName("255.255.255.255")
@@ -99,9 +102,18 @@ class RoverPositionManager(
 
     // ─── Public API ──────────────────────────────────────────────────────────
 
-    fun startListening() {
+    fun startListening(ctx: Context? = null) {
         if (isRunning) return
         isRunning = true
+
+        // Acquire a high-performance WiFi lock to prevent Android power-save mode from
+        // buffering incoming UDP packets (which causes 50-100ms latency per mission item).
+        ctx?.applicationContext?.let { appCtx ->
+            val wm = appCtx.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AgriRover:UDP")
+                .also { it.acquire() }
+        }
 
         scope.launch {
             try {
@@ -127,6 +139,8 @@ class RoverPositionManager(
         isRunning = false
         socket?.close()
         scope.cancel()
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
     }
 
     /** Send MANUAL_CONTROL (#69).
