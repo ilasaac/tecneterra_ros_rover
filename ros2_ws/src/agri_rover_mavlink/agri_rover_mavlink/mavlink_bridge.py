@@ -336,11 +336,16 @@ class MavlinkBridgeNode(Node):
             self.get_logger().warn(f'mission_request send error: {e}')
 
     def _mission_retry(self):
-        """Retransmit MISSION_REQUEST_INT if the expected item hasn't arrived in 500 ms."""
+        """Retransmit MISSION_REQUEST_INT if the expected item hasn't arrived in 250 ms.
+
+        With streaming upload GQC pushes items proactively so this fires only on
+        genuine packet loss.  250 ms is long enough to cover one DTIM period on slow
+        WiFi but short enough that a lost item doesn't stall the upload for long.
+        """
         with self._mission_lock:
             seq = self._mission_expect_seq
             elapsed = time.monotonic() - self._mission_last_req_t
-        if seq is None or elapsed < 0.5:
+        if seq is None or elapsed < 0.25:
             return
         self.get_logger().info(f'Retrying MISSION_REQUEST_INT seq={seq} ({elapsed*1000:.0f}ms)')
         self._send_mission_request(seq)
@@ -429,7 +434,10 @@ class MavlinkBridgeNode(Node):
         if next_seq < self._mission_count:
             with self._mission_lock:
                 self._mission_expect_seq = next_seq
-            self._send_mission_request(next_seq)
+                self._mission_last_req_t = time.monotonic()
+            # Don't immediately send REQUEST_INT — GQC streams items proactively so the
+            # next item may already be in flight.  The retry timer sends REQUEST_INT after
+            # 250 ms only if the item hasn't arrived yet (handles packet loss fallback).
         else:
             with self._mission_lock:
                 self._mission_expect_seq = None

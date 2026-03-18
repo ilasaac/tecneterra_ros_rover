@@ -269,16 +269,7 @@ class RoverPositionManager(
                     .param1(0f).param2(0f).param3(0f).param4(0f)
                     .build()
             }
-
-            pendingMissions[sysId] = items
-
-            sendMavlinkTo(
-                roverIp(sysId),
-                MissionCount.builder()
-                    .targetSystem(sysId).targetComponent(1)
-                    .count(items.size)
-                    .build()
-            )
+            streamMission(sysId, items)
         }
     }
 
@@ -316,14 +307,30 @@ class RoverPositionManager(
                             .build()
                 }
             }
-            pendingMissions[sysId] = items
-            sendMavlinkTo(
-                roverIp(sysId),
-                MissionCount.builder()
-                    .targetSystem(sysId).targetComponent(1)
-                    .count(items.size)
-                    .build()
-            )
+            streamMission(sysId, items)
+        }
+    }
+
+    /**
+     * Streaming mission upload: send MISSION_COUNT then push all items immediately
+     * with a small inter-packet gap.  The rover accepts items as they arrive and only
+     * falls back to REQUEST_INT handshake (via its retry timer) for any missed items.
+     *
+     * This avoids the per-item WiFi DTIM round-trip that adds 66–150 ms per item when
+     * WifiLock LOW_LATENCY is not fully honoured.  All items are delivered in a single
+     * AP DTIM window instead of N separate wake cycles.
+     */
+    private suspend fun streamMission(sysId: Int, items: List<MissionItemInt>) {
+        pendingMissions[sysId] = items
+        val ip = roverIp(sysId)
+        sendMavlinkTo(ip, MissionCount.builder()
+            .targetSystem(sysId).targetComponent(1)
+            .count(items.size).build())
+        // Brief pause so rover processes MISSION_COUNT before items start arriving.
+        delay(150L)
+        for (item in items) {
+            sendMavlinkTo(ip, item)
+            delay(20L)   // 20 ms gap: avoids flooding rover's socket buffer
         }
     }
 
