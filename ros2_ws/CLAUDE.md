@@ -93,18 +93,28 @@ self._gqc_unicast = None                   # set to (ip, port) once first GQC pa
 # Send — dedicated outbound socket created in __init__ (pymavlink internals vary by version):
 #   self._udp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
 #   self._udp_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_BROADCAST, 1)
-# _send() always uses broadcast (gqc_addr) so monitor.py and simulator.py receive telemetry.
+# _send() sends BOTH broadcast (gqc_addr) AND unicast (gqc_unicast) if GQC is known.
+#   Broadcast: ensures monitor.py and simulator.py (passive tools) always receive telemetry.
+#   Unicast:   bypasses WiFi AP DTIM buffering (~100 ms) so GQC gets immediate delivery.
 # Close in main(): node._udp_sock.close()
 
 # Receive loop — uses raw socket, NOT recv_match():
 #   sock = self._mav.port          # mavudp stores the DatagramSocket here
 #   data, (src_ip, src_port) = sock.recvfrom(1024)
-#   self._gqc_unicast = (src_ip, src_port)   # captured from every inbound packet
 #   msgs = self._mav.mav.parse_buffer(data)  # parse with pymavlink's protocol object
+#   if msg.get_srcSystem() == 255:            # only record GQC address (not other rovers!)
+#       self._gqc_unicast = (src_ip, gqc_port)  # force port — GQC RX port ≠ OS send port
 #
 # WHY not recv_match(): pymavlink buffers packets — recv_match() can return a buffered
 # message without calling recvfrom(), leaving last_address stale/None. Using recvfrom()
 # directly guarantees the source IP is captured from every packet.
+#
+# WHY sysid==255 filter: without it, rovers would record each other's IPs and unicast
+# telemetry to each other instead of to GQC.
+#
+# WHY port forced to gqc_port: Android GQC binds :14550 for receiving, but the OS may
+# assign a different ephemeral source port for outbound packets — using src_port would
+# send to the wrong port.
 #
 # Mission handshake (MISSION_REQUEST_INT) uses unicast via _send_mission_request():
 #   addr = self._gqc_unicast or self._gqc_addr   # unicast once GQC discovered
