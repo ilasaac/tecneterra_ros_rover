@@ -137,12 +137,13 @@ class NavigatorNode(Node):
         self._servo_ch:     list[int]        = [PPM_CENTER] * 4
 
         # ── Subscriptions ────────────────────────────────────────────────────
-        self.create_subscription(NavSatFix,       'fix',         self._cb_fix,         10)
-        self.create_subscription(Float32,         'heading',     self._cb_heading,      10)
-        self.create_subscription(String,          'mode',        self._cb_mode,         10)
-        self.create_subscription(Bool,            'armed',       self._cb_armed,        10)
-        self.create_subscription(MissionWaypoint, 'mission',     self._cb_mission,      10)
-        self.create_subscription(RCInput,         'servo_state', self._cb_servo_state,  10)
+        self.create_subscription(NavSatFix,       'fix',           self._cb_fix,           10)
+        self.create_subscription(Float32,         'heading',       self._cb_heading,        10)
+        self.create_subscription(String,          'mode',          self._cb_mode,           10)
+        self.create_subscription(Bool,            'armed',         self._cb_armed,          10)
+        self.create_subscription(MissionWaypoint, 'mission',       self._cb_mission,        10)
+        self.create_subscription(RCInput,         'servo_state',   self._cb_servo_state,    10)
+        self.create_subscription(Bool,            'mission_clear', self._cb_mission_clear,  10)
 
         # ── Publishers ───────────────────────────────────────────────────────
         self.cmd_pub = self.create_publisher(RCInput,  'cmd_override', 10)
@@ -181,7 +182,27 @@ class NavigatorNode(Node):
             if val != 0:
                 self._servo_ch[i] = val
 
+    def _cb_mission_clear(self, msg: Bool):
+        """Clear all queued waypoints and reset navigation state (triggered by CLEAR mission)."""
+        if not msg.data:
+            return
+        self._waypoints.clear()
+        self._active_wp = None
+        self._prev_lat  = None
+        self._prev_lon  = None
+        self._holding   = False
+        self._publish_halt()
+        self.get_logger().info('Mission cleared — waypoint queue reset')
+
     def _cb_mission(self, msg: MissionWaypoint):
+        # seq=0 means a new mission is starting — discard any stale waypoints from
+        # a previous mission that was never fully executed.
+        if msg.seq == 0:
+            self._waypoints.clear()
+            self._active_wp = None
+            self._prev_lat  = None
+            self._prev_lon  = None
+            self._holding   = False
         self._waypoints.append(msg)
         if self._active_wp is None:
             self._advance_waypoint()

@@ -123,11 +123,12 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(Float32,      'xte',          self._cb_xte,      10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
-        self.cmd_pub      = self.create_publisher(RCInput,          'cmd_override', 10)
-        self.mission_pub  = self.create_publisher(MissionWaypoint,  'mission',      10)
-        self.servo_pub    = self.create_publisher(RCInput,          'servo_state',  10)
-        self.mode_pub     = self.create_publisher(String,           'mode',         10)
-        self.armed_pub    = self.create_publisher(Bool,             'armed',        10)
+        self.cmd_pub           = self.create_publisher(RCInput,          'cmd_override',   10)
+        self.mission_pub       = self.create_publisher(MissionWaypoint,  'mission',        10)
+        self.servo_pub         = self.create_publisher(RCInput,          'servo_state',    10)
+        self.mode_pub          = self.create_publisher(String,           'mode',           10)
+        self.armed_pub         = self.create_publisher(Bool,             'armed',          10)
+        self.mission_clear_pub = self.create_publisher(Bool,             'mission_clear',  10)
 
         # ── MAVLink receive thread ────────────────────────────────────────────
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
@@ -304,7 +305,7 @@ class MavlinkBridgeNode(Node):
                     if msg.target_system not in (0, 255, self._rover_id):
                         continue  # not addressed to this rover
                     if msg.count == 0:
-                        # Empty mission (CLEAR command) — ACK immediately, reset state.
+                        # Empty mission (CLEAR command) — ACK immediately, stop navigator.
                         with self._mission_lock:
                             self._mission_count      = 0
                             self._mission_buf        = []
@@ -318,7 +319,12 @@ class MavlinkBridgeNode(Node):
                             self._udp_sock.sendto(packed, addr)
                         except Exception as e:
                             self.get_logger().warn(f'mission_ack send error: {e}')
-                        self.get_logger().info('Empty mission received — mission cleared')
+                        # Tell navigator to drain its waypoint queue and halt
+                        clr = Bool(); clr.data = True
+                        self.mission_clear_pub.publish(clr)
+                        m = String(); m.data = 'MANUAL'
+                        self.mode_pub.publish(m)
+                        self.get_logger().info('Empty mission received — navigator cleared')
                         continue
                     with self._mission_lock:
                         self._mission_count      = msg.count

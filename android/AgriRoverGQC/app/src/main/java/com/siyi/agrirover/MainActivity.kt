@@ -427,6 +427,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun clearMission() {
         if (isRecording) stopRecording()
+        // In AUTO mode the rover may be actively navigating — disarm it first
+        // so it stops immediately before the empty mission arrives.
+        if (currentMode == AppMode.AUTO) {
+            roverManager.sendCriticalCommand(selectedRoverId, 400, 0f, 0f)
+        }
         nextWaypointIndex = 0
         routePoints.clear()
         recordedMission.clear()
