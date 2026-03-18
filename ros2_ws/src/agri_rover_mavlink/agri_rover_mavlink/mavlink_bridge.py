@@ -139,7 +139,7 @@ class MavlinkBridgeNode(Node):
         self.create_timer(0.1,  self._send_rc)         # 10 Hz
         self.create_timer(1.0,  self._send_sys_status)
         self.create_timer(1.0,  self._send_named_values)
-        self.create_timer(0.05, self._mission_retry)   # retransmit lost MISSION_REQUEST_INT
+        self.create_timer(0.5,  self._mission_retry)   # retransmit lost MISSION_REQUEST_INT
 
         self.get_logger().info(
             f'MAVLink bridge sysid={self._rover_id} '
@@ -177,15 +177,19 @@ class MavlinkBridgeNode(Node):
         return int(time.time() * 1000) - self._boot_ms
 
     def _send(self, msg):
-        """Broadcast a MAVLink message to GQC and all listeners (monitor.py, simulator).
+        """Send a MAVLink message to GQC (unicast if discovered, else broadcast).
 
-        Regular telemetry always goes to broadcast so passive tools (monitor.py,
-        simulator) can receive it without being registered.  Only the mission
-        handshake (MISSION_REQUEST_INT) uses unicast via _send_mission_request().
+        Always sends to broadcast so passive tools (monitor.py, simulator) can
+        receive it.  If GQC unicast address is known, sends a second copy
+        to that address to bypass WiFi DTIM buffering (~100 ms).
         """
         try:
             buf = msg.pack(self._mav.mav)
+            # 1. Always broadcast for tools
             self._udp_sock.sendto(buf, self._gqc_addr)
+            # 2. Unicast to GQC for low latency
+            if self._gqc_unicast:
+                self._udp_sock.sendto(buf, self._gqc_unicast)
         except Exception as e:
             self.get_logger().warn(f'MAVLink send error: {e}')
 
@@ -325,11 +329,11 @@ class MavlinkBridgeNode(Node):
             self.get_logger().warn(f'mission_request send error: {e}')
 
     def _mission_retry(self):
-        """Retransmit MISSION_REQUEST_INT if the expected item hasn't arrived in 50 ms."""
+        """Retransmit MISSION_REQUEST_INT if the expected item hasn't arrived in 500 ms."""
         with self._mission_lock:
             seq = self._mission_expect_seq
             elapsed = time.monotonic() - self._mission_last_req_t
-        if seq is None or elapsed < 0.05:
+        if seq is None or elapsed < 0.5:
             return
         self.get_logger().info(f'Retrying MISSION_REQUEST_INT seq={seq} ({elapsed*1000:.0f}ms)')
         self._send_mission_request(seq)

@@ -112,9 +112,10 @@ GQC identifies rovers by **sysid in HEARTBEAT**, not by port.
 
 **Broadcast vs unicast:**
 - `_send()` always uses `self._gqc_addr` (broadcast) so passive tools (`monitor.py`, `simulator.py`) continue to receive telemetry without registering their IPs.
-- `_send_mission_request()` uses `self._gqc_unicast or self._gqc_addr` — unicast once GQC IP is known, eliminating WiFi AP DTIM buffering (~100 ms/item) during mission upload.
-- `_gqc_unicast` is set from the **source IP of every inbound packet** via `sock.recvfrom()` in `_recv_loop`. **Do not use `recv_match()` for discovery** — pymavlink buffers internally so `last_address` is often stale or `None`.
-- `_recv_loop` reads `self._mav.port.recvfrom(1024)` directly (pymavlink's `mavudp` stores the socket as `self.port`), then parses with `self._mav.mav.parse_buffer(data)`.
+- If `self._gqc_unicast` is known, `_send()` **also** sends a second copy to that unicast address to bypass WiFi AP DTIM buffering (~100 ms latency).
+- `_send_mission_request()` uses `self._gqc_unicast or self._gqc_addr` for the handshake.
+- `_gqc_unicast` is updated from the **source IP of every inbound packet** via raw `sock.recvfrom()` in `_recv_loop`.
+- Mission upload retry: `0.5` s (500 ms) timer and logic.
 
 ---
 
