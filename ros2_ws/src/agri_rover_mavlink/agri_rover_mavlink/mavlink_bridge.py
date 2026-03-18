@@ -31,7 +31,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, Float32, Int32
+from std_msgs.msg import String, Float32, Int32, Bool
 from sensor_msgs.msg import NavSatFix
 
 os.environ['MAVLINK20'] = '1'
@@ -125,6 +125,7 @@ class MavlinkBridgeNode(Node):
         self.mission_pub  = self.create_publisher(MissionWaypoint,  'mission',      10)
         self.servo_pub    = self.create_publisher(RCInput,          'servo_state',  10)
         self.mode_pub     = self.create_publisher(String,           'mode',         10)
+        self.armed_pub    = self.create_publisher(Bool,             'armed',        10)
 
         # ── MAVLink receive thread ────────────────────────────────────────────
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
@@ -337,6 +338,8 @@ class MavlinkBridgeNode(Node):
         if msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
             self._armed = (msg.param1 == 1.0)
             self.get_logger().info(f'{"ARM" if self._armed else "DISARM"} command received')
+            a = Bool(); a.data = self._armed
+            self.armed_pub.publish(a)
             if not self._armed:
                 # Disarm exits autonomous mode so navigator stops
                 self._mode = 'MANUAL'

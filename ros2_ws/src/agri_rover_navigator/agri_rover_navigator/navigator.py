@@ -26,7 +26,7 @@ from collections import deque
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int32, String
+from std_msgs.msg import Bool, Float32, Int32, String
 from sensor_msgs.msg import NavSatFix
 from std_srvs.srv import Trigger
 
@@ -86,6 +86,7 @@ class NavigatorNode(Node):
         self._fix_time:     float            = 0.0
         self._heading:      float            = 0.0
         self._mode:         str              = 'MANUAL'
+        self._armed:        bool             = False
         self._waypoints:    deque[MissionWaypoint] = deque()
         self._paused:       bool             = False
         self._active_wp:    MissionWaypoint | None = None
@@ -97,6 +98,7 @@ class NavigatorNode(Node):
         self.create_subscription(NavSatFix,       'fix',         self._cb_fix,         10)
         self.create_subscription(Float32,         'heading',     self._cb_heading,      10)
         self.create_subscription(String,          'mode',        self._cb_mode,         10)
+        self.create_subscription(Bool,            'armed',       self._cb_armed,        10)
         self.create_subscription(MissionWaypoint, 'mission',     self._cb_mission,      10)
         self.create_subscription(RCInput,         'servo_state', self._cb_servo_state,  10)
 
@@ -125,6 +127,9 @@ class NavigatorNode(Node):
 
     def _cb_mode(self, msg: String):
         self._mode = msg.data
+
+    def _cb_armed(self, msg: Bool):
+        self._armed = msg.data
 
     def _cb_servo_state(self, msg: RCInput):
         """Update servo state from mavlink_bridge DO_SET_SERVO commands."""
@@ -157,7 +162,7 @@ class NavigatorNode(Node):
     # ── Control loop ──────────────────────────────────────────────────────────
 
     def _control_loop(self):
-        if self._mode != 'AUTONOMOUS' or self._paused or self._active_wp is None:
+        if self._mode != 'AUTONOMOUS' or not self._armed or self._paused or self._active_wp is None:
             return
 
         if self._fix is None or (time.time() - self._fix_time) > self._gps_timeout:
