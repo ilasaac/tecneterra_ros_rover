@@ -303,6 +303,23 @@ class MavlinkBridgeNode(Node):
                 elif mt == 'MISSION_COUNT':
                     if msg.target_system not in (0, 255, self._rover_id):
                         continue  # not addressed to this rover
+                    if msg.count == 0:
+                        # Empty mission (CLEAR command) — ACK immediately, reset state.
+                        with self._mission_lock:
+                            self._mission_count      = 0
+                            self._mission_buf        = []
+                            self._mission_src        = None
+                            self._mission_expect_seq = None
+                        addr = self._gqc_unicast or self._gqc_addr
+                        packed = self._mav.mav.mission_ack_encode(
+                            msg.get_srcSystem(), msg.get_srcComponent(),
+                            mavutil.mavlink.MAV_MISSION_ACCEPTED).pack(self._mav.mav)
+                        try:
+                            self._udp_sock.sendto(packed, addr)
+                        except Exception as e:
+                            self.get_logger().warn(f'mission_ack send error: {e}')
+                        self.get_logger().info('Empty mission received — mission cleared')
+                        continue
                     with self._mission_lock:
                         self._mission_count      = msg.count
                         self._mission_buf        = []

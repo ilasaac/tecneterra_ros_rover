@@ -432,7 +432,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         recordedMission.clear()
         lastRecordedPos = null
         pendingHoldSecs = 0f
+        roverMissions.remove(selectedRoverId)
+        roverMissionVisible.remove(selectedRoverId)
         redrawMap()
+        redrawRoverMissions()
         roverManager.uploadMission(selectedRoverId, emptyList())
     }
 
