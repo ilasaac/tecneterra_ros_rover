@@ -109,10 +109,16 @@ class RoverPositionManager(
         // Acquire a high-performance WiFi lock to prevent Android power-save mode from
         // buffering incoming UDP packets (which causes 50-100ms latency per mission item).
         ctx?.applicationContext?.let { appCtx ->
-            val wm = appCtx.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            @Suppress("DEPRECATION")
-            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AgriRover:UDP")
-                .also { it.acquire() }
+            try {
+                val wm = appCtx.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                    ?: return@let
+                @Suppress("DEPRECATION")
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AgriRover:UDP")
+                    .also { it.acquire() }
+                Log.i("RoverMgr", "WiFi high-perf lock acquired")
+            } catch (e: Exception) {
+                Log.w("RoverMgr", "WiFi lock unavailable: ${e.message}")
+            }
         }
 
         scope.launch {
