@@ -98,6 +98,12 @@ Both `uploadMission()` and `uploadRecordedMission()` call `streamMission()`:
 
 ```
 GQC                          Rover
+  ── DISARM (confirmation=0) ►
+  (wait 100 ms)
+  ── DISARM (confirmation=1) ►
+  (wait 100 ms)
+  ── DISARM (confirmation=2) ►
+  (wait 100 ms)
   ── MISSION_COUNT ──────────►
   (wait 150 ms)
   ── MISSION_ITEM_INT(0) ────►
@@ -108,6 +114,10 @@ GQC                          Rover
                               ◄── MISSION_ACK (when all received)
   (if item lost: rover retry sends REQUEST_INT after 250 ms, GQC replies from pendingMissions)
 ```
+
+**Safety:** DISARM×3 is sent before `MISSION_COUNT`. The rover is always disarmed before a new
+mission is loaded — it cannot begin navigating mid-upload. After upload completes the user must
+press START explicitly to arm and begin autonomous navigation.
 
 **Why streaming instead of request/response:**
 - Per-item REQUEST_INT → ITEM_INT round trip hits Android WiFi DTIM (~100–150 ms each) because `WIFI_MODE_FULL_LOW_LATENCY` WifiLock is not fully honoured on all devices.

@@ -312,9 +312,12 @@ class RoverPositionManager(
     }
 
     /**
-     * Streaming mission upload: send MISSION_COUNT then push all items immediately
-     * with a small inter-packet gap.  The rover accepts items as they arrive and only
-     * falls back to REQUEST_INT handshake (via its retry timer) for any missed items.
+     * Streaming mission upload: disarm rover, send MISSION_COUNT, then push all items
+     * immediately with a small inter-packet gap.  The rover accepts items as they arrive
+     * and only falls back to REQUEST_INT handshake (via its retry timer) for missed items.
+     *
+     * Safety: DISARM×3 is sent before MISSION_COUNT so the rover cannot begin navigating
+     * while a new mission is being loaded.  User must press START explicitly afterwards.
      *
      * This avoids the per-item WiFi DTIM round-trip that adds 66–150 ms per item when
      * WifiLock LOW_LATENCY is not fully honoured.  All items are delivered in a single
@@ -323,6 +326,19 @@ class RoverPositionManager(
     private suspend fun streamMission(sysId: Int, items: List<MissionItemInt>) {
         pendingMissions[sysId] = items
         val ip = roverIp(sysId)
+        // Safety: disarm before uploading — rover must not start navigating during upload.
+        // 3× retries (confirmation=0,1,2) per MAVLink spec for critical commands.
+        repeat(3) { attempt ->
+            sendMavlinkTo(ip, CommandLong.builder()
+                .targetSystem(sysId).targetComponent(1)
+                .command(EnumValue.create(MavCmd::class.java, 400))
+                .confirmation(attempt)
+                .param1(0f).param2(0f).param3(0f).param4(0f).param5(0f).param6(0f).param7(0f)
+                .build())
+            if (attempt < 2) delay(100L)
+        }
+        // Allow rover to process disarm before mission upload begins.
+        delay(100L)
         sendMavlinkTo(ip, MissionCount.builder()
             .targetSystem(sysId).targetComponent(1)
             .count(items.size).build())
