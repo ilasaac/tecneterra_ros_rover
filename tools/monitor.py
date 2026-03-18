@@ -4,6 +4,10 @@ tools/monitor.py — Live terminal dashboard for both rovers.
 Listens on UDP :14550 — both rovers broadcast to this port (different Jetsons,
 no conflict). Rovers are identified by MAVLink sysid in HEARTBEAT.
 
+Also snoops GQC (sysid=255) mission uploads, runs a software-in-the-loop
+simulation (via sim_navigator.py) as soon as a mission is fully uploaded, and
+writes a Leaflet.js map to monitor_map.html that refreshes every 5 s.
+
 Usage:
   python tools/monitor.py
 """
@@ -11,10 +15,13 @@ Usage:
 from __future__ import annotations
 
 import csv
+import json
 import os
 import socket
+import sys
 import threading
 import time
+import webbrowser
 from dataclasses import dataclass, field
 
 os.environ['MAVLINK20'] = '1'
@@ -23,37 +30,53 @@ try:
 except ImportError:
     raise ImportError("pip install pymavlink")
 
+# Simulation engine (same directory)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from sim_navigator import simulate as _sim_run, SimWaypoint   # noqa: E402
+    _SIM_AVAILABLE = True
+except ImportError:
+    _SIM_AVAILABLE = False
+
 
 @dataclass
 class RoverState:
-    rv_id:       int   = 0
-    ip:          str   = '?'
-    lat:         float = 0.0
-    lon:         float = 0.0
-    fix_type:    str   = 'NO_FIX'
-    armed:       bool  = False
-    mode:        str   = 'UNKNOWN'
-    heading:     float = -1.0   # degrees, -1 = unknown
-    battery_v:   float = 0.0
-    battery_pct: float = -1.0
-    cmd_thr:     int   = 1500   # navigator throttle PPM
-    cmd_str:     int   = 1500   # navigator steering PPM
-    wp_active:   int   = -1    # active waypoint seq (-1 = none)
-    wp_total:    int   = 0     # total waypoints in mission
-    xte_m:       float = 0.0   # latest cross-track error (metres)
-    xte_max:     float = 0.0   # max XTE observed this session
-    xte_sum:     float = 0.0   # cumulative sum for average
-    xte_count:   int   = 0     # number of XTE samples collected
-    sbus_ch:     list  = field(default_factory=lambda: [1500] * 16)  # raw SBUS, 16 ch
-    last_hb:     float = 0.0
-    sensors:     dict  = field(default_factory=dict)
-    log:         list  = field(default_factory=list)
+    rv_id:         int   = 0
+    ip:            str   = '?'
+    lat:           float = 0.0
+    lon:           float = 0.0
+    fix_type:      str   = 'NO_FIX'
+    armed:         bool  = False
+    mode:          str   = 'UNKNOWN'
+    heading:       float = -1.0   # degrees, -1 = unknown
+    battery_v:     float = 0.0
+    battery_pct:   float = -1.0
+    cmd_thr:       int   = 1500   # navigator throttle PPM
+    cmd_str:       int   = 1500   # navigator steering PPM
+    wp_active:     int   = -1    # active waypoint seq (-1 = none)
+    wp_total:      int   = 0     # total waypoints in mission
+    xte_m:         float = 0.0   # latest cross-track error (metres)
+    xte_max:       float = 0.0   # max XTE observed this session
+    xte_sum:       float = 0.0   # cumulative sum for average
+    xte_count:     int   = 0     # number of XTE samples collected
+    sbus_ch:       list  = field(default_factory=lambda: [1500] * 16)
+    last_hb:       float = 0.0
+    sensors:       dict  = field(default_factory=dict)
+    log:           list  = field(default_factory=list)
+    # Mission tracking (populated from snooped GQC packets)
+    mission_raw:   dict  = field(default_factory=dict)  # seq -> (lat, lon), nav wps only
+    mission_count: int   = 0   # total items in current upload (incl. DO_SET_SERVO)
+    sim_result:    object = None   # SimResult when simulation completes
+    sim_running:   bool  = False
+    actual_path:   list  = field(default_factory=list)  # [(lat, lon)] from GLOBAL_POSITION_INT
 
 
 RV    = {1: RoverState(rv_id=1), 2: RoverState(rv_id=2)}
 _lock = threading.Lock()
 
 MAV_MODE_ARMED = 128
+_MAP_PATH      = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'monitor_map.html')
+_map_opened    = False
 
 
 def _sbus_to_ppm(ch: list) -> list:
@@ -85,18 +108,199 @@ def _sbus_to_ppm(ch: list) -> list:
     ]
 
 
+# ── Simulation ────────────────────────────────────────────────────────────────
+
+def _trigger_simulation(rv_id: int):
+    """Build waypoints from mission_raw and run sim; store result in rv.sim_result."""
+    if not _SIM_AVAILABLE:
+        with _lock:
+            RV[rv_id].sim_running = False
+        return
+
+    with _lock:
+        rv = RV[rv_id]
+        if not rv.mission_raw:
+            rv.sim_running = False
+            return
+        waypoints = [
+            SimWaypoint(seq=seq, lat=lat, lon=lon)
+            for seq, (lat, lon) in sorted(rv.mission_raw.items())
+        ]
+        start_lat     = rv.lat
+        start_lon     = rv.lon
+        start_heading = rv.heading if rv.heading >= 0 else 0.0
+
+    try:
+        result = _sim_run(waypoints, start_lat, start_lon, start_heading)
+    except Exception:
+        result = None
+
+    with _lock:
+        RV[rv_id].sim_result  = result
+        RV[rv_id].sim_running = False
+
+
+# ── Map generation ─────────────────────────────────────────────────────────────
+
+def _build_map_html() -> str:
+    """Generate a Leaflet.js HTML page with mission, simulated, and actual paths."""
+    with _lock:
+        rovers_snapshot = []
+        for rv_id, rv in RV.items():
+            # Build ordered mission path from nav waypoints only
+            mission_path = [
+                [lat, lon]
+                for _, (lat, lon) in sorted(rv.mission_raw.items())
+            ]
+            sim_path = (
+                [[lat, lon] for lat, lon in rv.sim_result.path]
+                if rv.sim_result else []
+            )
+            actual_path = [[lat, lon] for lat, lon in rv.actual_path]
+            rovers_snapshot.append({
+                'id':           rv_id,
+                'lat':          rv.lat,
+                'lon':          rv.lon,
+                'armed':        rv.armed,
+                'mode':         rv.mode,
+                'mission_path': mission_path,
+                'sim_path':     sim_path,
+                'actual_path':  actual_path,
+                'sim_rms':      rv.sim_result.rms_xte if rv.sim_result else None,
+                'sim_max':      rv.sim_result.max_xte if rv.sim_result else None,
+                'sim_complete': rv.sim_result.complete if rv.sim_result else None,
+            })
+
+    # Map center: first rover with a valid fix, else default field
+    center_lat, center_lon = 20.727715, -103.566782
+    for rd in rovers_snapshot:
+        if rd['lat'] != 0.0:
+            center_lat, center_lon = rd['lat'], rd['lon']
+            break
+
+    data_json = json.dumps(rovers_snapshot)
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>AgriRover Monitor Map</title>
+<meta http-equiv="refresh" content="5"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  body  {{ margin:0; background:#111; color:#eee; font-family:monospace; font-size:13px; }}
+  #map  {{ height:82vh; }}
+  #info {{ padding:6px 12px; line-height:1.9; }}
+  .dot  {{ display:inline-block; width:11px; height:11px; border-radius:50%; margin-right:5px;
+            vertical-align:middle; }}
+  .swatch {{ display:inline-block; width:28px; height:4px; vertical-align:middle;
+              margin-right:5px; }}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="info"></div>
+<script>
+var data   = {data_json};
+var center = [{center_lat}, {center_lon}];
+var roverColor = {{1: '#ef5350', 2: '#42a5f5'}};
+
+var map = L.map('map').setView(center, 18);
+L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}',
+  {{maxZoom: 22, attribution: '&copy; Esri'}}
+).addTo(map);
+
+var infoHtml = '';
+
+data.forEach(function(rv) {{
+  var col = roverColor[rv.id] || '#fff';
+
+  // — Mission path (solid, rover colour) with waypoint dots
+  if (rv.mission_path && rv.mission_path.length > 1) {{
+    L.polyline(rv.mission_path, {{color: col, weight: 3, opacity: 0.95}}).addTo(map);
+  }}
+  if (rv.mission_path) {{
+    rv.mission_path.forEach(function(pt, i) {{
+      L.circleMarker(pt, {{radius: 5, color: col, fillColor: col, fillOpacity: 0.85, weight: 1}})
+       .bindTooltip('WP' + i).addTo(map);
+    }});
+  }}
+
+  // — Simulated path (dashed orange)
+  if (rv.sim_path && rv.sim_path.length > 1) {{
+    L.polyline(rv.sim_path, {{color: '#ff9800', weight: 2, opacity: 0.85,
+                              dashArray: '7 5'}}).addTo(map);
+  }}
+
+  // — Actual path (green)
+  if (rv.actual_path && rv.actual_path.length > 1) {{
+    L.polyline(rv.actual_path, {{color: '#66bb6a', weight: 2, opacity: 0.9}}).addTo(map);
+  }}
+
+  // — Current rover marker
+  if (rv.lat !== 0.0) {{
+    var fill = rv.mode === 'AUTONOMOUS' ? '#ffee58' : (rv.armed ? '#ff7043' : '#66bb6a');
+    L.circleMarker([rv.lat, rv.lon], {{
+      radius: 9, color: col, weight: 2, fillColor: fill, fillOpacity: 1.0
+    }}).bindTooltip('RV' + rv.id + ' ' + rv.mode,
+                    {{permanent: true, direction: 'top', offset: [0, -10]}}).addTo(map);
+  }}
+
+  // — Legend row
+  infoHtml += '<span class="dot" style="background:' + col + '"></span><b>RV' + rv.id + '</b> &nbsp;';
+  if (rv.sim_rms !== null) {{
+    var ok = rv.sim_complete ? '&#10003;' : '&#9888;';
+    infoHtml += ok + ' Sim XTE  rms=' + rv.sim_rms.toFixed(3) + ' m &nbsp; max='
+             + rv.sim_max.toFixed(3) + ' m';
+  }} else {{
+    infoHtml += '(upload a mission to simulate)';
+  }}
+  infoHtml += ' &nbsp;&nbsp;&nbsp;';
+}});
+
+infoHtml += '<br>';
+infoHtml += '<span class="swatch" style="background:#ff9800;"></span>Simulated path &nbsp;';
+infoHtml += '<span class="swatch" style="background:#66bb6a;"></span>Actual path &nbsp;';
+infoHtml += '<span style="color:#aaa">&nbsp; Marker: yellow=AUTO, orange=armed, green=disarmed</span>';
+
+document.getElementById('info').innerHTML = infoHtml;
+</script>
+</body>
+</html>"""
+
+
+def map_gen_loop():
+    """Write monitor_map.html every 5 s; open in browser on first write."""
+    global _map_opened
+    while True:
+        time.sleep(5)
+        try:
+            html = _build_map_html()
+            with open(_MAP_PATH, 'w', encoding='utf-8') as f:
+                f.write(html)
+            if not _map_opened:
+                webbrowser.open(_MAP_PATH)
+                _map_opened = True
+        except Exception:
+            pass
+
+
+# ── MAVLink listener ──────────────────────────────────────────────────────────
+
 def listen():
     """
-    Receive MAVLink UDP on :14550 using a raw socket so the source IP comes
-    directly from recvfrom() — no dependency on pymavlink internal attributes.
+    Receive MAVLink UDP on :14550 — rovers (sysid 1/2) and GQC (sysid 255).
+    Source IP comes directly from recvfrom().
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.settimeout(2.0)
     sock.bind(('', 14550))
 
-    # One MAVLink parser per rover to maintain per-stream sequence state
-    parsers = {sysid: mavutil.mavlink.MAVLink(None) for sysid in RV}
+    # One MAVLink parser per tracked sysid
+    parsers = {sysid: mavutil.mavlink.MAVLink(None) for sysid in list(RV) + [255]}
     for p in parsers.values():
         p.robust_parsing = True
 
@@ -111,7 +315,7 @@ def listen():
         if not data:
             continue
 
-        # Fast sysid from raw bytes — avoid a full parse just to route the packet
+        # Fast sysid from raw bytes — avoid a full parse just to route
         if data[0] == 0xFD and len(data) >= 6:    # MAVLink v2
             sysid = data[5]
         elif data[0] == 0xFE and len(data) >= 4:  # MAVLink v1
@@ -119,7 +323,7 @@ def listen():
         else:
             continue
 
-        if sysid not in RV:
+        if sysid not in parsers:
             continue
 
         msgs = parsers[sysid].parse_buffer(data)
@@ -128,50 +332,89 @@ def listen():
 
         t_now = time.time()
         with _lock:
-            rv = RV[sysid]
-            rv.ip = src_ip                        # always fresh from recvfrom
-            for msg in msgs:
-                t = msg.get_type()
-                if t == 'HEARTBEAT':
-                    rv.last_hb  = t_now
-                    rv.armed    = bool(msg.base_mode & MAV_MODE_ARMED)
-                    rv.mode     = {0: 'MANUAL', 4: 'AUTONOMOUS', 16: 'EMERGENCY'}.get(
-                        msg.custom_mode, str(msg.custom_mode))
-                elif t == 'GLOBAL_POSITION_INT':
-                    rv.lat = msg.lat / 1e7
-                    rv.lon = msg.lon / 1e7
-                    if msg.hdg != 65535:
-                        rv.heading = msg.hdg / 100.0
-                elif t == 'RC_CHANNELS':
-                    rv.sbus_ch = [getattr(msg, f'chan{i}_raw', 1500) for i in range(1, 17)]
-                elif t == 'SYS_STATUS':
-                    rv.battery_v   = msg.voltage_battery / 1000.0
-                    rv.battery_pct = msg.battery_remaining
-                elif t == 'NAMED_VALUE_FLOAT':
-                    name = msg.name.rstrip('\x00') if isinstance(msg.name, str) else msg.name.rstrip(b'\x00').decode()
-                    if name == 'CMD_T':
-                        rv.cmd_thr = int(msg.value)
-                    elif name == 'CMD_S':
-                        rv.cmd_str = int(msg.value)
-                    elif name == 'WP_ACT':
-                        rv.wp_active = int(msg.value)
-                    elif name == 'WP_TOT':
-                        rv.wp_total = int(msg.value)
-                    elif name == 'XTE':
-                        rv.xte_m = msg.value
-                        if msg.value > rv.xte_max:
-                            rv.xte_max = msg.value
-                        rv.xte_sum   += msg.value
-                        rv.xte_count += 1
-                    else:
-                        rv.sensors[name] = round(msg.value, 1)
-                elif t == 'STATUSTEXT':
-                    sev = {0: 'EMERG', 1: 'ALERT', 2: 'CRIT', 3: 'ERR',
-                           4: 'WARN',  5: 'NOTE',  6: 'INFO', 7: 'DBG'}.get(msg.severity, '?')
-                    rv.log.append(f'[{sev}] {msg.text}')
-                    if len(rv.log) > 20:
-                        rv.log.pop(0)
+            if sysid in RV:
+                # ── Rover telemetry ───────────────────────────────────────
+                rv = RV[sysid]
+                rv.ip = src_ip
+                for msg in msgs:
+                    t = msg.get_type()
+                    if t == 'HEARTBEAT':
+                        rv.last_hb  = t_now
+                        rv.armed    = bool(msg.base_mode & MAV_MODE_ARMED)
+                        rv.mode     = {0: 'MANUAL', 4: 'AUTONOMOUS', 16: 'EMERGENCY'}.get(
+                            msg.custom_mode, str(msg.custom_mode))
+                    elif t == 'GLOBAL_POSITION_INT':
+                        rv.lat = msg.lat / 1e7
+                        rv.lon = msg.lon / 1e7
+                        if msg.hdg != 65535:
+                            rv.heading = msg.hdg / 100.0
+                        if rv.lat != 0.0:
+                            rv.actual_path.append((rv.lat, rv.lon))
+                            if len(rv.actual_path) > 10_000:
+                                rv.actual_path.pop(0)
+                    elif t == 'RC_CHANNELS':
+                        rv.sbus_ch = [getattr(msg, f'chan{i}_raw', 1500) for i in range(1, 17)]
+                    elif t == 'SYS_STATUS':
+                        rv.battery_v   = msg.voltage_battery / 1000.0
+                        rv.battery_pct = msg.battery_remaining
+                    elif t == 'NAMED_VALUE_FLOAT':
+                        name = (msg.name.rstrip('\x00') if isinstance(msg.name, str)
+                                else msg.name.rstrip(b'\x00').decode())
+                        if name == 'CMD_T':
+                            rv.cmd_thr = int(msg.value)
+                        elif name == 'CMD_S':
+                            rv.cmd_str = int(msg.value)
+                        elif name == 'WP_ACT':
+                            rv.wp_active = int(msg.value)
+                        elif name == 'WP_TOT':
+                            rv.wp_total = int(msg.value)
+                        elif name == 'XTE':
+                            rv.xte_m = msg.value
+                            if msg.value > rv.xte_max:
+                                rv.xte_max = msg.value
+                            rv.xte_sum   += msg.value
+                            rv.xte_count += 1
+                        else:
+                            rv.sensors[name] = round(msg.value, 1)
+                    elif t == 'STATUSTEXT':
+                        sev = {0: 'EMERG', 1: 'ALERT', 2: 'CRIT', 3: 'ERR',
+                               4: 'WARN',  5: 'NOTE',  6: 'INFO', 7: 'DBG'}.get(msg.severity, '?')
+                        rv.log.append(f'[{sev}] {msg.text}')
+                        if len(rv.log) > 20:
+                            rv.log.pop(0)
 
+            elif sysid == 255:
+                # ── GQC mission upload snooping ───────────────────────────
+                for msg in msgs:
+                    t = msg.get_type()
+                    if t == 'MISSION_COUNT':
+                        tgt = getattr(msg, 'target_system', 0)
+                        if tgt in RV:
+                            rv = RV[tgt]
+                            rv.mission_raw    = {}
+                            rv.mission_count  = msg.count
+                            rv.sim_result     = None
+                            rv.sim_running    = False
+                            rv.actual_path    = []   # fresh path for this mission
+                    elif t == 'MISSION_ITEM_INT':
+                        tgt = getattr(msg, 'target_system', 0)
+                        if tgt in RV:
+                            rv = RV[tgt]
+                            # Record NAV_WAYPOINT items (command=16) only
+                            if msg.command == 16:
+                                rv.mission_raw[msg.seq] = (msg.x / 1e7, msg.y / 1e7)
+                            # Trigger simulation on last item of the upload
+                            if msg.seq == rv.mission_count - 1 and not rv.sim_running:
+                                rv.sim_running = True
+                                rv_id_copy = tgt
+                                threading.Thread(
+                                    target=_trigger_simulation,
+                                    args=(rv_id_copy,),
+                                    daemon=True,
+                                ).start()
+
+
+# ── Terminal render ───────────────────────────────────────────────────────────
 
 def render():
     while True:
@@ -193,7 +436,8 @@ def render():
                     thr_delta = rv.cmd_thr - 1500
                     str_delta = rv.cmd_str - 1500
                     thr_bar = '█' * min(10, abs(thr_delta) // 50)
-                    str_bar = '◄' * (max(0, -str_delta) // 50) + '►' * (max(0, str_delta) // 50)
+                    str_bar = ('◄' * (max(0, -str_delta) // 50)
+                               + '►' * (max(0, str_delta) // 50))
                     wp_str = f'wp={rv.wp_active}/{rv.wp_total - 1}' if rv.wp_total > 0 else 'wp=--'
                     xte_avg = rv.xte_sum / rv.xte_count if rv.xte_count > 0 else 0.0
                     print(f'  CMD  thr={rv.cmd_thr} ({thr_delta:+d}) {thr_bar}'
@@ -203,11 +447,9 @@ def render():
                           f'  avg={xte_avg:.3f}m  n={rv.xte_count}')
 
                 sbus = rv.sbus_ch
-                # Raw SBUS channels 1-8 as received from RP2040, plus rover-select (ch9)
                 sbus8 = ' '.join(f'{c:4d}' for c in sbus[:8])
                 print(f'  SBUS {sbus8}  sel={sbus[8]:4d}')
 
-                # Firmware-remapped PPM — what the motor controllers physically receive
                 ppm  = _sbus_to_ppm(sbus)
                 ppm8 = ' '.join(f'{c:4d}' for c in ppm)
                 print(f'  PPM  {ppm8}')
@@ -219,11 +461,31 @@ def render():
                           f'TEMP {s.get("TEMP", "?")}°C  '
                           f'HUM {s.get("HUMID", "?")}%  '
                           f'PRES {s.get("PRESSURE", "?")}hPa')
+
+                # Simulation XTE summary
+                if rv.sim_running:
+                    print(f'  SIM  running...')
+                elif rv.sim_result is not None:
+                    sr = rv.sim_result
+                    ok = 'OK' if sr.complete else 'INCOMPLETE'
+                    print(f'  SIM  {ok}  rms={sr.rms_xte:.3f}m  max={sr.max_xte:.3f}m'
+                          f'  avg={sr.avg_xte:.3f}m  '
+                          f'wps={len(sr.waypoints_reached)}/{rv.mission_count}')
+                elif rv.mission_count > 0:
+                    wps = len(rv.mission_raw)
+                    print(f'  SIM  waiting for mission ({wps}/{rv.mission_count} items received)')
+
                 if rv.log:
                     print(f'  LOG  {rv.log[-1]}')
+
         print('\n' + '─' * 72)
+        map_status = ('map: monitor_map.html (open in browser)' if _map_opened
+                      else 'map: will open automatically on first mission upload')
+        print(f'  {map_status}')
         print('  Ctrl+C to exit')
 
+
+# ── XTE CSV export ────────────────────────────────────────────────────────────
 
 def save_xte_csv():
     """Write per-rover XTE statistics to a timestamped CSV file."""
@@ -231,19 +493,24 @@ def save_xte_csv():
     out = f'xte_{ts}.csv'
     with open(out, 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow(['rover', 'xte_max_m', 'xte_avg_m', 'samples'])
+        w.writerow(['rover', 'xte_max_m', 'xte_avg_m', 'samples',
+                    'sim_rms_m', 'sim_max_m'])
         with _lock:
             for rv_id, rv in RV.items():
-                avg = rv.xte_sum / rv.xte_count if rv.xte_count > 0 else 0.0
+                avg    = rv.xte_sum / rv.xte_count if rv.xte_count > 0 else 0.0
+                sr     = rv.sim_result
                 w.writerow([f'RV{rv_id}',
                              round(rv.xte_max, 4),
                              round(avg, 4),
-                             rv.xte_count])
+                             rv.xte_count,
+                             round(sr.rms_xte, 4) if sr else '',
+                             round(sr.max_xte, 4) if sr else ''])
     print(f'\nXTE stats saved to {out}')
 
 
 if __name__ == '__main__':
-    threading.Thread(target=listen, daemon=True).start()
+    threading.Thread(target=listen,       daemon=True).start()
+    threading.Thread(target=map_gen_loop, daemon=True).start()
     try:
         render()
     except KeyboardInterrupt:
