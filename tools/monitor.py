@@ -74,6 +74,7 @@ class RoverState:
     obstacle_polygons: list  = field(default_factory=list)  # parsed [[lat,lon],...] polygons
     sim_result:        object = None   # SimResult when simulation completes
     sim_running:       bool  = False
+    sim_log:           list  = field(default_factory=list)  # debug lines from last sim run
     actual_path:       list  = field(default_factory=list)  # [(lat, lon)] from GLOBAL_POSITION_INT
 
 
@@ -157,18 +158,25 @@ def _trigger_simulation(rv_id: int):
         start_heading = rv.heading if rv.heading >= 0 else 0.0
         obstacles     = list(rv.obstacle_polygons)   # snapshot under lock
 
-    print(f'[SIM_DBG] rv{rv_id}: {len(waypoints)} wps, '
-          f'{len(obstacles)} obstacle polygon(s): '
-          f'{[len(p) for p in obstacles]}')
+    dbg = [f'wps={len(waypoints)}  obs={len(obstacles)} {[len(p) for p in obstacles]}']
     try:
         result = _sim_run(waypoints, start_lat, start_lon, start_heading,
                           obstacles=obstacles if obstacles else None)
-    except Exception:
+        if result:
+            n_orig = len(waypoints)
+            n_rr   = len(result.rerouted_wps)
+            bypass = n_rr - n_orig
+            dbg.append(f'expanded={len(result.obstacle_polygons)}  '
+                        f'rerouted: {n_orig}->{n_rr} wps '
+                        f'({bypass:+d} bypass)')
+    except Exception as exc:
         result = None
+        dbg.append(f'sim error: {exc}')
 
     with _lock:
         RV[rv_id].sim_result  = result
         RV[rv_id].sim_running = False
+        RV[rv_id].sim_log     = dbg
 
 
 # ── Map generation ─────────────────────────────────────────────────────────────
@@ -511,6 +519,7 @@ def listen():
                         rv.mission_count     = msg.count
                         rv.sim_result        = None
                         rv.sim_running       = False
+                        rv.sim_log           = []
                         rv.actual_path       = []   # fresh path for this mission
                         rv.mission_fence_buf = []
                         rv.obstacle_polygons = []
@@ -594,15 +603,11 @@ def render():
                 elif rv.sim_result is not None:
                     sr = rv.sim_result
                     ok = 'OK' if sr.complete else 'INCOMPLETE'
-                    n_orig = len(rv.mission_raw)
-                    n_rerouted = len(sr.rerouted_wps)
-                    obs_str = f'  obs={len(rv.obstacle_polygons)}' if rv.obstacle_polygons else ''
-                    rwp_str = (f'  rwps={n_rerouted}(+{n_rerouted - n_orig} bypass)'
-                               if n_rerouted != n_orig else '')
                     print(f'  SIM  {ok}  rms={sr.rms_xte:.3f}m  max={sr.max_xte:.3f}m'
                           f'  avg={sr.avg_xte:.3f}m  '
-                          f'wps={len(sr.waypoints_reached)}/{rv.mission_count}'
-                          f'{obs_str}{rwp_str}')
+                          f'wps={len(sr.waypoints_reached)}/{rv.mission_count}')
+                    for line in rv.sim_log:
+                        print(f'  DBG  {line}')
                 elif rv.mission_count > 0:
                     wps = len(rv.mission_raw)
                     print(f'  SIM  waiting for mission ({wps}/{rv.mission_count} items received)')

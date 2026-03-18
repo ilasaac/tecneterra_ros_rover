@@ -30,6 +30,13 @@ from dataclasses import dataclass, field
 
 # Import RoverState (dead-reckoning physics) from sibling simulator.py
 sys.path.insert(0, os.path.dirname(__file__))
+
+_DBG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'obstacle_debug.log')
+
+def _dbg(msg: str):
+    """Append a debug line to obstacle_debug.log (visible even after terminal clear)."""
+    with open(_DBG_LOG, 'a') as _f:
+        _f.write(msg + '\n')
 from simulator import RoverState   # noqa: E402
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -259,8 +266,8 @@ def _reroute_waypoints(
         best_t = 1.0
         for pi, poly in enumerate(expanded_polygons):
             hits = _seg_intersect_polygon(a_lat, a_lon, b_lat, b_lon, poly)
-            print(f'[REROUTE_DBG] seg ({a_lat:.6f},{a_lon:.6f})->({b_lat:.6f},{b_lon:.6f}) '
-                  f'poly[{pi}] verts={len(poly)} hits={len(hits)}')
+            _dbg(f'seg ({a_lat:.6f},{a_lon:.6f})->({b_lat:.6f},{b_lon:.6f}) '
+                 f'poly[{pi}] verts={len(poly)} hits={len(hits)}')
             if len(hits) >= 2 and hits[0][0] < best_t:
                 best_poly_idx = pi
                 best_hits     = hits
@@ -272,7 +279,7 @@ def _reroute_waypoints(
 
         bypass = _bypass_verts(a_lat, a_lon, b_lat, b_lon,
                                best_hits, expanded_polygons[best_poly_idx])
-        print(f'[REROUTE_DBG] bypass inserted: {len(bypass)} points')
+        _dbg(f'  -> bypass inserted: {len(bypass)} points around poly[{best_poly_idx}]')
         for blat, blon in bypass:
             new_wps.append(make_bypass(blat, blon, wp))
         new_wps.append(wp)
@@ -547,6 +554,9 @@ def simulate(waypoints:       list[SimWaypoint],
     # Build expanded polygons and rerouted waypoints if obstacles provided
     expanded_polygons: list[list[tuple[float, float]]] = []
     effective_wps = list(waypoints)
+    import time as _time
+    _dbg(f'\n=== simulate() called {_time.strftime("%H:%M:%S")} ==='
+         f' obstacles={len(obstacles) if obstacles else 0} wps={len(waypoints)} ===')
     if obstacles:
         clearance = nav['obstacle_clearance_m']
         for i, poly_raw in enumerate(obstacles):
@@ -554,13 +564,16 @@ def simulate(waypoints:       list[SimWaypoint],
             if len(poly) >= 3:
                 expanded_polygons.append(_expand_polygon(poly, clearance))
             else:
-                print(f'[SIM_DBG] obstacle[{i}] skipped — only {len(poly)} vertices (need >=3)')
+                _dbg(f'obstacle[{i}] SKIPPED — only {len(poly)} vertices (need >=3)')
         if expanded_polygons:
+            _dbg(f'--- reroute start: {len(waypoints)} wps, '
+                 f'{len(expanded_polygons)} expanded polys ---')
             effective_wps = _reroute_waypoints(
                 waypoints, expanded_polygons, start_lat, start_lon)
-    print(f'[SIM_DBG] obstacles={len(obstacles) if obstacles else 0} '
-          f'expanded={len(expanded_polygons)} '
-          f'wps={len(waypoints)}->{len(effective_wps)}')
+            _dbg(f'--- reroute done: {len(effective_wps)} effective wps ---')
+    _dbg(f'simulate: obstacles={len(obstacles) if obstacles else 0} '
+         f'expanded={len(expanded_polygons)} '
+         f'wps {len(waypoints)}->{len(effective_wps)}')
 
     rover  = RoverState(start_lat, start_lon, start_heading)
     path_n = PathNavigator(effective_wps, start_lat, start_lon, nav)
