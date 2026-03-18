@@ -116,10 +116,22 @@ self._gqc_unicast = None                   # set to (ip, port) once first GQC pa
 # assign a different ephemeral source port for outbound packets — using src_port would
 # send to the wrong port.
 #
-# Mission handshake (MISSION_REQUEST_INT) uses unicast via _send_mission_request():
-#   addr = self._gqc_unicast or self._gqc_addr   # unicast once GQC discovered
-#   self._udp_sock.sendto(packed, addr)
-# This eliminates the WiFi AP DTIM buffering that caused ~100ms per-item delay.
+# Mission upload — streaming protocol (GQC pushes all items, rover accepts in order):
+#   GQC sends MISSION_COUNT → waits 150 ms → streams all MISSION_ITEM_INT with 20 ms gap.
+#   Rover _on_mission_item accepts items in sequence WITHOUT sending REQUEST_INT per item.
+#   _mission_retry timer (0.5 s period) sends REQUEST_INT only if item not received in 250 ms.
+#   First REQUEST_INT (seq=0) delayed 150 ms after MISSION_COUNT — race condition fix:
+#     rover responds in µs but GQC coroutine may not be listening yet.
+#   Per-item RTT logged: ITEM seq=N RTT=Xms
+#
+# WHY streaming: each REQUEST/RESPONSE round-trip hit Android DTIM (~100-150 ms) because
+#   WifiLock LOW_LATENCY is not fully honoured on all devices. Streaming delivers all items
+#   to the AP in one burst; the AP delivers them to the Jetson in a single DTIM window.
+#   Result: worst-case RTT 350 ms for the whole mission vs 150 ms × N per item.
+#
+# WHY Jetson WiFi power-save matters: AP buffers unicast for sleeping Jetson until PS-Poll.
+#   Linux listen interval can be ~10 beacons (~1 s) causing 100–900 ms per item.
+#   start_rover{1,2}_sim.sh now runs: sudo iw dev <iface> set power_save off
 ```
 
 Subscriptions and state:

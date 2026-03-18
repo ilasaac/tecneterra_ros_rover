@@ -116,7 +116,14 @@ GQC identifies rovers by **sysid in HEARTBEAT**, not by port.
 - `_send_mission_request()` uses `self._gqc_unicast or self._gqc_addr` for the handshake.
 - `_gqc_unicast` is updated only from **sysid 255** packets via raw `sock.recvfrom()`.
 - Unicast target port is forced to `gqc_port` (14550) to ensure delivery even if GQC uses a random source port.
-- Mission upload retry: `0.5` s (500 ms) timer and logic.
+
+**Mission upload — streaming protocol:**
+- GQC calls `streamMission()`: sends MISSION_COUNT, waits 150 ms, then pushes all items sequentially with 20 ms inter-packet gap (no waiting for REQUEST_INT per item).
+- Rover `_on_mission_item` accepts items as they arrive in order; does **not** send REQUEST_INT for the next item after each receipt.
+- `_mission_retry` timer fires every 0.5 s; sends REQUEST_INT only if item has not arrived within **250 ms** (packet-loss fallback).
+- First REQUEST_INT (seq=0) is delayed 150 ms after MISSION_COUNT to avoid race condition where rover responds before GQC's coroutine is listening.
+- Per-item RTT is logged: `ITEM seq=N RTT=Xms` — useful for diagnosing network delays.
+- Root causes found and fixed: Jetson WiFi power-save (100–900 ms/item) + per-item DTIM round-trip (66–150 ms/item). Startup scripts now run `iw dev <iface> set power_save off` before the container starts.
 
 ---
 

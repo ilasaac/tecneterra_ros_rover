@@ -69,7 +69,7 @@ The result is an exact recording of the route: positions, speeds, servo switch e
 
 **CLEAR** — stops any active recording, clears all route points and the recorded mission list, and uploads an empty mission to the rover to cancel any in-progress autonomous route.
 
-**UPLOAD** — if `recordedMission` contains any `ServoCmd` entries, calls `uploadRecordedMission()`; otherwise uses plain `uploadMission()`.
+**UPLOAD** — if `recordedMission` contains any `ServoCmd` entries, calls `uploadRecordedMission()`; otherwise uses plain `uploadMission()`. Both funnel into `streamMission()`.
 
 ### MAVLink encoding of waypoint fields
 
@@ -91,6 +91,30 @@ The navigator uses a **Stanley lateral controller**:
 - Corrects both heading error and cross-track (lateral) drift simultaneously.
 - Replays `holdSecs` exactly: rover halts at the waypoint for the recorded duration before advancing.
 - Cross-track error (XTE) is published as MAVLink `NAMED_VALUE_FLOAT 'XTE'` at 1 Hz for monitoring.
+
+## Mission upload protocol — streaming
+
+Both `uploadMission()` and `uploadRecordedMission()` call `streamMission()`:
+
+```
+GQC                          Rover
+  ── MISSION_COUNT ──────────►
+  (wait 150 ms)
+  ── MISSION_ITEM_INT(0) ────►
+  (wait 20 ms)
+  ── MISSION_ITEM_INT(1) ────►
+  ...
+  ── MISSION_ITEM_INT(N-1) ──►
+                              ◄── MISSION_ACK (when all received)
+  (if item lost: rover retry sends REQUEST_INT after 250 ms, GQC replies from pendingMissions)
+```
+
+**Why streaming instead of request/response:**
+- Per-item REQUEST_INT → ITEM_INT round trip hits Android WiFi DTIM (~100–150 ms each) because `WIFI_MODE_FULL_LOW_LATENCY` WifiLock is not fully honoured on all devices.
+- Streaming sends all items to the AP in one burst; AP delivers them to the Jetson in a single DTIM window.
+- Result: worst-case ~350 ms total for any mission size, vs 150 ms × N with request/response.
+
+**Jetson WiFi power-save:** if not disabled, the AP buffers incoming `MISSION_ITEM_INT` for 100–900 ms per item. `start_rover{1,2}_sim.sh` runs `sudo iw dev <iface> set power_save off` automatically before each container start.
 
 ## MAVLink commands sent
 
