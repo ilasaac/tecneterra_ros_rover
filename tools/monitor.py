@@ -211,10 +211,15 @@ var center = [{center_lat}, {center_lon}];
 var roverColor = {{1: '#ef5350', 2: '#42a5f5'}};
 
 var map = L.map('map').setView(center, 18);
-L.tileLayer(
-  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}',
-  {{maxZoom: 22, attribution: '&copy; Esri'}}
+var googleSat = L.tileLayer(
+  'https://{{s}}.google.com/vt/lyrs=s&x={{x}}&y={{y}}&z={{z}}',
+  {{maxZoom: 22, subdomains: ['mt0','mt1','mt2','mt3'], attribution: '© Google'}}
 ).addTo(map);
+var osm = L.tileLayer(
+  'https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',
+  {{maxZoom: 19, attribution: '© OpenStreetMap contributors'}}
+);
+L.control.layers({{'Satellite (Google)': googleSat, 'Street (OSM)': osm}}).addTo(map);
 
 var infoHtml = '';
 
@@ -270,6 +275,22 @@ infoHtml += '<span class="swatch" style="background:#66bb6a;"></span>Actual path
 infoHtml += '<span style="color:#aaa">&nbsp; Marker: yellow=AUTO, orange=armed, green=disarmed</span>';
 
 document.getElementById('info').innerHTML = infoHtml;
+
+// Auto-fit map to all visible data points
+var allPts = [];
+data.forEach(function(rv) {{
+  if (rv.lat !== 0.0) allPts.push([rv.lat, rv.lon]);
+  (rv.mission_path || []).forEach(function(p) {{ allPts.push(p); }});
+  (rv.sim_path     || []).forEach(function(p) {{ allPts.push(p); }});
+  // Sample actual_path to avoid fitting to thousands of points
+  var ap = rv.actual_path || [];
+  if (ap.length > 0) {{ allPts.push(ap[0]); allPts.push(ap[ap.length - 1]); }}
+}});
+if (allPts.length > 1) {{
+  map.fitBounds(allPts, {{padding: [40, 40], maxZoom: 20}});
+}} else if (allPts.length === 1) {{
+  map.setView(allPts[0], 18);
+}}
 </script>
 </body>
 </html>"""
@@ -312,8 +333,8 @@ def listen():
     sock.settimeout(2.0)
     sock.bind(('', 14550))
 
-    # One MAVLink parser per tracked sysid
-    parsers = {sysid: mavutil.mavlink.MAVLink(None) for sysid in list(RV) + [255]}
+    # One MAVLink parser per rover sysid
+    parsers = {sysid: mavutil.mavlink.MAVLink(None) for sysid in RV}
     for p in parsers.values():
         p.robust_parsing = True
 
@@ -389,42 +410,33 @@ def listen():
                             rv.xte_count += 1
                         else:
                             rv.sensors[name] = round(msg.value, 1)
+                    elif t == 'MISSION_COUNT':
+                        # Re-broadcast by mavlink_bridge so we see it here from rover sysid
+                        rv.mission_raw    = {}
+                        rv.mission_count  = msg.count
+                        rv.sim_result     = None
+                        rv.sim_running    = False
+                        rv.actual_path    = []   # fresh path for this mission
+                    elif t == 'MISSION_ITEM_INT':
+                        # Re-broadcast by mavlink_bridge from rover sysid
+                        if msg.command == 16:   # NAV_WAYPOINT only
+                            rv.mission_raw[msg.seq] = (msg.x / 1e7, msg.y / 1e7)
+                        # Trigger simulation when last item arrives
+                        if rv.mission_count > 0 and msg.seq == rv.mission_count - 1 \
+                                and not rv.sim_running:
+                            rv.sim_running = True
+                            rv_id_copy = sysid
+                            threading.Thread(
+                                target=_trigger_simulation,
+                                args=(rv_id_copy,),
+                                daemon=True,
+                            ).start()
                     elif t == 'STATUSTEXT':
                         sev = {0: 'EMERG', 1: 'ALERT', 2: 'CRIT', 3: 'ERR',
                                4: 'WARN',  5: 'NOTE',  6: 'INFO', 7: 'DBG'}.get(msg.severity, '?')
                         rv.log.append(f'[{sev}] {msg.text}')
                         if len(rv.log) > 20:
                             rv.log.pop(0)
-
-            elif sysid == 255:
-                # ── GQC mission upload snooping ───────────────────────────
-                for msg in msgs:
-                    t = msg.get_type()
-                    if t == 'MISSION_COUNT':
-                        tgt = getattr(msg, 'target_system', 0)
-                        if tgt in RV:
-                            rv = RV[tgt]
-                            rv.mission_raw    = {}
-                            rv.mission_count  = msg.count
-                            rv.sim_result     = None
-                            rv.sim_running    = False
-                            rv.actual_path    = []   # fresh path for this mission
-                    elif t == 'MISSION_ITEM_INT':
-                        tgt = getattr(msg, 'target_system', 0)
-                        if tgt in RV:
-                            rv = RV[tgt]
-                            # Record NAV_WAYPOINT items (command=16) only
-                            if msg.command == 16:
-                                rv.mission_raw[msg.seq] = (msg.x / 1e7, msg.y / 1e7)
-                            # Trigger simulation on last item of the upload
-                            if msg.seq == rv.mission_count - 1 and not rv.sim_running:
-                                rv.sim_running = True
-                                rv_id_copy = tgt
-                                threading.Thread(
-                                    target=_trigger_simulation,
-                                    args=(rv_id_copy,),
-                                    daemon=True,
-                                ).start()
 
 
 # ── Terminal render ───────────────────────────────────────────────────────────
