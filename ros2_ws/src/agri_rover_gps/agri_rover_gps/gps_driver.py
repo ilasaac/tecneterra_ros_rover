@@ -56,9 +56,10 @@ class GpsDriverNode(Node):
         self._heading_source = self.get_parameter('heading_source').value
 
         # ── Publishers ───────────────────────────────────────────────────────
-        self.fix_pub    = self.create_publisher(NavSatFix, 'fix',        10)
-        self.head_pub   = self.create_publisher(Float32,   'heading',    10)
-        self.status_pub = self.create_publisher(String,    'rtk_status', 10)
+        self.fix_pub       = self.create_publisher(NavSatFix, 'fix',        10)
+        self.fix_front_pub = self.create_publisher(NavSatFix, 'fix_front',  10)
+        self.head_pub      = self.create_publisher(Float32,   'heading',    10)
+        self.status_pub    = self.create_publisher(String,    'rtk_status', 10)
 
         # ── GPS state ────────────────────────────────────────────────────────
         self._primary       = {'lat': 0.0, 'lon': 0.0, 'fix': '0', 'hdop': 99.9}
@@ -167,7 +168,7 @@ class GpsDriverNode(Node):
 
         now = self.get_clock().now().to_msg()
 
-        # NavSatFix
+        # NavSatFix — primary antenna
         fix_msg                 = NavSatFix()
         fix_msg.header.stamp    = now
         fix_msg.header.frame_id = 'gps'
@@ -182,6 +183,18 @@ class GpsDriverNode(Node):
         fix_msg.status.status  = status_map.get(p['fix'], NavSatStatus.STATUS_NO_FIX)
         fix_msg.status.service = NavSatStatus.SERVICE_GPS
         self.fix_pub.publish(fix_msg)
+
+        # NavSatFix — front (secondary) antenna position for dual-antenna control
+        if self._heading_source == 'baseline' and s['lat'] != 0.0:
+            front_msg                 = NavSatFix()
+            front_msg.header.stamp    = now
+            front_msg.header.frame_id = 'gps_front'
+            front_msg.latitude        = s['lat']
+            front_msg.longitude       = s['lon']
+            front_msg.altitude        = 0.0
+            front_msg.status.status   = fix_msg.status.status   # same fix quality as primary
+            front_msg.status.service  = NavSatStatus.SERVICE_GPS
+            self.fix_front_pub.publish(front_msg)
 
         # Heading — baseline vector or VTG COG depending on heading_source
         if self._heading_source == 'vtg':

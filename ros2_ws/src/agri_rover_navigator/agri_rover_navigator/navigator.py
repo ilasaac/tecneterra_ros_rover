@@ -29,11 +29,17 @@ Rather than seeking each waypoint position directly, the rover follows the
      at every control tick for telemetry monitoring.
 
 Subscribes:
-  ~/fix          (sensor_msgs/NavSatFix)   — current position
-  ~/heading      (std_msgs/Float32)        — degrees from north (dual-antenna)
+  ~/fix          (sensor_msgs/NavSatFix)   — rear antenna position
+  ~/fix_front    (sensor_msgs/NavSatFix)   — front antenna position (dual-antenna)
+  ~/heading      (std_msgs/Float32)        — degrees from north (dual-antenna baseline)
   ~/mode         (std_msgs/String)         — only active in AUTONOMOUS mode
   ~/mission      (MissionWaypoint)         — waypoints arrive sequentially
   ~/servo_state  (RCInput)                 — channels 4-7 from mavlink_bridge DO_SET_SERVO
+
+Dual-antenna control:
+  Rover center  = midpoint(fix, fix_front) — used for acceptance radius, overshoot, lookahead
+  Stanley CTE   = cross_track_error(fix_front) — front axle reference per the Stanley paper,
+                  eliminates the rear-swing oscillation caused by using the rear antenna
 
 Publishes:
   ~/cmd_override (RCInput)                 — PPM override to rp2040_bridge (all 8 channels)
@@ -117,6 +123,7 @@ class NavigatorNode(Node):
 
         # ── State ────────────────────────────────────────────────────────────
         self._fix:          NavSatFix | None = None
+        self._fix_front:    NavSatFix | None = None   # front (secondary) antenna
         self._fix_time:     float            = 0.0
         self._heading:      float            = 0.0
         self._mode:         str              = 'MANUAL'
@@ -138,6 +145,7 @@ class NavigatorNode(Node):
 
         # ── Subscriptions ────────────────────────────────────────────────────
         self.create_subscription(NavSatFix,       'fix',           self._cb_fix,           10)
+        self.create_subscription(NavSatFix,       'fix_front',     self._cb_fix_front,     10)
         self.create_subscription(Float32,         'heading',       self._cb_heading,        10)
         self.create_subscription(String,          'mode',          self._cb_mode,           10)
         self.create_subscription(Bool,            'armed',         self._cb_armed,          10)
@@ -165,6 +173,24 @@ class NavigatorNode(Node):
     def _cb_fix(self, msg: NavSatFix):
         self._fix      = msg
         self._fix_time = time.time()
+
+    def _cb_fix_front(self, msg: NavSatFix):
+        self._fix_front = msg
+
+    def _center_pos(self) -> tuple[float, float]:
+        """Midpoint between rear and front antenna — best estimate of rover centre."""
+        f = self._fix
+        ff = self._fix_front
+        if ff is None or ff.latitude == 0.0:
+            return f.latitude, f.longitude
+        return (f.latitude + ff.latitude) / 2.0, (f.longitude + ff.longitude) / 2.0
+
+    def _front_pos(self) -> tuple[float, float]:
+        """Front antenna position — reference point for Stanley CTE (front-axle rule)."""
+        ff = self._fix_front
+        if ff is None or ff.latitude == 0.0:
+            return self._fix.latitude, self._fix.longitude
+        return ff.latitude, ff.longitude
 
     def _cb_heading(self, msg: Float32):
         self._heading = msg.data
@@ -343,9 +369,12 @@ class NavigatorNode(Node):
                 self._advance_waypoint()
             return
 
-        wp     = self._active_wp
-        rlat   = self._fix.latitude
-        rlon   = self._fix.longitude
+        wp = self._active_wp
+
+        # Rover centre (midpoint) — used for acceptance radius, overshoot, lookahead.
+        # Falls back to primary antenna if fix_front not yet available.
+        rlat, rlon = self._center_pos()
+
         dist   = haversine(rlat, rlon, wp.latitude, wp.longitude)
         accept = wp.acceptance_radius if wp.acceptance_radius > 0 else self._accept_r
 
@@ -375,8 +404,12 @@ class NavigatorNode(Node):
         target_bearing   = bearing_to(rlat, rlon, tgt_lat, tgt_lon)
         heading_err      = ((target_bearing - self._heading + 180) % 360) - 180
 
-        # Signed cross-track error (metres) — computed regardless of spin state
-        cte = self._cross_track_error(rlat, rlon, wp)
+        # Stanley CTE uses the FRONT antenna (front-axle reference per the Stanley paper).
+        # This eliminates the rear-swing oscillation that occurs when the rear antenna is
+        # used: as the rover steers to correct CTE, the rear swings outward and appears as
+        # increasing error, causing over-correction and oscillation.
+        flat, flon = self._front_pos()
+        cte = self._cross_track_error(flat, flon, wp)
 
         # Publish XTE for telemetry monitoring
         xte_msg = Float32()
@@ -411,9 +444,8 @@ class NavigatorNode(Node):
             self._prev_lat = self._active_wp.latitude
             self._prev_lon = self._active_wp.longitude
         elif self._fix is not None:
-            # First waypoint: use current rover position as segment start
-            self._prev_lat = self._fix.latitude
-            self._prev_lon = self._fix.longitude
+            # First waypoint: use rover centre as segment start
+            self._prev_lat, self._prev_lon = self._center_pos()
 
         if self._waypoints:
             self._active_wp = self._waypoints.popleft()

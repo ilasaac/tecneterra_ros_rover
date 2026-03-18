@@ -180,11 +180,17 @@ Key parameters (in `config/navigator_params.yaml`):
 δ = θ_e + arctan(stanley_k × e_cte / max(v, stanley_softening))
 ```
 - `θ_e` — heading error to lookahead point (degrees)
-- `e_cte` — signed cross-track error; positive = rover is LEFT of segment
+- `e_cte` — signed cross-track error at the **front antenna** (front-axle reference per the Stanley paper); positive = rover is LEFT of segment
 - `v` — current target speed (m/s)
 - `δ` — total steering correction, clamped to ±90°, mapped to PPM via `steer_frac = δ/45`
 
 Speed is held constant at the recorded waypoint speed. No steering-based slowdown.
+
+**Dual-antenna position usage:**
+- `fix` (rear antenna) + `fix_front` (front antenna) are both subscribed
+- `_center_pos()` = midpoint of both — used for acceptance radius, overshoot detection, lookahead projection
+- `_front_pos()` = front antenna — used for Stanley CTE only
+- Falls back to `fix` alone when `fix_front` is unavailable (e.g. single-GPS mode or startup)
 
 **Waypoint advance logic:**
 - `dist < acceptance_radius` → reached; if `hold_secs > 0` pause then advance
@@ -214,10 +220,11 @@ Servo channels (PPM CH5-CH8):
 ## gps_driver — NMEA parsing
 
 Reads two serial ports in background threads. Publishes at 5 Hz via timer.
-- **Primary** (USB0): position, fix quality from GGA sentences
-- **Secondary** (USB1): position only — baseline vector → heading
+- **Primary** (USB0): position, fix quality from GGA sentences → published as `~/fix` (rear antenna)
+- **Secondary** (USB1): position only — baseline vector → heading; also published as `~/fix_front` (front antenna) when `heading_source == 'baseline'`
 - Heading: `bearing = atan2(dlon * cos(lat_rad), dlat)` — `cos(lat)` correction is required because `secondary_pos()` scales `dlon` by `1/cos(lat)` when placing the secondary antenna; without the correction heading drifts as the rover moves and latitude changes.
 - Fix quality map: `'0'→NO_FIX, '1'→GPS, '2'→DGPS, '4'→RTK_FIX, '5'→RTK_FLT`
+- `~/fix_front` carries the same fix quality status as `~/fix` (secondary GGA is not parsed for quality; the primary quality is authoritative).
 
 ## bringup — launch conventions
 
