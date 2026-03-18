@@ -30,6 +30,17 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# ── Step 0: disable WiFi power-save ────────────────────────────────────────────
+# WiFi power-save causes the AP to buffer incoming unicast packets (MISSION_ITEM_INT)
+# until the Jetson polls, adding 100–900 ms per mission item.  TX traffic (telemetry)
+# does NOT prevent this — the Jetson can transmit while its RX is sleeping.
+WIFI_IF=$(iw dev 2>/dev/null | awk '/Interface/{print $2}' | head -1)
+if [ -n "$WIFI_IF" ]; then
+    sudo iw dev "$WIFI_IF" set power_save off 2>/dev/null && \
+        echo "[sim] WiFi power-save disabled on $WIFI_IF" || \
+        echo "[sim] WARN: could not disable WiFi power-save (no sudo?)"
+fi
+
 # ── Step 1: start rover1 container (detached) ──────────────────────────────────
 echo "[sim] Starting rover1 Docker container..."
 CAMERA_SOURCE=test docker compose up --force-recreate -d rover1
