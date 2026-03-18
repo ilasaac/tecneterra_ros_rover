@@ -25,7 +25,7 @@ MainActivity
 - Broadcasts GCS heartbeat to **255.255.255.255:14550** at 1 Hz.
 - Rover IPs are **auto-discovered** from the first inbound packet of each sysid.
 - GQC identifies rovers by **sysid in HEARTBEAT** (RV1=1, RV2=2), not by port.
-- **WiFi lock:** `WIFI_MODE_FULL_HIGH_PERF` WifiLock acquired on `startListening()` — prevents Android WiFi power-save from batching UDP packets (which caused 50–100 ms per-item delays during mission upload). Released on `stopListening()`.
+- **WiFi lock:** `WIFI_MODE_FULL_LOW_LATENCY` (API 29+) WifiLock acquired on `startListening()`, falling back to `WIFI_MODE_FULL_HIGH_PERF` on older devices. Prevents Android WiFi power-save from batching UDP packets. Released on `stopListening()`. `WIFI_MODE_FULL_HIGH_PERF` was deprecated in API 29 and silently less effective on Android 12+.
 
 ## App Modes
 

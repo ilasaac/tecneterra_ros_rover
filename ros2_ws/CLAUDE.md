@@ -87,19 +87,29 @@ from pymavlink import mavutil
 
 # Connection: listen for inbound + sendto for outbound
 self._mav = mavutil.mavlink_connection(f'udpin:0.0.0.0:{bind_port}', ...)
-self._gqc_addr = (gqc_host, gqc_port)
+self._gqc_addr   = (gqc_host, gqc_port)   # broadcast addr (subnet .255)
+self._gqc_unicast = None                   # set to (ip, port) once first GQC packet arrives
 
 # Send — dedicated outbound socket created in __init__ (pymavlink internals vary by version):
-#   import socket as _socket
 #   self._udp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
 #   self._udp_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_BROADCAST, 1)
-# _send() method:
-buf = msg.pack(self._mav.mav)
-self._udp_sock.sendto(buf, self._gqc_addr)
+# _send() always uses broadcast (gqc_addr) so monitor.py and simulator.py receive telemetry.
 # Close in main(): node._udp_sock.close()
 
-# Receive loop (runs in daemon thread):
-msg = self._mav.recv_match(blocking=True, timeout=1.0)
+# Receive loop — uses raw socket, NOT recv_match():
+#   sock = self._mav.port          # mavudp stores the DatagramSocket here
+#   data, (src_ip, src_port) = sock.recvfrom(1024)
+#   self._gqc_unicast = (src_ip, src_port)   # captured from every inbound packet
+#   msgs = self._mav.mav.parse_buffer(data)  # parse with pymavlink's protocol object
+#
+# WHY not recv_match(): pymavlink buffers packets — recv_match() can return a buffered
+# message without calling recvfrom(), leaving last_address stale/None. Using recvfrom()
+# directly guarantees the source IP is captured from every packet.
+#
+# Mission handshake (MISSION_REQUEST_INT) uses unicast via _send_mission_request():
+#   addr = self._gqc_unicast or self._gqc_addr   # unicast once GQC discovered
+#   self._udp_sock.sendto(packed, addr)
+# This eliminates the WiFi AP DTIM buffering that caused ~100ms per-item delay.
 ```
 
 Subscriptions and state:

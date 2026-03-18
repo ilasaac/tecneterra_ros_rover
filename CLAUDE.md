@@ -107,8 +107,14 @@ ros_agri_rover/
 | MAVLink version  | v2 (MAVLINK20=1)       | set in all Python node env              |
 
 GQC identifies rovers by **sysid in HEARTBEAT**, not by port.
-`mavlink_bridge` uses a dedicated outbound `socket.SOCK_DGRAM` (`self._udp_sock`) created in `__init__` — pymavlink's internal socket attribute varies by version and must not be accessed directly. All sends go through `_send()` which calls `self._udp_sock.sendto(buf, self._gqc_addr)`. Never use `xxx_send()` convenience methods on a `udpin:` connection — they call `mav.file.write()` which fails silently. Use `xxx_encode()` + `_send()` instead.
+`mavlink_bridge` uses a dedicated outbound `socket.SOCK_DGRAM` (`self._udp_sock`) created in `__init__` — pymavlink's internal socket attribute varies by version and must not be accessed directly. Never use `xxx_send()` convenience methods on a `udpin:` connection — they call `mav.file.write()` which fails silently. Use `xxx_encode()` + `_send()` instead.
 `gqc_host` in params must match the **broadcast address of the rover's WiFi subnet** (e.g. `192.168.100.255` for a `192.168.100.x` network).
+
+**Broadcast vs unicast:**
+- `_send()` always uses `self._gqc_addr` (broadcast) so passive tools (`monitor.py`, `simulator.py`) continue to receive telemetry without registering their IPs.
+- `_send_mission_request()` uses `self._gqc_unicast or self._gqc_addr` — unicast once GQC IP is known, eliminating WiFi AP DTIM buffering (~100 ms/item) during mission upload.
+- `_gqc_unicast` is set from the **source IP of every inbound packet** via `sock.recvfrom()` in `_recv_loop`. **Do not use `recv_match()` for discovery** — pymavlink buffers internally so `last_address` is often stale or `None`.
+- `_recv_loop` reads `self._mav.port.recvfrom(1024)` directly (pymavlink's `mavudp` stores the socket as `self.port`), then parses with `self._mav.mav.parse_buffer(data)`.
 
 ---
 
