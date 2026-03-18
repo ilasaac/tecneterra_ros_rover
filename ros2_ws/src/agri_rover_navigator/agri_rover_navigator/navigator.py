@@ -1,25 +1,32 @@
 """
 agri_rover_navigator — navigator node
 
-Pure-pursuit path follower for ground rover navigation.
+Stanley path follower for ground rover navigation.
 
 Strategy
 --------
 Rather than seeking each waypoint position directly, the rover follows the
-*path segment* between waypoints using a lookahead point:
+*path segment* between waypoints using the Stanley lateral controller:
 
   1. A lookahead point is projected `lookahead_distance` metres ahead of the
-     rover's position along the current path segment.  The rover steers toward
-     that point, not the waypoint itself — giving smooth, continuous curves.
+     rover's position along the current path segment, used to compute the
+     heading error θ_e toward the path.
 
-  2. A waypoint is considered *reached* either by acceptance radius (GPS
+  2. Stanley steering: δ = θ_e + arctan(k·e_cte / (v + ε))
+     where e_cte is the signed cross-track error (perpendicular distance from
+     rover to segment).  This corrects both heading AND lateral drift.
+
+  3. A waypoint is considered *reached* either by acceptance radius (GPS
      precision) OR by a projection test: when the rover has physically passed
      the waypoint along the path direction (overshoot detection).  This
      prevents the rover from turning 180° to go back to a missed point.
 
-  3. Stop-and-spin (spin in place) is reserved for large initial heading errors
+  4. Stop-and-spin (spin in place) is reserved for large initial heading errors
      only (> align_threshold, default 30°).  Normal course corrections use
-     proportional steering while moving.
+     Stanley steering while moving at the recorded speed.
+
+  5. Cross-track error (XTE) is published on the `xte` topic (Float32, metres)
+     at every control tick for telemetry monitoring.
 
 Subscribes:
   ~/fix          (sensor_msgs/NavSatFix)   — current position
@@ -93,15 +100,20 @@ class NavigatorNode(Node):
         # Stop-and-spin only when heading error exceeds this — keeps the rover
         # moving through normal curves instead of stopping at every bend.
         self.declare_parameter('align_threshold',           30.0)
+        # Stanley controller parameters
+        self.declare_parameter('stanley_k',                 1.0)
+        self.declare_parameter('stanley_softening',         0.3)
 
-        self._lookahead      = self.get_parameter('lookahead_distance').value
-        self._accept_r       = self.get_parameter('default_acceptance_radius').value
-        self._max_speed      = self.get_parameter('max_speed').value
-        self._min_speed      = self.get_parameter('min_speed').value
-        self._max_steer      = self.get_parameter('max_steering').value
-        self._gps_timeout    = self.get_parameter('gps_timeout').value
-        self._hdb            = self.get_parameter('heading_deadband').value
-        self._align_thresh   = self.get_parameter('align_threshold').value
+        self._lookahead        = self.get_parameter('lookahead_distance').value
+        self._accept_r         = self.get_parameter('default_acceptance_radius').value
+        self._max_speed        = self.get_parameter('max_speed').value
+        self._min_speed        = self.get_parameter('min_speed').value
+        self._max_steer        = self.get_parameter('max_steering').value
+        self._gps_timeout      = self.get_parameter('gps_timeout').value
+        self._hdb              = self.get_parameter('heading_deadband').value
+        self._align_thresh     = self.get_parameter('align_threshold').value
+        self._stanley_k        = self.get_parameter('stanley_k').value
+        self._stanley_softening = self.get_parameter('stanley_softening').value
 
         # ── State ────────────────────────────────────────────────────────────
         self._fix:          NavSatFix | None = None
@@ -133,8 +145,9 @@ class NavigatorNode(Node):
         self.create_subscription(RCInput,         'servo_state', self._cb_servo_state,  10)
 
         # ── Publishers ───────────────────────────────────────────────────────
-        self.cmd_pub = self.create_publisher(RCInput, 'cmd_override', 10)
-        self.wp_pub  = self.create_publisher(Int32,   'wp_active',    10)
+        self.cmd_pub = self.create_publisher(RCInput,  'cmd_override', 10)
+        self.wp_pub  = self.create_publisher(Int32,    'wp_active',    10)
+        self.xte_pub = self.create_publisher(Float32,  'xte',          10)
 
         # ── Services ─────────────────────────────────────────────────────────
         self.create_service(Trigger, 'pause_mission',  self._svc_pause)
@@ -238,6 +251,38 @@ class NavigatorNode(Node):
         la_lon = self._prev_lon + frac * (wp.longitude - self._prev_lon)
         return la_lat, la_lon
 
+    def _cross_track_error(self, rover_lat: float, rover_lon: float,
+                           wp: MissionWaypoint) -> float:
+        """
+        Signed cross-track error in metres.
+
+        Positive = rover is to the LEFT of the path segment (prev_wp → wp).
+        Zero when no previous waypoint is known.
+
+        Uses flat-earth approximation (valid for segments < ~500 m).
+        """
+        if self._prev_lat is None:
+            return 0.0
+
+        mid_lat = math.radians((rover_lat + self._prev_lat) / 2.0)
+        cos_lat = math.cos(mid_lat) or 1e-9
+        m_lat   = 111_320.0
+        m_lon   = 111_320.0 * cos_lat
+
+        # Segment vector (metres, East/North)
+        seg_dx = (wp.longitude  - self._prev_lon) * m_lon
+        seg_dy = (wp.latitude   - self._prev_lat) * m_lat
+        seg_len = math.hypot(seg_dx, seg_dy)
+        if seg_len < 0.1:
+            return 0.0
+
+        # Rover relative to segment start (metres)
+        rv_dx = (rover_lon - self._prev_lon) * m_lon
+        rv_dy = (rover_lat - self._prev_lat) * m_lat
+
+        # 2-D cross product gives signed perpendicular distance
+        return (seg_dx * rv_dy - seg_dy * rv_dx) / seg_len
+
     def _rover_past_waypoint(self, rover_lat: float, rover_lon: float,
                               wp: MissionWaypoint) -> bool:
         """
@@ -304,10 +349,18 @@ class NavigatorNode(Node):
             self._advance_waypoint()
             return
 
-        # ── Steering toward lookahead target ─────────────────────────────────
+        # ── Steering toward lookahead target (Stanley controller) ─────────────
         tgt_lat, tgt_lon = self._lookahead_target(rlat, rlon, wp)
         target_bearing   = bearing_to(rlat, rlon, tgt_lat, tgt_lon)
         heading_err      = ((target_bearing - self._heading + 180) % 360) - 180
+
+        # Signed cross-track error (metres) — computed regardless of spin state
+        cte = self._cross_track_error(rlat, rlon, wp)
+
+        # Publish XTE for telemetry monitoring
+        xte_msg = Float32()
+        xte_msg.data = abs(cte)
+        self.xte_pub.publish(xte_msg)
 
         if abs(heading_err) > self._align_thresh:
             # Large error (e.g. mission start facing wrong way) — spin in place
@@ -315,15 +368,19 @@ class NavigatorNode(Node):
             steer_ppm    = int(PPM_CENTER - spin_dir * self._max_steer * 500)
             throttle_ppm = PPM_CENTER
         else:
-            # Normal path following — proportional steering while moving
-            steer_frac   = max(-self._max_steer,
-                               min(self._max_steer, heading_err / 45.0))
-            steer_ppm    = int(PPM_CENTER - steer_frac * 500)
-            speed_frac   = 1.0 - 0.5 * abs(steer_frac)
+            # Stanley controller: δ = θ_e + arctan(k · e_cte / (v + ε))
+            # Uses recorded waypoint speed directly — no reduction for curves.
             target_spd   = wp.speed if wp.speed > 0 else self._max_speed
-            speed_frac  *= target_spd / self._max_speed
-            speed_frac   = max(self._min_speed / self._max_speed, speed_frac)
-            throttle_ppm = int(PPM_CENTER + speed_frac * 500)
+            v_mps        = max(target_spd, self._min_speed)
+            throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
+
+            stanley_ang  = heading_err + math.degrees(
+                math.atan2(self._stanley_k * cte,
+                           max(v_mps, self._stanley_softening)))
+            stanley_ang  = max(-90.0, min(90.0, stanley_ang))
+            steer_frac   = max(-self._max_steer,
+                               min(self._max_steer, stanley_ang / 45.0))
+            steer_ppm    = int(PPM_CENTER - steer_frac * 500)
 
         self._publish_cmd(throttle_ppm, steer_ppm)
 

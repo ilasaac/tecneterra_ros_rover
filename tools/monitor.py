@@ -10,6 +10,7 @@ Usage:
 
 from __future__ import annotations
 
+import csv
 import os
 import socket
 import threading
@@ -39,6 +40,10 @@ class RoverState:
     cmd_str:     int   = 1500   # navigator steering PPM
     wp_active:   int   = -1    # active waypoint seq (-1 = none)
     wp_total:    int   = 0     # total waypoints in mission
+    xte_m:       float = 0.0   # latest cross-track error (metres)
+    xte_max:     float = 0.0   # max XTE observed this session
+    xte_sum:     float = 0.0   # cumulative sum for average
+    xte_count:   int   = 0     # number of XTE samples collected
     sbus_ch:     list  = field(default_factory=lambda: [1500] * 16)  # raw SBUS, 16 ch
     last_hb:     float = 0.0
     sensors:     dict  = field(default_factory=dict)
@@ -152,6 +157,12 @@ def listen():
                         rv.wp_active = int(msg.value)
                     elif name == 'WP_TOT':
                         rv.wp_total = int(msg.value)
+                    elif name == 'XTE':
+                        rv.xte_m = msg.value
+                        if msg.value > rv.xte_max:
+                            rv.xte_max = msg.value
+                        rv.xte_sum   += msg.value
+                        rv.xte_count += 1
                     else:
                         rv.sensors[name] = round(msg.value, 1)
                 elif t == 'STATUSTEXT':
@@ -184,9 +195,12 @@ def render():
                     thr_bar = '█' * min(10, abs(thr_delta) // 50)
                     str_bar = '◄' * (max(0, -str_delta) // 50) + '►' * (max(0, str_delta) // 50)
                     wp_str = f'wp={rv.wp_active}/{rv.wp_total - 1}' if rv.wp_total > 0 else 'wp=--'
+                    xte_avg = rv.xte_sum / rv.xte_count if rv.xte_count > 0 else 0.0
                     print(f'  CMD  thr={rv.cmd_thr} ({thr_delta:+d}) {thr_bar}'
                           f'   str={rv.cmd_str} ({str_delta:+d}) {str_bar or "─"}'
                           f'   {wp_str}')
+                    print(f'  XTE  now={rv.xte_m:.3f}m  max={rv.xte_max:.3f}m'
+                          f'  avg={xte_avg:.3f}m  n={rv.xte_count}')
 
                 sbus = rv.sbus_ch
                 # Raw SBUS channels 1-8 as received from RP2040, plus rover-select (ch9)
@@ -211,6 +225,28 @@ def render():
         print('  Ctrl+C to exit')
 
 
+def save_xte_csv():
+    """Write per-rover XTE statistics to a timestamped CSV file."""
+    ts  = time.strftime('%Y%m%d_%H%M%S')
+    out = f'xte_{ts}.csv'
+    with open(out, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['rover', 'xte_max_m', 'xte_avg_m', 'samples'])
+        with _lock:
+            for rv_id, rv in RV.items():
+                avg = rv.xte_sum / rv.xte_count if rv.xte_count > 0 else 0.0
+                w.writerow([f'RV{rv_id}',
+                             round(rv.xte_max, 4),
+                             round(avg, 4),
+                             rv.xte_count])
+    print(f'\nXTE stats saved to {out}')
+
+
 if __name__ == '__main__':
     threading.Thread(target=listen, daemon=True).start()
-    render()
+    try:
+        render()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        save_xte_csv()

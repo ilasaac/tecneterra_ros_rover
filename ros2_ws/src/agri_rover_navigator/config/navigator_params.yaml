@@ -29,3 +29,11 @@ navigator:
     # error exceeds this. Normal turns use proportional steering while moving.
     # 30° lets the rover handle curves continuously without stopping.
     align_threshold: 30.0
+
+    # Stanley controller gain — scales cross-track error correction.
+    # Higher = more aggressive path hugging; lower = smoother but more drift.
+    stanley_k: 1.0
+
+    # Speed softening (m/s) — prevents division by zero at very low speed.
+    # Should be ≤ min_speed so it rarely activates.
+    stanley_softening: 0.3

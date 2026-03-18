@@ -93,6 +93,7 @@ class MavlinkBridgeNode(Node):
         self._cmd_thr     = 1500   # last cmd_override throttle (CH1), for telemetry
         self._cmd_str     = 1500   # last cmd_override steering (CH2), for telemetry
         self._wp_active   = -1    # active waypoint seq from navigator (-1 = none)
+        self._xte         = 0.0   # cross-track error from navigator (metres)
         self._mission_buf: list[MissionWaypoint] = []
         self._mission_count = 0
         # Servo state for PPM CH5-CH8 (servo numbers 5-8 → channel indices 4-7).
@@ -119,6 +120,7 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(Float32,      'heading',      self._cb_heading,  10)
         self.create_subscription(RCInput,      'cmd_override', self._cb_cmd_mon,  10)
         self.create_subscription(Int32,        'wp_active',    self._cb_wp,       10)
+        self.create_subscription(Float32,      'xte',          self._cb_xte,      10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
         self.cmd_pub      = self.create_publisher(RCInput,          'cmd_override', 10)
@@ -165,6 +167,9 @@ class MavlinkBridgeNode(Node):
 
     def _cb_wp(self, msg: Int32):
         self._wp_active = msg.data
+
+    def _cb_xte(self, msg: Float32):
+        self._xte = msg.data
 
     # ── MAVLink send helpers ──────────────────────────────────────────────────
 
@@ -242,6 +247,7 @@ class MavlinkBridgeNode(Node):
             ('CMD_S',    float(self._cmd_str)),
             ('WP_ACT',   float(self._wp_active)),
             ('WP_TOT',   float(self._mission_count)),
+            ('XTE',      self._xte),
         ]
         for name, value in pairs:
             self._send(self._mav.mav.named_value_float_encode(
