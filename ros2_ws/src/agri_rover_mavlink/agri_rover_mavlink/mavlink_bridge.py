@@ -263,35 +263,52 @@ class MavlinkBridgeNode(Node):
     # ── MAVLink receive loop ──────────────────────────────────────────────────
 
     def _recv_loop(self):
+        """Receive loop using the raw socket so source IP is always captured.
+
+        pymavlink's recv_match() sometimes returns a buffered message without
+        calling recvfrom() again, so last_address is stale or None.  Reading
+        the underlying socket directly guarantees we get the sender's address
+        for every packet, which is needed to switch telemetry to unicast.
+        """
+        sock = self._mav.port        # mavudp stores the DatagramSocket here
+        sock.settimeout(1.0)
+
         while rclpy.ok():
-            msg = self._mav.recv_match(blocking=True, timeout=1.0)
-            if msg is None:
+            try:
+                data, (src_ip, src_port) = sock.recvfrom(1024)
+            except _socket.timeout:
                 continue
-            # Discover GQC unicast address from first incoming packet so we can
-            # reply directly instead of broadcasting (broadcast is unreliable on WiFi APs).
-            addr = getattr(self._mav, 'last_address', None)
-            if addr:
-                self._gqc_unicast = addr
-            mt = msg.get_type()
-            if mt == 'RC_CHANNELS_OVERRIDE':
-                self._on_rc_override(msg)
-            elif mt == 'COMMAND_LONG':
-                self._on_command_long(msg)
-            elif mt == 'MISSION_COUNT':
-                if msg.target_system not in (0, 255, self._rover_id):
-                    continue  # not addressed to this rover
-                with self._mission_lock:
-                    self._mission_count      = msg.count
-                    self._mission_buf        = []
-                    self._mission_src        = (msg.get_srcSystem(), msg.get_srcComponent())
-                    self._mission_expect_seq = 0
-                    self._mission_last_req_t = time.monotonic()
-                self.get_logger().info(
-                    f'Mission upload started: {msg.count} items '
-                    f'from sysid={msg.get_srcSystem()}')
-                self._send_mission_request(0)
-            elif mt == 'MISSION_ITEM_INT':
-                self._on_mission_item(msg)
+            except OSError:
+                continue
+
+            # Every inbound packet reveals GQC's address — use unicast from here on
+            self._gqc_unicast = (src_ip, src_port)
+
+            msgs = self._mav.mav.parse_buffer(data)
+            if not msgs:
+                continue
+
+            for msg in msgs:
+                mt = msg.get_type()
+                if mt == 'RC_CHANNELS_OVERRIDE':
+                    self._on_rc_override(msg)
+                elif mt == 'COMMAND_LONG':
+                    self._on_command_long(msg)
+                elif mt == 'MISSION_COUNT':
+                    if msg.target_system not in (0, 255, self._rover_id):
+                        continue  # not addressed to this rover
+                    with self._mission_lock:
+                        self._mission_count      = msg.count
+                        self._mission_buf        = []
+                        self._mission_src        = (msg.get_srcSystem(), msg.get_srcComponent())
+                        self._mission_expect_seq = 0
+                        self._mission_last_req_t = time.monotonic()
+                    self.get_logger().info(
+                        f'Mission upload started: {msg.count} items '
+                        f'from sysid={msg.get_srcSystem()}')
+                    self._send_mission_request(0)
+                elif mt == 'MISSION_ITEM_INT':
+                    self._on_mission_item(msg)
 
     def _send_mission_request(self, seq: int):
         """Send MISSION_REQUEST_INT, preferring unicast over broadcast."""
