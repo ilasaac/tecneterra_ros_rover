@@ -366,6 +366,11 @@ class MavlinkBridgeNode(Node):
                 msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
 
     def _on_mission_item(self, msg):
+        with self._mission_lock:
+            expected = self._mission_expect_seq
+        if expected is None or msg.seq != expected:
+            return  # duplicate or out-of-order — ignore
+
         if msg.command == 183:  # MAV_CMD_DO_SET_SERVO
             self._apply_servo_cmd(int(msg.param1), int(msg.param2))
         else:
