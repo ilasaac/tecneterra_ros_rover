@@ -312,7 +312,10 @@ class MavlinkBridgeNode(Node):
                     self.get_logger().info(
                         f'Mission upload started: {msg.count} items '
                         f'from sysid={msg.get_srcSystem()}')
-                    self._send_mission_request(0)
+                    # Delay first REQUEST_INT slightly — GQC needs time to switch its
+                    # coroutine back to Dispatchers.IO and start waiting for requests.
+                    # Without this the first request arrives before GQC is listening.
+                    threading.Timer(0.15, lambda: self._send_mission_request(0)).start()
                 elif mt == 'MISSION_ITEM_INT':
                     self._on_mission_item(msg)
 
@@ -404,8 +407,10 @@ class MavlinkBridgeNode(Node):
     def _on_mission_item(self, msg):
         with self._mission_lock:
             expected = self._mission_expect_seq
+            rtt_ms = (time.monotonic() - self._mission_last_req_t) * 1000
         if expected is None or msg.seq != expected:
             return  # duplicate or out-of-order — ignore
+        self.get_logger().info(f'ITEM seq={msg.seq} RTT={rtt_ms:.0f}ms')
 
         if msg.command == 183:  # MAV_CMD_DO_SET_SERVO
             self._apply_servo_cmd(int(msg.param1), int(msg.param2))
