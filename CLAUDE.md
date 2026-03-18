@@ -26,7 +26,7 @@ ros_agri_rover/
 │   ├── agri_rover_rp2040/           ← USB serial bridge node
 │   ├── agri_rover_gps/              ← dual NMEA GPS driver node
 │   ├── agri_rover_mavlink/          ← MAVLink ↔ ROS2 bridge node
-│   ├── agri_rover_navigator/        ← pure-pursuit autonomous navigator node
+│   ├── agri_rover_navigator/        ← Stanley path follower + cross-track error publisher
 │   ├── agri_rover_sensors/          ← agricultural sensor node (stub)
 │   ├── agri_rover_video/            ← GStreamer RTSP streamer node
 │   ├── agri_rover_simulator/        ← dead-reckoning GPS simulator (separate Jetson)
@@ -41,7 +41,7 @@ ros_agri_rover/
     ├── rtk_forwarder.py             ← NTRIP/E610 RTCM3 → u-blox serial
     ├── start_rover1_sim.sh          ← single-command RV1 simulation launcher
     ├── start_rover2_sim.sh          ← single-command RV2 simulation launcher
-    ├── monitor.py                   ← terminal MAVLink dashboard (both rovers) — shows rover IPs, SBUS + PPM channels
+    ├── monitor.py                   ← terminal MAVLink dashboard (both rovers) — rover IPs, SBUS + PPM channels, XTE stats; saves CSV on exit
     └── mission_uploader.py          ← CSV waypoints → MAVLink mission upload
 ```
 
@@ -66,7 +66,7 @@ ros_agri_rover/
 | agri_rover_rp2040        | ament_python | rp2040_bridge      | USB serial ↔ ROS2: reads CH: lines, sends \<HB:\> \<J:\> |
 | agri_rover_gps           | ament_python | gps_driver         | Dual NMEA serial → NavSatFix + heading Float32 |
 | agri_rover_mavlink       | ament_python | mavlink_bridge     | ROS2 topics ↔ MAVLink UDP to GQC     |
-| agri_rover_navigator     | ament_python | navigator          | Pure-pursuit waypoint follower        |
+| agri_rover_navigator     | ament_python | navigator          | Stanley path follower; publishes XTE  |
 | agri_rover_sensors       | ament_python | sensor_node        | Tank/temp/humidity/pressure (stub)    |
 | agri_rover_video         | ament_python | video_streamer     | GStreamer RTSP server                 |
 | agri_rover_simulator     | ament_python | simulator          | Dead-reckoning GPS simulator (runs on separate Jetson) |
@@ -84,6 +84,9 @@ ros_agri_rover/
 | mode            | std_msgs/String                 | rp2040_bridge, mavlink_bridge | navigator, mavlink_bridge |
 | cmd_override    | agri_rover_interfaces/RCInput   | navigator                   | rp2040_bridge |
 | servo_state     | agri_rover_interfaces/RCInput   | mavlink_bridge              | navigator     |
+| armed           | std_msgs/Bool                   | mavlink_bridge              | navigator     |
+| wp_active       | std_msgs/Int32                  | navigator      | mavlink_bridge             |
+| xte             | std_msgs/Float32                | navigator      | mavlink_bridge             |
 | fix             | sensor_msgs/NavSatFix           | gps_driver     | navigator, mavlink_bridge  |
 | heading         | std_msgs/Float32                | gps_driver     | navigator, mavlink_bridge  |
 | rtk_status      | std_msgs/String                 | gps_driver     | mavlink_bridge             |
@@ -558,5 +561,5 @@ All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
 - `firmware/*/main.cpp`: SX1278 driver is complete but needs `pico_sdk_import.cmake` copied from `$PICO_SDK_PATH/external/`
 - `ppm_tx.pio`: slave uses SM0 (not SM1) — one less state machine needed vs master
 - Android GQC: RTSP dual video screen, settings dialog, STATUSTEXT log screen still TODO (see android/AgriRoverGQC/README.md)
-- Navigator: no obstacle avoidance — pure pursuit only
-- DO_SET_SERVO in missions: applied at upload time, re-published continuously by navigator at 10 Hz. For precise per-waypoint timing during replay (servo fires when rover physically reaches GPS position), the navigator would need to sequence through mixed mission items (requires MissionWaypoint interface change or a new ServoEvent topic).
+- Navigator: no obstacle avoidance
+- DO_SET_SERVO in missions: applied at upload time, re-published continuously by navigator at 25 Hz. For precise per-waypoint timing during replay (servo fires when rover physically reaches GPS position), the navigator would need to sequence through mixed mission items (requires MissionWaypoint interface change or a new ServoEvent topic).

@@ -103,9 +103,11 @@ msg = self._mav.recv_match(blocking=True, timeout=1.0)
 ```
 
 Subscriptions and state:
-- Subscribes to `heading` (std_msgs/Float32) in addition to `fix`, `rc_input`, `sensors`, `status`, `mode`
+- Subscribes to `heading`, `cmd_override`, `wp_active`, `xte` in addition to `fix`, `rc_input`, `sensors`, `status`, `mode`
 - `self._heading_deg = None` until first heading message; sent as `hdg` (cdeg) in `GLOBAL_POSITION_INT`
 - `GLOBAL_POSITION_INT.hdg = int(heading_deg * 100) % 36000`  (65535 = unknown, used until first fix)
+- `self._xte` updated from `xte` topic; included in `NAMED_VALUE_FLOAT` broadcast as `'XTE'`
+- `NAMED_VALUE_FLOAT` names sent: `TANK`, `TEMP`, `HUMID`, `PRESSURE`, `CMD_T`, `CMD_S`, `WP_ACT`, `WP_TOT`, `XTE`
 
 HEARTBEAT `base_mode` flags:
 - `MAV_MODE_FLAG_SAFETY_ARMED` (128) set when `self._armed`
@@ -127,14 +129,39 @@ Inbound MAVLink command handling (`_on_command_long`):
 
 `_on_mission_item` skips `DO_SET_SERVO` items for waypoint publishing (lat=0/lon=0 would navigate to null island); calls `_apply_servo_cmd` instead.
 
-## navigator — pure pursuit
+## navigator — Stanley path follower
 
 Key parameters (in `config/navigator_params.yaml`):
-- `lookahead_distance: 3.0`  metres ahead to target
-- `max_speed: 1.5`           m/s → PPM throttle range 1500–2000
-- `max_steering: 0.8`        fraction of full deflection (0.0–1.0)
-- `control_rate: 10.0`       Hz (control loop timer)
-- `gps_timeout: 2.0`         seconds before halt
+- `lookahead_distance: 3.0`     metres ahead on segment for heading error θ_e
+- `default_acceptance_radius: 0.3` metres — waypoint reached (RTK precision)
+- `max_speed: 1.5`              m/s → PPM throttle range 1500–2000
+- `min_speed: 0.3`              m/s floor (never slower regardless of waypoint speed)
+- `max_steering: 0.8`           fraction of full deflection (0.0–1.0)
+- `control_rate: 25.0`          Hz — matches RTK GPS update rate
+- `gps_timeout: 2.0`            seconds before halt
+- `align_threshold: 30.0`       degrees — spin-in-place only above this; normal curves move
+- `stanley_k: 1.0`              cross-track error gain (increase = tighter path hug)
+- `stanley_softening: 0.3`      m/s denominator floor (prevents div/0 at low speed)
+
+**Stanley controller formula:**
+```
+δ = θ_e + arctan(stanley_k × e_cte / max(v, stanley_softening))
+```
+- `θ_e` — heading error to lookahead point (degrees)
+- `e_cte` — signed cross-track error; positive = rover is LEFT of segment
+- `v` — current target speed (m/s)
+- `δ` — total steering correction, clamped to ±90°, mapped to PPM via `steer_frac = δ/45`
+
+Speed is held constant at the recorded waypoint speed. No steering-based slowdown.
+
+**Waypoint advance logic:**
+- `dist < acceptance_radius` → reached; if `hold_secs > 0` pause then advance
+- Overshoot detection: rover past waypoint along segment direction → advance (no 180° turn)
+
+**XTE publication:**
+- `_cross_track_error()` uses 2D cross product in flat-earth metres
+- Publishes absolute XTE to `xte` topic (Float32) at every 25 Hz tick
+- mavlink_bridge forwards as `NAMED_VALUE_FLOAT 'XTE'` to GQC / monitor.py
 
 Coordinate math:
 ```python
@@ -143,15 +170,14 @@ def bearing_to(lat1, lon1, lat2, lon2) -> float  # degrees 0-360
 ```
 
 PPM mapping:
-- Throttle: `PPM_CENTER + speed_frac * 500`  (1500 neutral, 2000 = max forward)
-- Steering: `PPM_CENTER + steer_frac * 500`  (1500 straight, 1000/2000 = full turn)
-- Heading error → steering: `steer_frac = clamp(heading_error_deg / 45, -max, +max)`
+- Throttle: `PPM_CENTER + (v_mps / max_speed) * 500`  (1500 neutral, 2000 = max)
+- Steering: `PPM_CENTER - steer_frac * 500`  (< 1500 = right, > 1500 = left)
 
 Servo channels (PPM CH5-CH8):
 - Navigator subscribes to `servo_state` (RCInput from mavlink_bridge).
 - `_cb_servo_state()` updates `self._servo_ch[0..3]` (channels 4-7, non-zero values only).
 - `_publish_cmd()` always includes `_servo_ch` in channels 4-7 of every `cmd_override` message.
-- This means servo state is continuously re-sent at 10 Hz — an RP2040 reset does not leave servos in an unknown state.
+- Servo state is continuously re-sent at 25 Hz — an RP2040 reset does not lose servo state.
 
 ## gps_driver — NMEA parsing
 

@@ -25,6 +25,7 @@ MainActivity
 - Broadcasts GCS heartbeat to **255.255.255.255:14550** at 1 Hz.
 - Rover IPs are **auto-discovered** from the first inbound packet of each sysid.
 - GQC identifies rovers by **sysid in HEARTBEAT** (RV1=1, RV2=2), not by port.
+- **WiFi lock:** `WIFI_MODE_FULL_HIGH_PERF` WifiLock acquired on `startListening()` — prevents Android WiFi power-save from batching UDP packets (which caused 50–100 ms per-item delays during mission upload). Released on `stopListening()`.
 
 ## App Modes
 
@@ -44,13 +45,52 @@ MainActivity
 
 ## Mission recording (PLANNER mode)
 
-**ADD** — inserts the rover's current GPS position as a single waypoint.
+Recorded missions are a `List<MissionAction>`:
 
-**REC / STOP** — continuous recording at 500 ms:
-- Saves current rover GPS position every 500 ms
-- Detects PPM CH5-CH8 switch changes > 100 µs and appends `ServoCmd(servo, pwm)` entries immediately
+```kotlin
+sealed class MissionAction {
+    data class Waypoint(val lat: Double, val lon: Double,
+                        val speed: Float = 0f,
+                        val holdSecs: Float = 0f) : MissionAction()
+    data class ServoCmd(val servo: Int, val pwm: Int)  : MissionAction()
+}
+```
 
-The recorded list is a `List<MissionAction>` (`Waypoint` or `ServoCmd`). On UPLOAD, if any servo commands are present the full interleaved sequence is uploaded; the rover applies servo commands as it receives them.
+**ADD** — inserts the selected rover's current GPS position as a single waypoint (speed and holdSecs = 0).
+
+**REC / STOP** — continuous recording at 500 ms intervals:
+- Movement threshold `MIN_RECORD_DIST = 0.3 m` — GPS jitter below this is ignored.
+- When rover moves ≥ 0.3 m: flushes accumulated `pendingHoldSecs` into the **previous** waypoint's `holdSecs`, then records the new position with the current throttle PPM mapped to `speed` in m/s (`(ppm - 1500) / 500 × MAX_SPEED_MPS`).
+- When rover is stationary: increments `pendingHoldSecs += 0.5 s` every tick.
+- PPM CH5-CH8 monitoring: any channel change > 100 µs since last sample → appends `ServoCmd(servo, pwm)` immediately.
+- **At recording start:** 4 `ServoCmd` items are prepended for the current state of CH5-CH8 so the rover always starts with known servo positions.
+
+The result is an exact recording of the route: positions, speeds, servo switch events, and stationary waits — all replayed identically during autonomous navigation.
+
+**CLEAR** — stops any active recording, clears all route points and the recorded mission list, and uploads an empty mission to the rover to cancel any in-progress autonomous route.
+
+**UPLOAD** — if `recordedMission` contains any `ServoCmd` entries, calls `uploadRecordedMission()`; otherwise uses plain `uploadMission()`.
+
+### MAVLink encoding of waypoint fields
+
+| `MissionAction.Waypoint` field | `MISSION_ITEM_INT` field | Notes |
+|---|---|---|
+| `lat`, `lon` | `x`, `y` (×1e7 int) | standard NAV_WAYPOINT position |
+| `speed` (m/s) | `z` | altitude field repurposed (ground vehicle) |
+| `holdSecs` | `param1` | MAVLink hold time field |
+
+The rover decodes these back in `mavlink_bridge._on_mission_item()` and populates `MissionWaypoint.speed` and `MissionWaypoint.hold_secs`.
+
+## Autonomous navigation (rover side)
+
+The navigator uses a **Stanley lateral controller**:
+```
+δ = θ_e + arctan(k × e_cte / v)
+```
+- Follows the recorded route at the exact recorded speed per segment.
+- Corrects both heading error and cross-track (lateral) drift simultaneously.
+- Replays `holdSecs` exactly: rover halts at the waypoint for the recorded duration before advancing.
+- Cross-track error (XTE) is published as MAVLink `NAMED_VALUE_FLOAT 'XTE'` at 1 Hz for monitoring.
 
 ## MAVLink commands sent
 

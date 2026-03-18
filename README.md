@@ -248,10 +248,14 @@ python3 tools/rtk_forwarder.py ... --log-file /tmp/rtk.log
 | Topic              | Type            | Producer      | Consumers             |
 |--------------------|-----------------|---------------|-----------------------|
 | ~/rc_input         | RCInput         | rp2040_bridge | mavlink_bridge        |
-| ~/mode             | String          | rp2040_bridge | navigator, mavlink    |
-| ~/cmd_override     | RCInput         | navigator/mavlink | rp2040_bridge     |
-| ~/fix              | NavSatFix       | gps_driver    | navigator, mavlink    |
-| ~/heading          | Float32         | gps_driver    | navigator, mavlink    |
+| ~/mode             | String          | rp2040_bridge, mavlink_bridge | navigator, mavlink_bridge |
+| ~/armed            | Bool            | mavlink_bridge | navigator            |
+| ~/cmd_override     | RCInput         | navigator     | rp2040_bridge         |
+| ~/servo_state      | RCInput         | mavlink_bridge | navigator            |
+| ~/wp_active        | Int32           | navigator     | mavlink_bridge        |
+| ~/xte              | Float32         | navigator     | mavlink_bridge        |
+| ~/fix              | NavSatFix       | gps_driver    | navigator, mavlink_bridge |
+| ~/heading          | Float32         | gps_driver    | navigator, mavlink_bridge |
 | ~/rtk_status       | String          | gps_driver    | mavlink_bridge        |
 | ~/sensors          | SensorData      | sensor_node   | mavlink_bridge        |
 | ~/mission          | MissionWaypoint | mavlink_bridge| navigator             |
