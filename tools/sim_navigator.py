@@ -259,6 +259,8 @@ def _reroute_waypoints(
         best_t = 1.0
         for pi, poly in enumerate(expanded_polygons):
             hits = _seg_intersect_polygon(a_lat, a_lon, b_lat, b_lon, poly)
+            print(f'[REROUTE_DBG] seg ({a_lat:.6f},{a_lon:.6f})->({b_lat:.6f},{b_lon:.6f}) '
+                  f'poly[{pi}] verts={len(poly)} hits={len(hits)}')
             if len(hits) >= 2 and hits[0][0] < best_t:
                 best_poly_idx = pi
                 best_hits     = hits
@@ -270,6 +272,7 @@ def _reroute_waypoints(
 
         bypass = _bypass_verts(a_lat, a_lon, b_lat, b_lon,
                                best_hits, expanded_polygons[best_poly_idx])
+        print(f'[REROUTE_DBG] bypass inserted: {len(bypass)} points')
         for blat, blon in bypass:
             new_wps.append(make_bypass(blat, blon, wp))
         new_wps.append(wp)
@@ -546,13 +549,18 @@ def simulate(waypoints:       list[SimWaypoint],
     effective_wps = list(waypoints)
     if obstacles:
         clearance = nav['obstacle_clearance_m']
-        for poly_raw in obstacles:
+        for i, poly_raw in enumerate(obstacles):
             poly = [(float(v[0]), float(v[1])) for v in poly_raw]
             if len(poly) >= 3:
                 expanded_polygons.append(_expand_polygon(poly, clearance))
+            else:
+                print(f'[SIM_DBG] obstacle[{i}] skipped — only {len(poly)} vertices (need >=3)')
         if expanded_polygons:
             effective_wps = _reroute_waypoints(
                 waypoints, expanded_polygons, start_lat, start_lon)
+    print(f'[SIM_DBG] obstacles={len(obstacles) if obstacles else 0} '
+          f'expanded={len(expanded_polygons)} '
+          f'wps={len(waypoints)}->{len(effective_wps)}')
 
     rover  = RoverState(start_lat, start_lon, start_heading)
     path_n = PathNavigator(effective_wps, start_lat, start_lon, nav)
