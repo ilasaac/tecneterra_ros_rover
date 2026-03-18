@@ -137,7 +137,7 @@ class MavlinkBridgeNode(Node):
         self.create_timer(0.1,  self._send_rc)         # 10 Hz
         self.create_timer(1.0,  self._send_sys_status)
         self.create_timer(1.0,  self._send_named_values)
-        self.create_timer(0.4,  self._mission_retry)   # retransmit lost MISSION_REQUEST_INT
+        self.create_timer(0.05, self._mission_retry)   # retransmit lost MISSION_REQUEST_INT
 
         self.get_logger().info(
             f'MAVLink bridge sysid={self._rover_id} '
@@ -289,19 +289,21 @@ class MavlinkBridgeNode(Node):
             return
         packed = self._mav.mav.mission_request_int_encode(src[0], src[1], seq).pack(self._mav.mav)
         addr = self._gqc_unicast or self._gqc_addr
+        if seq == 0:
+            self.get_logger().info(f'Mission upload addr: {addr} ({"unicast" if self._gqc_unicast else "BROADCAST"})')
         try:
             self._udp_sock.sendto(packed, addr)
         except Exception as e:
             self.get_logger().warn(f'mission_request send error: {e}')
 
     def _mission_retry(self):
-        """Retransmit MISSION_REQUEST_INT if the expected item hasn't arrived in 400 ms."""
+        """Retransmit MISSION_REQUEST_INT if the expected item hasn't arrived in 50 ms."""
         with self._mission_lock:
             seq = self._mission_expect_seq
             elapsed = time.monotonic() - self._mission_last_req_t
-        if seq is None or elapsed < 0.4:
+        if seq is None or elapsed < 0.05:
             return
-        self.get_logger().debug(f'Retrying MISSION_REQUEST_INT seq={seq}')
+        self.get_logger().info(f'Retrying MISSION_REQUEST_INT seq={seq} ({elapsed*1000:.0f}ms)')
         self._send_mission_request(seq)
 
     def _apply_servo_cmd(self, servo: int, pwm: int):
