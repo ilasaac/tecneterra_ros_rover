@@ -41,7 +41,8 @@ ros_agri_rover/
     ├── rtk_forwarder.py             ← NTRIP/E610 RTCM3 → u-blox serial
     ├── start_rover1_sim.sh          ← single-command RV1 simulation launcher
     ├── start_rover2_sim.sh          ← single-command RV2 simulation launcher
-    ├── monitor.py                   ← terminal MAVLink dashboard (both rovers) — rover IPs, SBUS + PPM channels, XTE stats; saves CSV on exit
+    ├── sim_navigator.py             ← software-in-the-loop simulation of navigator.py (full-path Stanley + pivot turns); importable by monitor.py or standalone CLI
+    ├── monitor.py                   ← terminal MAVLink dashboard; rover IPs, SBUS/PPM, XTE stats; snoops GQC missions, runs SIL sim, serves Leaflet map on :8088 (HTTP)
     └── mission_uploader.py          ← CSV waypoints → MAVLink mission upload
 ```
 
@@ -66,7 +67,7 @@ ros_agri_rover/
 | agri_rover_rp2040        | ament_python | rp2040_bridge      | USB serial ↔ ROS2: reads CH: lines, sends \<HB:\> \<J:\> |
 | agri_rover_gps           | ament_python | gps_driver         | Dual NMEA serial → NavSatFix + heading Float32 |
 | agri_rover_mavlink       | ament_python | mavlink_bridge     | ROS2 topics ↔ MAVLink UDP to GQC     |
-| agri_rover_navigator     | ament_python | navigator          | Stanley path follower; publishes XTE  |
+| agri_rover_navigator     | ament_python | navigator          | Full-path Stanley + pivot-turn autonomous navigator; publishes XTE |
 | agri_rover_sensors       | ament_python | sensor_node        | Tank/temp/humidity/pressure (stub)    |
 | agri_rover_video         | ament_python | video_streamer     | GStreamer RTSP server                 |
 | agri_rover_simulator     | ament_python | simulator          | Dead-reckoning GPS simulator (runs on separate Jetson) |
@@ -88,6 +89,7 @@ ros_agri_rover/
 | wp_active       | std_msgs/Int32                  | navigator      | mavlink_bridge             |
 | xte             | std_msgs/Float32                | navigator      | mavlink_bridge             |
 | fix             | sensor_msgs/NavSatFix           | gps_driver     | navigator, mavlink_bridge  |
+| fix_front       | sensor_msgs/NavSatFix           | gps_driver     | navigator                  |
 | heading         | std_msgs/Float32                | gps_driver     | navigator, mavlink_bridge  |
 | rtk_status      | std_msgs/String                 | gps_driver     | mavlink_bridge             |
 | sensors         | agri_rover_interfaces/SensorData | sensor_node   | mavlink_bridge             |
@@ -290,7 +292,8 @@ cd firmware/rc_link_sx1278/master
 cmake -B build -DPICO_SDK_PATH=$PICO_SDK_PATH && cmake --build build
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
-python tools/monitor.py
+python tools/monitor.py                        # map → http://<host>:8088/monitor_map.html
+python tools/monitor.py --map-port 9000        # override HTTP port
 python tools/mission_uploader.py missions/field.csv --rover 1 --host 192.168.100.19
 ```
 
@@ -421,7 +424,7 @@ Two recording methods in PLANNER toolbar:
 - Monitors PPM CH5-CH8 (auxiliary switches) from incoming `RC_CHANNELS`; any channel change > 100 µs → appends `MissionAction.ServoCmd(servo, pwm)` immediately
 - Button label toggles `⏺ REC` ↔ `⏹ STOP`
 
-**UPLOAD** — if `recordedMission` contains any `ServoCmd` entries, calls `uploadRecordedMission()`; otherwise uses plain `uploadMission()`.
+**UPLOAD** — sends DISARM (cmd 400, p1=0) × 3 at 100 ms intervals before `MISSION_COUNT` as a safety measure, then streams all items. If `recordedMission` contains any `ServoCmd` entries, calls `uploadRecordedMission()`; otherwise uses plain `uploadMission()`.
 
 ```kotlin
 sealed class MissionAction {
@@ -446,6 +449,7 @@ from the rover (post firmware PPM remap — CH5 = SBUS CH11, CH6 = SBUS CH12, CH
 - Satellite map by default; toggle to standard via layers FAB
 - Per-rover markers: red=RV1, blue=RV2. Centre dot: green=disarmed, orange=armed, yellow=AUTO.
 - White ring around selected rover marker.
+- Mission route shown as two-color polylines: green = walked segment, red = pending segment. Updated from `onMissionProgress` callback via `roverNextWaypointIndex`.
 
 ---
 
@@ -557,7 +561,8 @@ All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
 | `simulator.py` | Simulator Jetson | Dead-reckoning physics → NMEA over UDP WiFi |
 | `nmea_wifi_rx.py` | Each rover Jetson | Receives UDP NMEA → PTY virtual serial ports for gps_driver |
 | `rtk_forwarder.py` | Each rover Jetson | NTRIP/E610 RTCM3 → u-blox serial (real hardware) |
-| `monitor.py` | Dev machine | Live MAVLink terminal dashboard — displays rover IPs (auto-discovered from UDP source of first packet) |
+| `sim_navigator.py` | Any (no ROS2) | SIL simulation of full-path Stanley navigator; importable by monitor.py; standalone CLI with CSV waypoints |
+| `monitor.py` | Dev machine / RPi (SSH) | Terminal dashboard + Leaflet map (HTTP :8088); snoops GQC mission uploads and auto-simulates via sim_navigator.py |
 | `mission_uploader.py` | Dev machine | CSV waypoints → MAVLink mission upload |
 
 ### NTRIP pitfalls (rtk_forwarder.py)

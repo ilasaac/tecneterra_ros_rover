@@ -174,6 +174,10 @@ Key parameters (in `config/navigator_params.yaml`):
 - `align_threshold: 30.0`       degrees — spin-in-place only above this; normal curves move
 - `stanley_k: 1.0`              cross-track error gain (increase = tighter path hug)
 - `stanley_softening: 0.3`      m/s denominator floor (prevents div/0 at low speed)
+- `pivot_threshold: 60.0`       degrees — heading change at a waypoint above which the rover
+                                stops and spins in place (pivot turn) instead of curving through
+- `pivot_approach_dist: 4.0`    metres — distance at which rover switches to direct-to-waypoint
+                                aim and slows to min_speed for precise pivot arrival
 
 **Stanley controller formula:**
 ```
@@ -204,8 +208,16 @@ Speed is held constant at the recorded waypoint speed. No steering-based slowdow
 
 **`_point_at_s(s_target)`** — interpolates (lat, lon) at any arc-length along the full path, spanning segment boundaries naturally.
 
+**Pivot turns:**
+- `_turn_angle_at(idx)` computes the absolute heading change between the incoming and outgoing segments at waypoint `idx`.
+- If `turn_angle >= pivot_threshold` and not the last waypoint: `needs_pivot = True`.
+- **Approach phase** (when `needs_pivot` and `dist_to_wp < pivot_approach_dist`): lookahead target is set to the waypoint itself (not a projected point); speed scaled down to `min_speed * (dist / pivot_approach_dist)`.
+- **Pivot phase** (after reaching the waypoint): throttle=neutral, steer full in the direction of the outgoing heading until `|heading_error| < heading_deadband`. Then `_advance_path()`.
+- Arc-length advance (`s_nearest > wp_s + accept`) is disabled for pivot waypoints — only proximity (`dist_to_wp < accept`) triggers arrival so the rover reaches the exact turn point.
+
 **Waypoint advance logic:**
-- `dist_to_wp < acceptance_radius` OR `s_nearest > wp_s + acceptance_radius` → reached
+- `dist_to_wp < acceptance_radius` → reached (always)
+- `s_nearest > wp_s + acceptance_radius` → reached (non-pivot waypoints only — arc-length skip)
 - No separate overshoot detection needed — arc-length advance handles corner-cut and overshoot automatically
 - If `hold_secs > 0`: halt, wait, then call `_advance_path()`
 

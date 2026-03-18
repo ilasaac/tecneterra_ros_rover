@@ -12,7 +12,7 @@ ros_agri_rover/
 │       ├── agri_rover_rp2040/      RP2040 USB serial bridge node
 │       ├── agri_rover_gps/         Dual-GPS NMEA driver node
 │       ├── agri_rover_mavlink/     MAVLink ↔ ROS2 bridge node
-│       ├── agri_rover_navigator/   Autonomous mission follower node
+│       ├── agri_rover_navigator/   Full-path Stanley + pivot-turn autonomous navigator
 │       ├── agri_rover_sensors/     Agricultural sensor node
 │       ├── agri_rover_video/       GStreamer RTSP streamer node
 │       ├── agri_rover_simulator/   Dead-reckoning GPS simulator node
@@ -29,7 +29,8 @@ ros_agri_rover/
 │   ├── simulator.py                Standalone GPS simulator (no ROS2 required)
 │   ├── nmea_wifi_rx.py             UDP NMEA → PTY bridge (runs inside container)
 │   ├── rtk_forwarder.py            NTRIP/E610 RTK corrections → u-blox serial
-│   ├── monitor.py                  Terminal MAVLink dashboard (both rovers)
+│   ├── sim_navigator.py            Software-in-the-loop simulator (mirrors navigator.py)
+│   ├── monitor.py                  Terminal dashboard + Leaflet map server (:8088)
 │   └── mission_uploader.py         CSV mission → MAVLink upload
 └── docs/
 ```
@@ -82,9 +83,12 @@ docker compose up rover1   # RV1 Jetson — uses CSI camera and real GPS by defa
 docker compose up rover2   # RV2 Jetson
 ```
 
-### Monitor from dev machine
+### Monitor (dev machine or RPi over SSH)
 ```bash
 python tools/monitor.py
+# Open in any browser: http://<monitor-host-ip>:8088/monitor_map.html
+# Map shows mission path, simulated path, and actual rover GPS path — auto-refreshes every 5 s
+# Override port: python tools/monitor.py --map-port 9000
 ```
 
 ### Monitor ROS2 topics inside a container
@@ -255,6 +259,7 @@ python3 tools/rtk_forwarder.py ... --log-file /tmp/rtk.log
 | ~/wp_active        | Int32           | navigator     | mavlink_bridge        |
 | ~/xte              | Float32         | navigator     | mavlink_bridge        |
 | ~/fix              | NavSatFix       | gps_driver    | navigator, mavlink_bridge |
+| ~/fix_front        | NavSatFix       | gps_driver    | navigator                 |
 | ~/heading          | Float32         | gps_driver    | navigator, mavlink_bridge |
 | ~/rtk_status       | String          | gps_driver    | mavlink_bridge        |
 | ~/sensors          | SensorData      | sensor_node   | mavlink_bridge        |
