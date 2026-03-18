@@ -41,9 +41,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val roverPpmChannels = HashMap<Int, IntArray>()   // latest RC_CHANNELS per rover
 
     // Per-rover uploaded missions
-    private val roverMissions        = HashMap<Int, List<LatLng>>()
-    private val roverMissionVisible  = HashMap<Int, Boolean>()
-    private val roverMissionOverlays = HashMap<Int, MutableList<Any>>()
+    private val roverMissions             = HashMap<Int, List<LatLng>>()
+    private val roverMissionVisible       = HashMap<Int, Boolean>()
+    private val roverMissionOverlays      = HashMap<Int, MutableList<Any>>()
+    private val roverNextWaypointIndex    = HashMap<Int, Int>()   // last MISSION_ITEM_REACHED seq per rover
 
     // UI Elements
     private lateinit var map: GoogleMap
@@ -174,6 +175,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         onMissionProgress = { sysId, seq ->
             runOnUiThread {
+                roverNextWaypointIndex[sysId] = seq
+                redrawRoverMissions()
                 if (sysId == selectedRoverId) {
                     nextWaypointIndex = seq
                     redrawMap()
@@ -341,8 +344,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 Toast.makeText(this, "No waypoints to upload", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            roverMissions[selectedRoverId]       = ArrayList(routePoints)
-            roverMissionVisible[selectedRoverId] = true
+            roverMissions[selectedRoverId]          = ArrayList(routePoints)
+            roverMissionVisible[selectedRoverId]    = true
+            roverNextWaypointIndex[selectedRoverId] = 0
             redrawMap()
             redrawRoverMissions()
 
@@ -433,6 +437,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             roverManager.sendCriticalCommand(selectedRoverId, 400, 0f, 0f)
         }
         nextWaypointIndex = 0
+        roverNextWaypointIndex[selectedRoverId] = 0
         routePoints.clear()
         recordedMission.clear()
         lastRecordedPos = null
@@ -622,24 +627,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val passed = (0..min(nextWaypointIndex, routePoints.size - 1))
                     .map { routePoints[it] }
                 routeOverlays.add(map.addPolyline(
-                    PolylineOptions().addAll(passed).width(8f).color(Color.GREEN)))
+                    PolylineOptions().addAll(passed).width(8f).color(Color.parseColor("#4CAF50"))))
             }
             if (nextWaypointIndex < routePoints.size) {
                 val pending = (max(0, nextWaypointIndex - 1) until routePoints.size)
                     .map { routePoints[it] }
                 routeOverlays.add(map.addPolyline(
-                    PolylineOptions().addAll(pending).width(5f).color(Color.RED)))
-            }
-            routePoints.forEachIndexed { index, pt ->
-                val hue = if (index == nextWaypointIndex)
-                    BitmapDescriptorFactory.HUE_CYAN
-                else
-                    BitmapDescriptorFactory.HUE_RED
-                map.addMarker(MarkerOptions().position(pt)
-                    .title("WP ${index + 1}")
-                    .icon(BitmapDescriptorFactory.defaultMarker(hue))
-                    .anchor(0.5f, 0.5f))
-                    ?.also { m -> routeOverlays.add(m) }
+                    PolylineOptions().addAll(pending).width(8f).color(Color.parseColor("#F44336"))))
             }
         }
     }
@@ -669,17 +663,23 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
         for ((roverId, points) in roverMissions) {
             if (roverMissionVisible[roverId] == false || points.isEmpty()) continue
-            val overlays = roverMissionOverlays.getOrPut(roverId) { mutableListOf() }
-            val color    = if (roverId == 1) Color.RED else Color.BLUE
-            val hue      = if (roverId == 1) BitmapDescriptorFactory.HUE_RED
-                           else              BitmapDescriptorFactory.HUE_BLUE
-            overlays.add(map.addPolyline(PolylineOptions().addAll(points).width(5f).color(color)))
-            points.forEachIndexed { index, pt ->
-                map.addMarker(MarkerOptions().position(pt)
-                    .title("R$roverId WP ${index + 1}")
-                    .icon(BitmapDescriptorFactory.defaultMarker(hue))
-                    .anchor(0.5f, 0.5f))
-                    ?.also { overlays.add(it) }
+            val overlays     = roverMissionOverlays.getOrPut(roverId) { mutableListOf() }
+            val pendingColor = if (roverId == 1) Color.parseColor("#F44336")
+                               else              Color.parseColor("#2196F3")
+            val walkedIdx    = roverNextWaypointIndex[roverId] ?: 0
+
+            // Walked portion — gray
+            if (walkedIdx > 0) {
+                val walked = (0..min(walkedIdx, points.size - 1)).map { points[it] }
+                overlays.add(map.addPolyline(
+                    PolylineOptions().addAll(walked).width(8f)
+                        .color(Color.argb(200, 160, 160, 160))))
+            }
+            // Pending portion — rover color; starts one point before walkedIdx to avoid a gap
+            if (walkedIdx < points.size) {
+                val pending = (max(0, walkedIdx - 1) until points.size).map { points[it] }
+                overlays.add(map.addPolyline(
+                    PolylineOptions().addAll(pending).width(8f).color(pendingColor)))
             }
         }
     }
