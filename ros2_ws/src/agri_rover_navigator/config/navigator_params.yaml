@@ -23,3 +23,8 @@ navigator:
 
     # Heading deadband (degrees) — ignore small heading errors
     heading_deadband: 3.0
+
+    # Stop-and-spin threshold (degrees) — if heading error exceeds this,
+    # stop forward motion and spin in place until aligned before driving.
+    # Lower = more precise turns. 10° gives tight corner tracking.
+    align_threshold: 10.0

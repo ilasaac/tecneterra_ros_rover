@@ -72,14 +72,16 @@ class NavigatorNode(Node):
         self.declare_parameter('control_rate',            10.0)
         self.declare_parameter('gps_timeout',             2.0)
         self.declare_parameter('heading_deadband',        3.0)
+        self.declare_parameter('align_threshold',         10.0)
 
-        self._lookahead   = self.get_parameter('lookahead_distance').value
-        self._accept_r    = self.get_parameter('default_acceptance_radius').value
-        self._max_speed   = self.get_parameter('max_speed').value
-        self._min_speed   = self.get_parameter('min_speed').value
-        self._max_steer   = self.get_parameter('max_steering').value
-        self._gps_timeout = self.get_parameter('gps_timeout').value
-        self._hdb         = self.get_parameter('heading_deadband').value
+        self._lookahead      = self.get_parameter('lookahead_distance').value
+        self._accept_r       = self.get_parameter('default_acceptance_radius').value
+        self._max_speed      = self.get_parameter('max_speed').value
+        self._min_speed      = self.get_parameter('min_speed').value
+        self._max_steer      = self.get_parameter('max_steering').value
+        self._gps_timeout    = self.get_parameter('gps_timeout').value
+        self._hdb            = self.get_parameter('heading_deadband').value
+        self._align_thresh   = self.get_parameter('align_threshold').value
 
         # ── State ────────────────────────────────────────────────────────────
         self._fix:          NavSatFix | None = None
@@ -187,17 +189,21 @@ class NavigatorNode(Node):
 
         heading_err = ((target_bearing - self._heading + 180) % 360) - 180
 
-        # Steering: proportional to heading error, capped at max_steering
-        steer_frac = max(-self._max_steer,
-                         min(self._max_steer, heading_err / 45.0))
-        steer_ppm  = int(PPM_CENTER - steer_frac * 500)  # inverted: PPM CH2 wiring is ~SBUS CH1
-
-        # Speed: reduce when turning hard
-        speed_frac  = 1.0 - 0.5 * abs(steer_frac)
-        target_spd  = wp.speed if wp.speed > 0 else self._max_speed
-        speed_frac *= target_spd / self._max_speed
-        speed_frac  = max(self._min_speed / self._max_speed, speed_frac)
-        throttle_ppm = int(PPM_CENTER + speed_frac * 500)
+        if abs(heading_err) > self._align_thresh:
+            # Stop and spin in place until aligned with target bearing
+            spin_dir     = math.copysign(1.0, heading_err)
+            steer_ppm    = int(PPM_CENTER - spin_dir * self._max_steer * 500)
+            throttle_ppm = PPM_CENTER
+        else:
+            # Pure pursuit — heading aligned, drive forward with proportional steering
+            steer_frac   = max(-self._max_steer,
+                               min(self._max_steer, heading_err / 45.0))
+            steer_ppm    = int(PPM_CENTER - steer_frac * 500)
+            speed_frac   = 1.0 - 0.5 * abs(steer_frac)
+            target_spd   = wp.speed if wp.speed > 0 else self._max_speed
+            speed_frac  *= target_spd / self._max_speed
+            speed_frac   = max(self._min_speed / self._max_speed, speed_frac)
+            throttle_ppm = int(PPM_CENTER + speed_frac * 500)
 
         self._publish_cmd(throttle_ppm, steer_ppm)
 
