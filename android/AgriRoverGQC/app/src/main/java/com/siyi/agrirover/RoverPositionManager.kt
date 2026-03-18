@@ -352,7 +352,7 @@ class RoverPositionManager(
                     Log.i("RoverMgr", "Discovered Rover $senderId at ${packet.address.hostAddress}")
                 }
 
-                dispatchMessage(senderId, message.payload)
+                dispatchMessage(senderId, message.payload)  // non-blocking: UI callbacks use scope.launch
 
             } catch (e: Exception) {
                 if (isRunning) Log.w("RoverMgr", "Recv: ${e.message}")
@@ -360,7 +360,7 @@ class RoverPositionManager(
         }
     }
 
-    private suspend fun dispatchMessage(senderId: Int, payload: Any?) {
+    private fun dispatchMessage(senderId: Int, payload: Any?) {
         when (payload) {
 
             // HEARTBEAT (#0) — track connection, arm state and mode flags
@@ -372,10 +372,10 @@ class RoverPositionManager(
                 val wasConnected = roverConnected[senderId] ?: false
                 if (!wasConnected) {
                     roverConnected[senderId] = true
-                    withContext(Dispatchers.Main) { onConnectionChange(senderId, true) }
+                    scope.launch(Dispatchers.Main) { onConnectionChange(senderId, true) }
                 }
                 val armed = (payload.baseMode().value() and 128) != 0
-                withContext(Dispatchers.Main) { onArmState(senderId, armed) }
+                scope.launch(Dispatchers.Main) { onArmState(senderId, armed) }
 
                 // Check RC ↔ UDP state consistency after every slave heartbeat
                 if (senderId == SLAVE_SYSID) checkLinkMismatch()
@@ -387,7 +387,7 @@ class RoverPositionManager(
                 val lon = payload.lon() / 1e7
                 if (lat == 0.0 && lon == 0.0) return
                 val hdg = if (payload.hdg() == 65535) 0f else payload.hdg() / 100f
-                withContext(Dispatchers.Main) { onPositionUpdate(senderId, lat, lon, hdg) }
+                scope.launch(Dispatchers.Main) { onPositionUpdate(senderId, lat, lon, hdg) }
             }
 
             // MISSION_REQUEST_INT — rover asks for a specific waypoint during upload
@@ -397,24 +397,24 @@ class RoverPositionManager(
             is MissionAck -> {
                 pendingMissions.remove(senderId)
                 val resultText = if (payload.type().value() == 0) "Upload Complete!" else "Upload Failed (${payload.type().value()})"
-                withContext(Dispatchers.Main) { onMissionAck("Rover $senderId: $resultText") }
+                scope.launch(Dispatchers.Main) { onMissionAck("Rover $senderId: $resultText") }
             }
 
             // MISSION_CURRENT (#42) — which waypoint the rover is heading to
             is MissionCurrent -> {
-                withContext(Dispatchers.Main) { onMissionProgress(senderId, payload.seq()) }
+                scope.launch(Dispatchers.Main) { onMissionProgress(senderId, payload.seq()) }
             }
 
             // COMMAND_ACK (#77) — result of a COMMAND_LONG we sent
             is CommandAck -> {
                 val cmd    = payload.command().value()
                 val result = payload.result().value()
-                withContext(Dispatchers.Main) { onCommandAck(senderId, cmd, result) }
+                scope.launch(Dispatchers.Main) { onCommandAck(senderId, cmd, result) }
             }
 
             // SYS_STATUS (#1) — battery percentage
             is SysStatus -> {
-                withContext(Dispatchers.Main) {
+                scope.launch(Dispatchers.Main) {
                     onSensorUpdate(senderId, payload.batteryRemaining().toFloat(), -1f, -1f, -1f)
                 }
             }
@@ -422,7 +422,7 @@ class RoverPositionManager(
             // SCALED_PRESSURE (#137) — temperature + absolute pressure
             is ScaledPressure -> {
                 val tempC = payload.temperature() / 100f
-                withContext(Dispatchers.Main) { onSensorUpdate(senderId, -1f, tempC, -1f, -1f) }
+                scope.launch(Dispatchers.Main) { onSensorUpdate(senderId, -1f, tempC, -1f, -1f) }
             }
 
             // NAMED_VALUE_FLOAT (#251) — custom scalar sensors
@@ -430,10 +430,10 @@ class RoverPositionManager(
                 val name  = payload.name().trimEnd('\u0000')
                 val value = payload.value()
                 when (name) {
-                    "TANK"  -> withContext(Dispatchers.Main) {
+                    "TANK"  -> scope.launch(Dispatchers.Main) {
                         onSensorUpdate(senderId, -1f, -1f, value, -1f)
                     }
-                    "HUMID" -> withContext(Dispatchers.Main) {
+                    "HUMID" -> scope.launch(Dispatchers.Main) {
                         onSensorUpdate(senderId, -1f, -1f, -1f, value)
                     }
                 }
@@ -453,7 +453,7 @@ class RoverPositionManager(
                 )
                 val channels = remapSbusToLogical(raw)
                 roverPpmChannels[senderId] = channels
-                withContext(Dispatchers.Main) { onRcChannels(senderId, channels) }
+                scope.launch(Dispatchers.Main) { onRcChannels(senderId, channels) }
                 // Re-check mismatch whenever master's actual RC state changes
                 if (senderId == MASTER_SYSID) checkLinkMismatch()
             }
@@ -476,7 +476,7 @@ class RoverPositionManager(
      *   NOTE: master→AUTO but slave→IDLE is intentionally NOT flagged — slave is
      *   stopped (safe); it will go autonomous once its navigator connects.
      */
-    private suspend fun checkLinkMismatch() {
+    private fun checkLinkMismatch() {
         val masterChannels = roverPpmChannels[MASTER_SYSID]
         if (masterChannels == null || masterChannels.size < 4) return
 
@@ -511,7 +511,7 @@ class RoverPositionManager(
             if (mismatchStart == null) mismatchStart = now
             if (now - (mismatchStart ?: now) >= MISMATCH_TIMEOUT_MS) {
                 mismatchStart = null   // reset so it fires once, not continuously
-                withContext(Dispatchers.Main) { onLinkMismatch(mismatch) }
+                scope.launch(Dispatchers.Main) { onLinkMismatch(mismatch) }
             }
         } else {
             mismatchStart = null
