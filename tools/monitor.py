@@ -68,11 +68,13 @@ class RoverState:
     sensors:       dict  = field(default_factory=dict)
     log:           list  = field(default_factory=list)
     # Mission tracking (populated from snooped GQC packets)
-    mission_raw:   dict  = field(default_factory=dict)  # seq -> (lat, lon), nav wps only
-    mission_count: int   = 0   # total items in current upload (incl. DO_SET_SERVO)
-    sim_result:    object = None   # SimResult when simulation completes
-    sim_running:   bool  = False
-    actual_path:   list  = field(default_factory=list)  # [(lat, lon)] from GLOBAL_POSITION_INT
+    mission_raw:       dict  = field(default_factory=dict)  # seq -> (lat, lon), nav wps only
+    mission_count:     int   = 0   # total items in current upload (incl. DO_SET_SERVO)
+    mission_fence_buf: list  = field(default_factory=list)  # raw fence vertices (lat, lon, count)
+    obstacle_polygons: list  = field(default_factory=list)  # parsed [[lat,lon],...] polygons
+    sim_result:        object = None   # SimResult when simulation completes
+    sim_running:       bool  = False
+    actual_path:       list  = field(default_factory=list)  # [(lat, lon)] from GLOBAL_POSITION_INT
 
 
 RV    = {1: RoverState(rv_id=1), 2: RoverState(rv_id=2)}
@@ -112,6 +114,26 @@ def _sbus_to_ppm(ch: list) -> list:
     ]
 
 
+# ── Fence parsing ─────────────────────────────────────────────────────────────
+
+def _parse_fence_buf(fence_buf: list) -> list:
+    """Parse raw fence vertex tuples (lat, lon, vertex_count) into polygon list."""
+    polygons = []
+    current  = []
+    expected = 0
+    for (lat, lon, vertex_count) in fence_buf:
+        if expected == 0:
+            expected = vertex_count
+        current.append([lat, lon])
+        if len(current) >= expected:
+            polygons.append(current)
+            current  = []
+            expected = 0
+    if current:
+        polygons.append(current)
+    return polygons
+
+
 # ── Simulation ────────────────────────────────────────────────────────────────
 
 def _trigger_simulation(rv_id: int):
@@ -133,9 +155,11 @@ def _trigger_simulation(rv_id: int):
         start_lat     = rv.lat
         start_lon     = rv.lon
         start_heading = rv.heading if rv.heading >= 0 else 0.0
+        obstacles     = list(rv.obstacle_polygons)   # snapshot under lock
 
     try:
-        result = _sim_run(waypoints, start_lat, start_lon, start_heading)
+        result = _sim_run(waypoints, start_lat, start_lon, start_heading,
+                          obstacles=obstacles if obstacles else None)
     except Exception:
         result = None
 
@@ -162,17 +186,18 @@ def _build_map_html() -> str:
             )
             actual_path = [[lat, lon] for lat, lon in rv.actual_path]
             rovers_snapshot.append({
-                'id':           rv_id,
-                'lat':          rv.lat,
-                'lon':          rv.lon,
-                'armed':        rv.armed,
-                'mode':         rv.mode,
-                'mission_path': mission_path,
-                'sim_path':     sim_path,
-                'actual_path':  actual_path,
-                'sim_rms':      rv.sim_result.rms_xte if rv.sim_result else None,
-                'sim_max':      rv.sim_result.max_xte if rv.sim_result else None,
-                'sim_complete': rv.sim_result.complete if rv.sim_result else None,
+                'id':               rv_id,
+                'lat':              rv.lat,
+                'lon':              rv.lon,
+                'armed':            rv.armed,
+                'mode':             rv.mode,
+                'mission_path':     mission_path,
+                'sim_path':         sim_path,
+                'actual_path':      actual_path,
+                'obstacle_polygons': list(rv.obstacle_polygons),
+                'sim_rms':          rv.sim_result.rms_xte if rv.sim_result else None,
+                'sim_max':          rv.sim_result.max_xte if rv.sim_result else None,
+                'sim_complete':     rv.sim_result.complete if rv.sim_result else None,
             })
 
     # Map center: first rover with a valid fix, else default field
@@ -189,7 +214,6 @@ def _build_map_html() -> str:
 <head>
 <meta charset="utf-8"/>
 <title>AgriRover Monitor Map</title>
-<meta http-equiv="refresh" content="5"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -200,6 +224,7 @@ def _build_map_html() -> str:
             vertical-align:middle; }}
   .swatch {{ display:inline-block; width:28px; height:4px; vertical-align:middle;
               margin-right:5px; }}
+  .controls {{ float: right; background: #222; padding: 2px 8px; border-radius: 4px; border: 1px solid #444; }}
 </style>
 </head>
 <body>
@@ -210,7 +235,26 @@ var data   = {data_json};
 var center = [{center_lat}, {center_lon}];
 var roverColor = {{1: '#ef5350', 2: '#42a5f5'}};
 
-var map = L.map('map').setView(center, 18);
+// Restore state from localStorage
+var savedCenter = localStorage.getItem('mapCenter');
+var savedZoom   = localStorage.getItem('mapZoom');
+var autoFit     = localStorage.getItem('autoFit') !== 'false'; // default true
+
+if (savedCenter && !autoFit) {{
+  center = JSON.parse(savedCenter);
+}}
+var zoom = (savedZoom && !autoFit) ? parseInt(savedZoom) : 18;
+
+var map = L.map('map').setView(center, zoom);
+
+// Save state on move/zoom
+map.on('moveend', function() {{
+  localStorage.setItem('mapCenter', JSON.stringify(map.getCenter()));
+}});
+map.on('zoomend', function() {{
+  localStorage.setItem('mapZoom', map.getZoom());
+}});
+
 var googleSat = L.tileLayer(
   'https://{{s}}.google.com/vt/lyrs=s&x={{x}}&y={{y}}&z={{z}}',
   {{maxZoom: 22, subdomains: ['mt0','mt1','mt2','mt3'], attribution: '© Google'}}
@@ -221,7 +265,9 @@ var osm = L.tileLayer(
 );
 L.control.layers({{'Satellite (Google)': googleSat, 'Street (OSM)': osm}}).addTo(map);
 
-var infoHtml = '';
+var infoHtml = '<div class="controls">' +
+               '<label><input type="checkbox" id="autofit" ' + (autoFit ? 'checked' : '') + '> Auto-fit</label>' +
+               '</div>';
 
 data.forEach(function(rv) {{
   var col = roverColor[rv.id] || '#fff';
@@ -248,6 +294,18 @@ data.forEach(function(rv) {{
     L.polyline(rv.actual_path, {{color: '#66bb6a', weight: 2, opacity: 0.9}}).addTo(map);
   }}
 
+  // — Obstacle polygons (red semi-transparent)
+  if (rv.obstacle_polygons && rv.obstacle_polygons.length > 0) {{
+    rv.obstacle_polygons.forEach(function(poly) {{
+      if (poly.length >= 3) {{
+        L.polygon(poly, {{
+          color: '#f44336', weight: 2, opacity: 0.9,
+          fillColor: '#f44336', fillOpacity: 0.25
+        }}).bindTooltip('Obstacle').addTo(map);
+      }}
+    }});
+  }}
+
   // — Current rover marker
   if (rv.lat !== 0.0) {{
     var fill = rv.mode === 'AUTONOMOUS' ? '#ffee58' : (rv.armed ? '#ff7043' : '#66bb6a');
@@ -272,28 +330,43 @@ data.forEach(function(rv) {{
 infoHtml += '<br>';
 infoHtml += '<span class="swatch" style="background:#ff9800;"></span>Simulated path &nbsp;';
 infoHtml += '<span class="swatch" style="background:#66bb6a;"></span>Actual path &nbsp;';
+infoHtml += '<span class="swatch" style="background:#f44336; opacity:0.6;"></span>Obstacle &nbsp;';
 infoHtml += '<span style="color:#aaa">&nbsp; Marker: yellow=AUTO, orange=armed, green=disarmed</span>';
 
 document.getElementById('info').innerHTML = infoHtml;
 
+document.getElementById('autofit').onchange = function(e) {{
+  localStorage.setItem('autoFit', e.target.checked);
+  if (e.target.checked) location.reload();
+}};
+
 // Auto-fit map to all visible data points
-var allPts = [];
-data.forEach(function(rv) {{
-  if (rv.lat !== 0.0) allPts.push([rv.lat, rv.lon]);
-  (rv.mission_path || []).forEach(function(p) {{ allPts.push(p); }});
-  (rv.sim_path     || []).forEach(function(p) {{ allPts.push(p); }});
-  // Sample actual_path to avoid fitting to thousands of points
-  var ap = rv.actual_path || [];
-  if (ap.length > 0) {{ allPts.push(ap[0]); allPts.push(ap[ap.length - 1]); }}
-}});
-if (allPts.length > 1) {{
-  map.fitBounds(allPts, {{padding: [40, 40], maxZoom: 20}});
-}} else if (allPts.length === 1) {{
-  map.setView(allPts[0], 18);
+if (autoFit) {{
+  var allPts = [];
+  data.forEach(function(rv) {{
+    if (rv.lat !== 0.0) allPts.push([rv.lat, rv.lon]);
+    (rv.mission_path || []).forEach(function(p) {{ allPts.push(p); }});
+    (rv.sim_path     || []).forEach(function(p) {{ allPts.push(p); }});
+    // Sample actual_path to avoid fitting to thousands of points
+    var ap = rv.actual_path || [];
+    if (ap.length > 0) {{ allPts.push(ap[0]); allPts.push(ap[ap.length - 1]); }}
+    (rv.obstacle_polygons || []).forEach(function(poly) {{
+      poly.forEach(function(v) {{ allPts.push(v); }});
+    }});
+  }});
+  if (allPts.length > 1) {{
+    map.fitBounds(allPts, {{padding: [40, 40], maxZoom: 20}});
+  }} else if (allPts.length === 1) {{
+    map.setView(allPts[0], 18);
+  }}
 }}
+
+// Refresh page every 5 seconds
+setTimeout(function() {{ location.reload(); }}, 5000);
 </script>
 </body>
 </html>"""
+
 
 
 def map_gen_loop():
@@ -412,18 +485,24 @@ def listen():
                             rv.sensors[name] = round(msg.value, 1)
                     elif t == 'MISSION_COUNT':
                         # Re-broadcast by mavlink_bridge so we see it here from rover sysid
-                        rv.mission_raw    = {}
-                        rv.mission_count  = msg.count
-                        rv.sim_result     = None
-                        rv.sim_running    = False
-                        rv.actual_path    = []   # fresh path for this mission
+                        rv.mission_raw       = {}
+                        rv.mission_count     = msg.count
+                        rv.sim_result        = None
+                        rv.sim_running       = False
+                        rv.actual_path       = []   # fresh path for this mission
+                        rv.mission_fence_buf = []
+                        rv.obstacle_polygons = []
                     elif t == 'MISSION_ITEM_INT':
                         # Re-broadcast by mavlink_bridge from rover sysid
                         if msg.command == 16:   # NAV_WAYPOINT only
                             rv.mission_raw[msg.seq] = (msg.x / 1e7, msg.y / 1e7)
+                        elif msg.command == 5003:  # MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION
+                            rv.mission_fence_buf.append(
+                                (msg.x / 1e7, msg.y / 1e7, int(msg.param1)))
                         # Trigger simulation when last item arrives
                         if rv.mission_count > 0 and msg.seq == rv.mission_count - 1 \
                                 and not rv.sim_running:
+                            rv.obstacle_polygons = _parse_fence_buf(rv.mission_fence_buf)
                             rv.sim_running = True
                             rv_id_copy = sysid
                             threading.Thread(

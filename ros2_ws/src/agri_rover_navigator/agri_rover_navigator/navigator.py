@@ -1,5 +1,5 @@
 """
-agri_rover_navigator — navigator node (full-path Stanley)
+agri_rover_navigator — navigator node (full-path Stanley + obstacle avoidance)
 
 Strategy
 --------
@@ -34,6 +34,19 @@ controller:
 
   7. Cross-track error (XTE) is published on the `xte` topic at every tick.
 
+Obstacle avoidance
+------------------
+When a `mission_fence` JSON message arrives (published by mavlink_bridge when
+the full mission has been received), the navigator:
+  1. Parses the fence polygons.
+  2. Expands each polygon radially by `obstacle_clearance_m` from its centroid.
+  3. Rebuilds `_path` from `_path_original` inserting bypass waypoints around
+     any expanded polygon that a path segment intersects.
+  4. Bypass direction (CW vs CCW around polygon boundary) is chosen to minimise
+     total detour distance.
+  5. Rerouting is pre-mission only (static obstacles).  Mid-mission rerouting
+     is not supported.
+
 Subscribes:
   ~/fix          (sensor_msgs/NavSatFix)   — rear antenna position
   ~/fix_front    (sensor_msgs/NavSatFix)   — front antenna position
@@ -42,6 +55,7 @@ Subscribes:
   ~/mission      (MissionWaypoint)         — waypoints arrive sequentially
   ~/servo_state  (RCInput)                 — channels 4-7 from mavlink_bridge DO_SET_SERVO
   ~/mission_clear (std_msgs/Bool)          — clear path on empty-mission upload
+  ~/mission_fence (std_msgs/String)        — JSON fence polygons from mavlink_bridge
 
 Publishes:
   ~/cmd_override (RCInput)                 — PPM override to rp2040_bridge
@@ -55,6 +69,7 @@ Services:
 
 from __future__ import annotations
 
+import json
 import math
 import time
 
@@ -80,7 +95,7 @@ def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
          + math.cos(math.radians(lat1))
          * math.cos(math.radians(lat2))
          * math.sin(dlon / 2) ** 2)
-    return 2 * EARTH_R * math.asin(math.sqrt(a))
+    return 2 * EARTH_R * math.asin(math.sqrt(max(0.0, a)))
 
 
 def bearing_to(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -117,6 +132,9 @@ class NavigatorNode(Node):
         #                        slowing to min_speed, ensuring it arrives precisely.
         self.declare_parameter('pivot_threshold',           60.0)
         self.declare_parameter('pivot_approach_dist',        2.0)
+        # Obstacle avoidance:
+        #   obstacle_clearance_m — radial buffer (metres) added around obstacle polygons.
+        self.declare_parameter('obstacle_clearance_m',       1.0)
 
         self._lookahead           = self.get_parameter('lookahead_distance').value
         self._accept_r            = self.get_parameter('default_acceptance_radius').value
@@ -130,6 +148,7 @@ class NavigatorNode(Node):
         self._stanley_softening   = self.get_parameter('stanley_softening').value
         self._pivot_threshold     = self.get_parameter('pivot_threshold').value
         self._pivot_approach_dist = self.get_parameter('pivot_approach_dist').value
+        self._clearance           = self.get_parameter('obstacle_clearance_m').value
 
         # ── State ────────────────────────────────────────────────────────────
         self._fix:       NavSatFix | None = None
@@ -141,7 +160,7 @@ class NavigatorNode(Node):
         self._paused:    bool             = False
 
         # Full-path state — replaces single-segment prev/active_wp/deque.
-        # _path[i]  : i-th waypoint in mission order
+        # _path[i]  : i-th waypoint in mission order (may include bypass waypoints)
         # _path_s[i]: cumulative arc-length from path origin to _path[i]
         #             (origin = rover centre at mission start, or _path[0] if GPS unavailable)
         # _path_idx : index of the next waypoint not yet reached
@@ -150,6 +169,18 @@ class NavigatorNode(Node):
         self._path_origin_lat: float | None          = None
         self._path_origin_lon: float | None          = None
         self._path_idx:        int                   = 0
+
+        # Obstacle avoidance state
+        # _path_original: clean copy of received mission waypoints (without bypass points).
+        #                 _reroute_path() always rebuilds _path from this — idempotent.
+        # _obstacle_polygons: raw fence polygons [(lat,lon), ...] received from mission_fence.
+        # _expanded_polygons: _obstacle_polygons each expanded by _clearance metres.
+        # _bypass_indices: set of indices in _path that are synthetic bypass waypoints.
+        #                  _advance_path() skips publishing wp_active for these.
+        self._path_original:     list[MissionWaypoint]             = []
+        self._obstacle_polygons: list[list[tuple[float, float]]]   = []
+        self._expanded_polygons: list[list[tuple[float, float]]]   = []
+        self._bypass_indices:    set[int]                          = set()
 
         # Hold state — rover waits at a waypoint for hold_secs before advancing.
         self._holding:  bool  = False
@@ -174,6 +205,7 @@ class NavigatorNode(Node):
         self.create_subscription(MissionWaypoint, 'mission',       self._cb_mission,      10)
         self.create_subscription(RCInput,         'servo_state',   self._cb_servo_state,  10)
         self.create_subscription(Bool,            'mission_clear', self._cb_mission_clear, 10)
+        self.create_subscription(String,          'mission_fence', self._cb_mission_fence, 10)
 
         # ── Publishers ───────────────────────────────────────────────────────
         self.cmd_pub = self.create_publisher(RCInput,  'cmd_override', 10)
@@ -188,7 +220,7 @@ class NavigatorNode(Node):
         rate = self.get_parameter('control_rate').value
         self.create_timer(1.0 / rate, self._control_loop)
 
-        self.get_logger().info('Navigator ready (full-path Stanley)')
+        self.get_logger().info('Navigator ready (full-path Stanley + obstacle avoidance)')
 
     # ── Sensor callbacks ──────────────────────────────────────────────────────
 
@@ -236,6 +268,8 @@ class NavigatorNode(Node):
             return
         self._path.clear()
         self._path_s.clear()
+        self._path_original.clear()
+        self._bypass_indices.clear()
         self._path_idx        = 0
         self._path_origin_lat = None
         self._path_origin_lon = None
@@ -250,6 +284,8 @@ class NavigatorNode(Node):
             # New mission — discard any previous path
             self._path.clear()
             self._path_s.clear()
+            self._path_original.clear()
+            self._bypass_indices.clear()
             self._path_idx = 0
             self._holding  = False
             self._pivoting = False
@@ -261,6 +297,7 @@ class NavigatorNode(Node):
                 self._path_origin_lon = None
 
         self._path.append(msg)
+        self._path_original.append(msg)
 
         if len(self._path) == 1:
             # Arc-length from origin to first waypoint
@@ -280,6 +317,39 @@ class NavigatorNode(Node):
             f'Waypoint {msg.seq} loaded '
             f'({len(self._path)} total, path length {self._path_s[-1]:.1f} m)')
 
+        # If expanded obstacle polygons are already available (fence arrived before
+        # the last waypoint), reroute incrementally so the final path is correct.
+        if self._expanded_polygons:
+            self._reroute_path()
+
+    def _cb_mission_fence(self, msg: String):
+        """Parse JSON fence polygons and reroute the current mission path."""
+        try:
+            data  = json.loads(msg.data)
+            polys = data.get('polygons', [])
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            self.get_logger().warn('mission_fence: invalid JSON — obstacle avoidance disabled')
+            return
+
+        self._obstacle_polygons = [
+            [(float(v[0]), float(v[1])) for v in poly]
+            for poly in polys
+            if len(poly) >= 3
+        ]
+        self._expanded_polygons = [
+            self._expand_polygon(poly, self._clearance)
+            for poly in self._obstacle_polygons
+        ]
+
+        if self._obstacle_polygons:
+            self.get_logger().info(
+                f'Obstacle fence: {len(self._obstacle_polygons)} polygon(s), '
+                f'clearance={self._clearance:.1f} m')
+            if self._path_original:
+                self._reroute_path()
+        else:
+            self.get_logger().info('Obstacle fence: empty (no polygons)')
+
     # ── Services ──────────────────────────────────────────────────────────────
 
     def _svc_pause(self, _, response):
@@ -293,6 +363,230 @@ class NavigatorNode(Node):
         response.success = True
         response.message = 'Mission resumed'
         return response
+
+    # ── Obstacle geometry ─────────────────────────────────────────────────────
+
+    def _expand_polygon(self, polygon: list[tuple[float, float]],
+                        clearance_m: float) -> list[tuple[float, float]]:
+        """Radially expand polygon vertices away from the centroid by clearance_m."""
+        if len(polygon) < 3:
+            return list(polygon)
+        c_lat = sum(p[0] for p in polygon) / len(polygon)
+        c_lon = sum(p[1] for p in polygon) / len(polygon)
+        result = []
+        for (lat, lon) in polygon:
+            d = haversine(c_lat, c_lon, lat, lon)
+            if d < 0.01:
+                # Vertex at centroid — push north by clearance_m
+                result.append((lat + clearance_m / 111_320.0, lon))
+                continue
+            scale = (d + clearance_m) / d
+            result.append((c_lat + (lat - c_lat) * scale,
+                            c_lon + (lon - c_lon) * scale))
+        return result
+
+    def _seg_intersect_polygon(
+            self,
+            a_lat: float, a_lon: float,
+            b_lat: float, b_lon: float,
+            polygon: list[tuple[float, float]]) -> list[tuple[float, int]]:
+        """
+        Return sorted list of (t, edge_idx) where t ∈ (0, 1) is the position
+        along segment A→B at which it crosses polygon edge edge_idx.
+
+        Uses flat-earth Cartesian coordinates centred at the midpoint of A and B.
+        Valid for segments shorter than ~500 m.
+        """
+        if len(polygon) < 3:
+            return []
+        c_lat = (a_lat + b_lat) / 2.0
+        c_lon = (a_lon + b_lon) / 2.0
+        cos_lat = math.cos(math.radians(c_lat)) or 1e-9
+        m_lat = 111_320.0
+        m_lon = 111_320.0 * cos_lat
+
+        def xy(lat: float, lon: float) -> tuple[float, float]:
+            return (lon - c_lon) * m_lon, (lat - c_lat) * m_lat
+
+        ax, ay = xy(a_lat, a_lon)
+        bx, by = xy(b_lat, b_lon)
+        dx, dy = bx - ax, by - ay   # direction of A→B
+
+        hits: list[tuple[float, int]] = []
+        n = len(polygon)
+        for i in range(n):
+            cx, cy = xy(*polygon[i])
+            nx, ny = xy(*polygon[(i + 1) % n])
+            ex, ey = nx - cx, ny - cy   # direction of polygon edge i→(i+1)
+            rx, ry = cx - ax, cy - ay   # vector from A to edge start
+
+            # 2-D cross products: det = e×d, t = e×r / det, u = d×r / det
+            det = ex * dy - ey * dx
+            if abs(det) < 1e-9:
+                continue   # parallel
+            t = (ex * ry - ey * rx) / det
+            u = (dx * ry - dy * rx) / det
+            if 1e-6 < t < 1.0 - 1e-6 and 0.0 <= u <= 1.0:
+                hits.append((t, i))
+
+        hits.sort(key=lambda h: h[0])
+        return hits
+
+    def _bypass_verts(
+            self,
+            a_lat: float, a_lon: float,
+            b_lat: float, b_lon: float,
+            hits: list[tuple[float, int]],
+            polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        """
+        Given segment A→B and its sorted intersections with polygon, return a list
+        of (lat, lon) points that detour around the polygon boundary.
+
+        The detour includes:
+          - entry point (on polygon boundary, along A→B)
+          - polygon vertices walked CW or CCW around the boundary
+          - exit point (on polygon boundary, along A→B)
+
+        CW vs CCW is chosen to minimise total detour length.
+        Returns an empty list if fewer than 2 intersections (tangent or no crossing).
+        """
+        if len(hits) < 2:
+            return []
+
+        t_entry, entry_edge = hits[0]
+        t_exit,  exit_edge  = hits[-1]
+
+        def interp(t: float) -> tuple[float, float]:
+            return (a_lat + t * (b_lat - a_lat),
+                    a_lon + t * (b_lon - a_lon))
+
+        p_entry = interp(t_entry)
+        p_exit  = interp(t_exit)
+        n = len(polygon)
+
+        # CCW walk: polygon[(entry_edge+1)%n] → ... → polygon[exit_edge]
+        ccw_verts: list[tuple[float, float]] = []
+        idx = (entry_edge + 1) % n
+        for _ in range(n):
+            ccw_verts.append(polygon[idx])
+            if idx == exit_edge:
+                break
+            idx = (idx + 1) % n
+
+        # CW walk: polygon[entry_edge] → ... → polygon[(exit_edge+1)%n]
+        cw_verts: list[tuple[float, float]] = []
+        target = (exit_edge + 1) % n
+        idx = entry_edge
+        for _ in range(n):
+            cw_verts.append(polygon[idx])
+            if idx == target:
+                break
+            idx = (idx - 1 + n) % n
+
+        def path_len(pts: list[tuple[float, float]]) -> float:
+            total = 0.0
+            for k in range(len(pts) - 1):
+                total += haversine(pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1])
+            return total
+
+        ccw_path = [p_entry] + ccw_verts + [p_exit]
+        cw_path  = [p_entry] + cw_verts  + [p_exit]
+
+        return ccw_path if path_len(ccw_path) <= path_len(cw_path) else cw_path
+
+    def _reroute_path(self):
+        """
+        Rebuild _path and _path_s from _path_original, inserting bypass waypoints
+        around any expanded obstacle polygon that a path segment intersects.
+
+        Skipped if the rover is currently navigating autonomously (path_idx > 0
+        while armed and in AUTONOMOUS mode) to avoid disrupting an active mission.
+        One pass of rerouting is performed — multiple overlapping obstacle polygons
+        on a single segment are handled by processing the first-encountered polygon
+        and noting the known limitation for rare complex cases.
+        """
+        if self._mode == 'AUTONOMOUS' and self._armed and self._path_idx > 0:
+            self.get_logger().warn('Obstacle reroute skipped — rover is navigating')
+            return
+
+        if not self._path_original:
+            return
+
+        new_wps: list[MissionWaypoint] = []
+        new_bypass_indices: set[int]   = set()
+
+        def make_bypass_wp(lat: float, lon: float,
+                           ref_wp: MissionWaypoint) -> MissionWaypoint:
+            bp = MissionWaypoint()
+            bp.seq               = 0          # sentinel — filtered in _advance_path
+            bp.latitude          = lat
+            bp.longitude         = lon
+            bp.speed             = ref_wp.speed
+            bp.hold_secs         = 0.0
+            bp.acceptance_radius = self._accept_r
+            return bp
+
+        for wp in self._path_original:
+            if not new_wps:
+                new_wps.append(wp)
+                continue
+
+            prev     = new_wps[-1]
+            a_lat, a_lon = prev.latitude, prev.longitude
+            b_lat, b_lon = wp.latitude, wp.longitude
+
+            # Find the first polygon (by entry t) that this segment intersects
+            best_poly_idx = -1
+            best_hits: list[tuple[float, int]] = []
+            best_t_entry = 1.0
+
+            for poly_idx, poly in enumerate(self._expanded_polygons):
+                hits = self._seg_intersect_polygon(a_lat, a_lon, b_lat, b_lon, poly)
+                if len(hits) >= 2 and hits[0][0] < best_t_entry:
+                    best_poly_idx = poly_idx
+                    best_hits     = hits
+                    best_t_entry  = hits[0][0]
+
+            if best_poly_idx < 0:
+                # No intersection — keep original waypoint
+                new_wps.append(wp)
+                continue
+
+            # Insert bypass waypoints around best_poly
+            poly   = self._expanded_polygons[best_poly_idx]
+            bypass = self._bypass_verts(a_lat, a_lon, b_lat, b_lon, best_hits, poly)
+            for bp_lat, bp_lon in bypass:
+                idx = len(new_wps)
+                new_bypass_indices.add(idx)
+                new_wps.append(make_bypass_wp(bp_lat, bp_lon, wp))
+
+            new_wps.append(wp)
+
+        # Rebuild path arc-lengths from new_wps
+        new_s: list[float] = []
+        for k, wp in enumerate(new_wps):
+            if k == 0:
+                d = (haversine(self._path_origin_lat, self._path_origin_lon,
+                               wp.latitude, wp.longitude)
+                     if self._path_origin_lat is not None else 0.0)
+            else:
+                prev = new_wps[k - 1]
+                d    = new_s[-1] + haversine(prev.latitude, prev.longitude,
+                                             wp.latitude, wp.longitude)
+            new_s.append(d)
+
+        self._path          = new_wps
+        self._path_s        = new_s
+        self._bypass_indices = new_bypass_indices
+        self._path_idx      = 0
+        self._holding       = False
+        self._pivoting      = False
+
+        n_bypass = len(new_bypass_indices)
+        if n_bypass > 0:
+            self.get_logger().info(
+                f'Path rerouted: {len(self._path_original)} → {len(self._path)} wps '
+                f'({n_bypass} bypass inserted)')
 
     # ── Full-path geometry ────────────────────────────────────────────────────
 
@@ -465,8 +759,10 @@ class NavigatorNode(Node):
         if self._path_idx >= len(self._path):
             return
         wp = self._path[self._path_idx]
-        m  = Int32(); m.data = wp.seq
-        self.wp_pub.publish(m)
+        # Only publish real waypoint arrivals — bypass points are transparent to GQC.
+        if self._path_idx not in self._bypass_indices:
+            m = Int32(); m.data = wp.seq
+            self.wp_pub.publish(m)
         self._path_idx += 1
 
         if self._path_idx >= len(self._path):
@@ -476,8 +772,9 @@ class NavigatorNode(Node):
             self._publish_halt()
         else:
             nxt = self._path[self._path_idx]
-            self.get_logger().info(
-                f'Waypoint {wp.seq} reached — navigating to {nxt.seq}')
+            if self._path_idx - 1 not in self._bypass_indices:
+                self.get_logger().info(
+                    f'Waypoint {wp.seq} reached — navigating to {nxt.seq}')
 
     # ── Control loop ──────────────────────────────────────────────────────────
 
@@ -520,9 +817,11 @@ class NavigatorNode(Node):
         rlat, rlon  = self._center_pos()
         flat, flon  = self._front_pos()
 
-        # Pre-compute pivot need for this waypoint so approach and advance can use it.
-        turn_angle  = self._turn_angle_at(self._path_idx)
-        needs_pivot = (turn_angle >= self._pivot_threshold
+        # Bypass waypoints never trigger pivot turns — they are smooth throughpoints.
+        is_bypass   = self._path_idx in self._bypass_indices
+        turn_angle  = self._turn_angle_at(self._path_idx) if not is_bypass else 0.0
+        needs_pivot = (not is_bypass
+                       and turn_angle >= self._pivot_threshold
                        and self._path_idx < len(self._path) - 1)
 
         # ── Full-path nearest-point projection ───────────────────────────────
@@ -537,7 +836,7 @@ class NavigatorNode(Node):
         reached = dist_to_wp < accept or (not needs_pivot and s_nearest > wp_s + accept)
 
         if reached:
-            if wp.hold_secs > 0.0:
+            if not is_bypass and wp.hold_secs > 0.0:
                 self.get_logger().info(
                     f'Waypoint {wp.seq} reached — holding {wp.hold_secs:.1f} s')
                 self._holding  = True
@@ -553,7 +852,8 @@ class NavigatorNode(Node):
                     f'to {self._pivot_target_hdg:.0f}°')
                 self._publish_halt()
             else:
-                self.get_logger().info(f'Waypoint {wp.seq} reached ({dist_to_wp:.2f} m)')
+                if not is_bypass:
+                    self.get_logger().info(f'Waypoint {wp.seq} reached ({dist_to_wp:.2f} m)')
                 self._advance_path()
             return
 

@@ -94,6 +94,7 @@ ros_agri_rover/
 | rtk_status      | std_msgs/String                 | gps_driver     | mavlink_bridge             |
 | sensors         | agri_rover_interfaces/SensorData | sensor_node   | mavlink_bridge             |
 | mission         | agri_rover_interfaces/MissionWaypoint | mavlink_bridge | navigator         |
+| mission_fence   | std_msgs/String (JSON)          | mavlink_bridge | navigator          |
 
 ---
 
@@ -305,7 +306,7 @@ python tools/mission_uploader.py missions/field.csv --rover 1 --host 192.168.100
 |---------------------------------------------------|-------------------------------------------|
 | `ros2_ws/src/agri_rover_bringup/config/rover1_params.yaml` | Ports, IPs, speeds for RV1   |
 | `ros2_ws/src/agri_rover_bringup/config/rover2_params.yaml` | Ports, IPs, speeds for RV2   |
-| `ros2_ws/src/agri_rover_navigator/config/navigator_params.yaml` | Lookahead, speed limits |
+| `ros2_ws/src/agri_rover_navigator/config/navigator_params.yaml` | Lookahead, speed limits, `obstacle_clearance_m` |
 | `ros2_ws/src/agri_rover_video/config/gstreamer.yaml` | Camera source, resolution, bitrate |
 
 **YAML key format — critical:** Parameter YAML keys must use the **fully-qualified node name** including namespace, or ROS2 silently ignores them and nodes use code defaults. Example:
@@ -424,7 +425,17 @@ Two recording methods in PLANNER toolbar:
 - Monitors PPM CH5-CH8 (auxiliary switches) from incoming `RC_CHANNELS`; any channel change > 100 µs → appends `MissionAction.ServoCmd(servo, pwm)` immediately
 - Button label toggles `⏺ REC` ↔ `⏹ STOP`
 
-**UPLOAD** — sends DISARM (cmd 400, p1=0) × 3 at 100 ms intervals before `MISSION_COUNT` as a safety measure, then streams all items. If `recordedMission` contains any `ServoCmd` entries, calls `uploadRecordedMission()`; otherwise uses plain `uploadMission()`.
+**OBS button** — draws obstacle exclusion polygons:
+- Press OBS → enters drawing mode (button turns red, label changes to `✓ DONE`)
+- Tap the map to add vertices one at a time
+- Press DONE → polygon is closed (minimum 3 vertices) and rendered as a red semi-transparent overlay
+- Multiple polygons can be added before upload
+- CLEAR removes all obstacles
+
+**UPLOAD** — sends DISARM (cmd 400, p1=0) × 3 at 100 ms intervals before `MISSION_COUNT` as a safety measure, then streams all items.
+- If `obstaclePolygons` is non-empty: calls `uploadMissionWithObstacles()` — fence vertices (cmd=5003) are prepended before nav/servo items in a single `streamMission()` call.
+- Else if `recordedMission` contains `ServoCmd` entries: calls `uploadRecordedMission()`.
+- Otherwise: calls plain `uploadMission()`.
 
 ```kotlin
 sealed class MissionAction {
@@ -581,5 +592,5 @@ All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
 - `firmware/*/main.cpp`: SX1278 driver is complete but needs `pico_sdk_import.cmake` copied from `$PICO_SDK_PATH/external/`
 - `ppm_tx.pio`: slave uses SM0 (not SM1) — one less state machine needed vs master
 - Android GQC: RTSP dual video screen, settings dialog, STATUSTEXT log screen still TODO (see android/AgriRoverGQC/README.md)
-- Navigator: no obstacle avoidance
+- Navigator obstacle avoidance: single-pass rerouting — a segment that intersects multiple non-adjacent polygons is rerouted around the first one only; subsequent polygons are handled in the next segment. Complex overlapping obstacle layouts may require manual mission adjustment.
 - DO_SET_SERVO in missions: applied at upload time, re-published continuously by navigator at 25 Hz. For precise per-waypoint timing during replay (servo fires when rover physically reaches GPS position), the navigator would need to sequence through mixed mission items (requires MissionWaypoint interface change or a new ServoEvent topic).

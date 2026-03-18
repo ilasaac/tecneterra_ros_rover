@@ -92,6 +92,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     // Last PPM µs values for aux channels (PPM CH5–CH8, logical indices 4–7).
     // Initialised to 1500 (neutral) and updated when a >100 µs change is detected.
     private val lastAuxPwm = IntArray(4) { 1500 }
+
+    // --- OBSTACLE DRAWING ---
+    private var isDrawingObstacle = false
+    private val currentObstacleDraft = mutableListOf<LatLng>()
+    private val obstaclePolygons     = mutableListOf<MutableList<LatLng>>()
+    private val obstacleOverlays     = mutableListOf<Polygon>()
+    private var draftPolyline: Polyline? = null
+    private lateinit var btnObs: Button
     // Stationary hold tracking: last position where a waypoint was saved, and
     // accumulated stationary time. When rover moves again, the hold time is
     // written into the last recorded waypoint so the navigator waits there.
@@ -257,6 +265,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnEStop              = findViewById(R.id.btnEStop)
         btnRec                = findViewById(R.id.btnRec)
         btnUpload             = findViewById(R.id.btnUpload)
+        btnObs                = findViewById(R.id.btnObs)
         btnStart              = findViewById(R.id.btnStart)
         btnStop               = findViewById(R.id.btnStop)
         btnClear              = findViewById(R.id.btnClear)
@@ -320,6 +329,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             if (isRecording) stopRecording() else startRecording()
         }
 
+        // OBS — toggles obstacle polygon drawing mode
+        btnObs.setOnClickListener { toggleObstacleDrawing() }
+
         // Map Controls
         btnLayers.setOnClickListener { toggleMapLayer() }
         btnCenter.setOnClickListener {
@@ -351,14 +363,23 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             redrawRoverMissions()
 
             val servoCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
-            if (servoCount > 0) {
-                // Recorded mission: mixed waypoints + DO_SET_SERVO commands
+            val actions: List<MissionAction> = if (servoCount > 0) recordedMission
+                else routePoints.map { MissionAction.Waypoint(it.latitude, it.longitude) }
+
+            if (obstaclePolygons.isNotEmpty()) {
+                val obsLatLon = obstaclePolygons.map { poly ->
+                    poly.map { Pair(it.latitude, it.longitude) }
+                }
+                roverManager.uploadMissionWithObstacles(selectedRoverId, actions, obsLatLon)
+                Toast.makeText(this,
+                    "Uploading ${routePoints.size} WPs + ${obstaclePolygons.size} obstacle(s) to Rover $selectedRoverId…",
+                    Toast.LENGTH_SHORT).show()
+            } else if (servoCount > 0) {
                 roverManager.uploadRecordedMission(selectedRoverId, recordedMission)
                 Toast.makeText(this,
                     "Uploading ${routePoints.size} WPs + $servoCount servo cmds to Rover $selectedRoverId…",
                     Toast.LENGTH_SHORT).show()
             } else {
-                // Waypoints-only path (tap-draw or ADD button, no servo changes)
                 roverManager.uploadMission(selectedRoverId,
                     routePoints.map { Pair(it.latitude, it.longitude) })
                 Toast.makeText(this,
@@ -444,6 +465,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         pendingHoldSecs = 0f
         roverMissions.remove(selectedRoverId)
         roverMissionVisible.remove(selectedRoverId)
+        // Reset obstacle drawing state
+        isDrawingObstacle = false
+        currentObstacleDraft.clear()
+        draftPolyline?.remove()
+        draftPolyline = null
+        obstaclePolygons.clear()
+        obstacleOverlays.forEach { it.remove() }
+        obstacleOverlays.clear()
+        btnObs.text = "OBS"
+        btnObs.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#FF9800"))
         redrawMap()
         redrawRoverMissions()
         roverManager.uploadMission(selectedRoverId, emptyList())
@@ -597,6 +628,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
         }
 
+        // Obstacle drawing: tap map to add vertices when OBS mode is active
+        map.setOnMapClickListener { latLng ->
+            if (currentMode == AppMode.PLANNER && isDrawingObstacle) {
+                currentObstacleDraft.add(latLng)
+                redrawObstacleDraft()
+            }
+        }
     }
 
     // ─── Map drawing ─────────────────────────────────────────────────────────
@@ -684,6 +722,64 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
+    // ─── Obstacle drawing ─────────────────────────────────────────────────────
+
+    /** Toggle obstacle drawing mode. First press enters drawing; second press finalises. */
+    private fun toggleObstacleDrawing() {
+        if (!isDrawingObstacle) {
+            isDrawingObstacle = true
+            currentObstacleDraft.clear()
+            btnObs.text = "✓ DONE"
+            btnObs.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#E53935"))
+            Toast.makeText(this, "Tap map to add obstacle vertices, press DONE to close",
+                Toast.LENGTH_SHORT).show()
+        } else {
+            if (currentObstacleDraft.size >= 3) {
+                obstaclePolygons.add(ArrayList(currentObstacleDraft))
+                currentObstacleDraft.clear()
+                draftPolyline?.remove()
+                draftPolyline = null
+                redrawObstacleOverlays()
+                Toast.makeText(this,
+                    "Obstacle added (${obstaclePolygons.size} total)",
+                    Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Need at least 3 vertices", Toast.LENGTH_SHORT).show()
+            }
+            isDrawingObstacle = false
+            btnObs.text = "OBS"
+            btnObs.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#FF9800"))
+        }
+    }
+
+    /** Redraw the in-progress obstacle draft as a closed polyline. */
+    private fun redrawObstacleDraft() {
+        if (!::map.isInitialized) return
+        draftPolyline?.remove()
+        if (currentObstacleDraft.size >= 2) {
+            val pts = ArrayList(currentObstacleDraft).also { it.add(currentObstacleDraft[0]) }
+            draftPolyline = map.addPolyline(
+                PolylineOptions().addAll(pts).width(5f)
+                    .color(Color.parseColor("#FF5722")))
+        }
+    }
+
+    /** Redraw all finalised obstacle polygons as red semi-transparent Google Maps Polygons. */
+    private fun redrawObstacleOverlays() {
+        if (!::map.isInitialized) return
+        obstacleOverlays.forEach { it.remove() }
+        obstacleOverlays.clear()
+        for (poly in obstaclePolygons) {
+            if (poly.size >= 3) {
+                obstacleOverlays.add(map.addPolygon(
+                    PolygonOptions().addAll(poly)
+                        .strokeColor(Color.parseColor("#F44336"))
+                        .strokeWidth(4f)
+                        .fillColor(Color.argb(64, 244, 67, 54))))
+            }
+        }
+    }
+
     // ─── Helpers ──────────────────────────────────────────────────────────────
 
     private fun updateFollowButtonState() {
@@ -719,6 +815,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun setMode(mode: AppMode) {
+        // Discard any in-progress obstacle draft when leaving PLANNER mode
+        if (mode != AppMode.PLANNER && isDrawingObstacle) {
+            isDrawingObstacle = false
+            currentObstacleDraft.clear()
+            draftPolyline?.remove()
+            draftPolyline = null
+            btnObs.text = "OBS"
+            btnObs.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#FF9800"))
+        }
         currentMode = mode
         touchOverlay.visibility           = View.GONE
         plannerToolbar.visibility         = View.GONE

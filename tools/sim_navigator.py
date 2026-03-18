@@ -1,13 +1,17 @@
 """
 tools/sim_navigator.py — Software-in-the-loop simulation of the full-path Stanley navigator.
 
-Replicates navigator.py (full-path Stanley + pivot turns) in pure Python with no ROS2
-dependency.  Uses the dead-reckoning physics from simulator.py's RoverState.
+Replicates navigator.py (full-path Stanley + pivot turns + obstacle avoidance) in pure
+Python with no ROS2 dependency.  Uses the dead-reckoning physics from simulator.py's
+RoverState.
 
 Importable by monitor.py for automatic pre-mission simulation, or run standalone:
 
   python tools/sim_navigator.py --lat 20.727715 --lon -103.566782 --heading 90 \\
          --waypoints missions/field.csv
+
+  # With obstacle polygons (JSON file: [[lat,lon],...] per polygon):
+  python tools/sim_navigator.py ... --obstacles missions/obstacles.json
 
 The navigator parameters default to the same values as navigator_params.yaml.
 Physical parameters (wheelbase, turn_scale) can be overridden via DEFAULT_PHYS or
@@ -18,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import os
 import sys
@@ -45,6 +50,7 @@ DEFAULT_NAV: dict = {
     'stanley_softening':         0.3,
     'pivot_threshold':           60.0,
     'pivot_approach_dist':       4.0,
+    'obstacle_clearance_m':      1.0,
     'control_rate':              25.0,
     'max_timeout':               300.0,  # simulation hard stop (seconds)
 }
@@ -78,6 +84,7 @@ class SimResult:
     avg_xte:            float
     total_steps:        int
     complete:           bool   # True if all waypoints were reached within timeout
+    obstacle_polygons:  list   # [[(lat,lon),...], ...] polygons used (may be expanded)
 
 
 # ── Math helpers ──────────────────────────────────────────────────────────────
@@ -114,6 +121,158 @@ def _front_pos(rover: RoverState, baseline_m: float) -> tuple[float, float]:
     cos_lat = math.cos(lat_r) or 1e-9
     return (rover.lat + (baseline_m * math.cos(rover.heading_rad)) / 111_320.0,
             rover.lon + (baseline_m * math.sin(rover.heading_rad)) / (111_320.0 * cos_lat))
+
+
+# ── Obstacle geometry (mirrors navigator.py) ──────────────────────────────────
+
+def _expand_polygon(polygon: list[tuple[float, float]],
+                    clearance_m: float) -> list[tuple[float, float]]:
+    """Radially expand polygon vertices away from the centroid by clearance_m."""
+    if len(polygon) < 3:
+        return list(polygon)
+    c_lat = sum(p[0] for p in polygon) / len(polygon)
+    c_lon = sum(p[1] for p in polygon) / len(polygon)
+    result = []
+    for (lat, lon) in polygon:
+        d = _haversine(c_lat, c_lon, lat, lon)
+        if d < 0.01:
+            result.append((lat + clearance_m / 111_320.0, lon))
+            continue
+        scale = (d + clearance_m) / d
+        result.append((c_lat + (lat - c_lat) * scale,
+                        c_lon + (lon - c_lon) * scale))
+    return result
+
+
+def _seg_intersect_polygon(
+        a_lat: float, a_lon: float,
+        b_lat: float, b_lon: float,
+        polygon: list[tuple[float, float]]) -> list[tuple[float, int]]:
+    """Return sorted (t, edge_idx) intersections of segment A→B with polygon boundary."""
+    if len(polygon) < 3:
+        return []
+    c_lat = (a_lat + b_lat) / 2.0
+    c_lon = (a_lon + b_lon) / 2.0
+    cos_lat = math.cos(math.radians(c_lat)) or 1e-9
+    m_lat = 111_320.0
+    m_lon = 111_320.0 * cos_lat
+
+    def xy(lat: float, lon: float) -> tuple[float, float]:
+        return (lon - c_lon) * m_lon, (lat - c_lat) * m_lat
+
+    ax, ay = xy(a_lat, a_lon)
+    bx, by = xy(b_lat, b_lon)
+    dx, dy = bx - ax, by - ay
+
+    hits: list[tuple[float, int]] = []
+    n = len(polygon)
+    for i in range(n):
+        cx, cy = xy(*polygon[i])
+        nx, ny = xy(*polygon[(i + 1) % n])
+        ex, ey = nx - cx, ny - cy
+        rx, ry = cx - ax, cy - ay
+        det = ex * dy - ey * dx
+        if abs(det) < 1e-9:
+            continue
+        t = (ex * ry - ey * rx) / det
+        u = (dx * ry - dy * rx) / det
+        if 1e-6 < t < 1.0 - 1e-6 and 0.0 <= u <= 1.0:
+            hits.append((t, i))
+    hits.sort(key=lambda h: h[0])
+    return hits
+
+
+def _bypass_verts(
+        a_lat: float, a_lon: float,
+        b_lat: float, b_lon: float,
+        hits: list[tuple[float, int]],
+        polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Return bypass (lat, lon) points that detour around the polygon boundary."""
+    if len(hits) < 2:
+        return []
+    t_entry, entry_edge = hits[0]
+    t_exit,  exit_edge  = hits[-1]
+
+    def interp(t: float) -> tuple[float, float]:
+        return (a_lat + t * (b_lat - a_lat), a_lon + t * (b_lon - a_lon))
+
+    p_entry = interp(t_entry)
+    p_exit  = interp(t_exit)
+    n = len(polygon)
+
+    ccw: list[tuple[float, float]] = []
+    idx = (entry_edge + 1) % n
+    for _ in range(n):
+        ccw.append(polygon[idx])
+        if idx == exit_edge:
+            break
+        idx = (idx + 1) % n
+
+    cw: list[tuple[float, float]] = []
+    target = (exit_edge + 1) % n
+    idx = entry_edge
+    for _ in range(n):
+        cw.append(polygon[idx])
+        if idx == target:
+            break
+        idx = (idx - 1 + n) % n
+
+    def path_len(pts: list[tuple[float, float]]) -> float:
+        return sum(_haversine(pts[k][0], pts[k][1], pts[k+1][0], pts[k+1][1])
+                   for k in range(len(pts) - 1))
+
+    ccw_path = [p_entry] + ccw + [p_exit]
+    cw_path  = [p_entry] + cw  + [p_exit]
+    return ccw_path if path_len(ccw_path) <= path_len(cw_path) else cw_path
+
+
+def _reroute_waypoints(
+        waypoints: list[SimWaypoint],
+        expanded_polygons: list[list[tuple[float, float]]],
+        origin_lat: float, origin_lon: float) -> list[SimWaypoint]:
+    """
+    Return a new waypoint list with bypass points inserted around obstacles.
+    Mirrors navigator.py _reroute_path() logic.
+    """
+    if not waypoints or not expanded_polygons:
+        return list(waypoints)
+
+    new_wps: list[SimWaypoint] = []
+    seq_counter = [max(w.seq for w in waypoints) + 1]  # synthetic seq for bypass wps
+
+    def make_bypass(lat: float, lon: float, ref: SimWaypoint) -> SimWaypoint:
+        s = seq_counter[0]; seq_counter[0] += 1
+        return SimWaypoint(seq=s, lat=lat, lon=lon, speed=ref.speed)
+
+    for wp in waypoints:
+        if not new_wps:
+            new_wps.append(wp)
+            continue
+        prev = new_wps[-1]
+        a_lat, a_lon = prev.lat, prev.lon
+        b_lat, b_lon = wp.lat, wp.lon
+
+        best_poly_idx = -1
+        best_hits: list[tuple[float, int]] = []
+        best_t = 1.0
+        for pi, poly in enumerate(expanded_polygons):
+            hits = _seg_intersect_polygon(a_lat, a_lon, b_lat, b_lon, poly)
+            if len(hits) >= 2 and hits[0][0] < best_t:
+                best_poly_idx = pi
+                best_hits     = hits
+                best_t        = hits[0][0]
+
+        if best_poly_idx < 0:
+            new_wps.append(wp)
+            continue
+
+        bypass = _bypass_verts(a_lat, a_lon, b_lat, b_lon,
+                               best_hits, expanded_polygons[best_poly_idx])
+        for blat, blon in bypass:
+            new_wps.append(make_bypass(blat, blon, wp))
+        new_wps.append(wp)
+
+    return new_wps
 
 
 # ── Path navigator (mirrors navigator.py) ────────────────────────────────────
@@ -359,7 +518,8 @@ def simulate(waypoints:       list[SimWaypoint],
              start_lon:       float,
              start_heading:   float,
              nav_params:      dict | None = None,
-             phys_params:     dict | None = None) -> SimResult:
+             phys_params:     dict | None = None,
+             obstacles:       list[list[list[float]]] | None = None) -> SimResult:
     """
     Run a software-in-the-loop simulation of the rover following *waypoints*.
 
@@ -370,14 +530,30 @@ def simulate(waypoints:       list[SimWaypoint],
     start_heading : rover starting heading (degrees from north)
     nav_params    : override any key in DEFAULT_NAV
     phys_params   : override any key in DEFAULT_PHYS
+    obstacles     : list of polygons [[[lat,lon],...], ...] — raw (unexpanded).
+                    If provided, each polygon is expanded by nav_params['obstacle_clearance_m']
+                    and bypass waypoints are inserted into the path automatically.
     """
     nav   = {**DEFAULT_NAV,  **(nav_params  or {})}
     phys  = {**DEFAULT_PHYS, **(phys_params or {})}
     dt    = 1.0 / nav['control_rate']
     bm    = phys['baseline_m']
 
+    # Build expanded polygons and rerouted waypoints if obstacles provided
+    expanded_polygons: list[list[tuple[float, float]]] = []
+    effective_wps = list(waypoints)
+    if obstacles:
+        clearance = nav['obstacle_clearance_m']
+        for poly_raw in obstacles:
+            poly = [(float(v[0]), float(v[1])) for v in poly_raw]
+            if len(poly) >= 3:
+                expanded_polygons.append(_expand_polygon(poly, clearance))
+        if expanded_polygons:
+            effective_wps = _reroute_waypoints(
+                waypoints, expanded_polygons, start_lat, start_lon)
+
     rover  = RoverState(start_lat, start_lon, start_heading)
-    path_n = PathNavigator(waypoints, start_lat, start_lon, nav)
+    path_n = PathNavigator(effective_wps, start_lat, start_lon, nav)
 
     result_path: list[tuple[float, float]] = [_center_pos(rover, bm)]
     xte_log:     list[float]               = []
@@ -392,9 +568,11 @@ def simulate(waypoints:       list[SimWaypoint],
         flat, flon = _front_pos(rover, bm)
         thr, steer, best_seg, done = path_n.step(rlat, rlon, flat, flon,
                                                   rover.heading_deg, t_mono)
-        # Track newly reached waypoints
-        while prev_idx < path_n.path_idx and prev_idx < len(waypoints):
-            wps_reached.append(waypoints[prev_idx].seq)
+        # Track newly reached waypoints (only original, not synthetic bypass)
+        while prev_idx < path_n.path_idx and prev_idx < len(effective_wps):
+            wp = effective_wps[prev_idx]
+            if wp.seq <= max(w.seq for w in waypoints):
+                wps_reached.append(wp.seq)
             prev_idx += 1
 
         if done:
@@ -423,7 +601,8 @@ def simulate(waypoints:       list[SimWaypoint],
         max_xte           = round(max_xte, 4),
         avg_xte           = round(avg_xte, 4),
         total_steps       = step + 1,
-        complete          = path_n.path_idx >= len(waypoints),
+        complete          = path_n.path_idx >= len(effective_wps),
+        obstacle_polygons = [list(poly) for poly in expanded_polygons],
     )
 
 
@@ -443,6 +622,15 @@ def _load_csv(path: str) -> list[SimWaypoint]:
     return wps
 
 
+def _load_obstacles(path: str) -> list[list[list[float]]]:
+    """Load obstacle polygons from a JSON file: [[[lat,lon],...], ...]"""
+    with open(path) as f:
+        data = json.load(f)
+    if isinstance(data, list):
+        return data
+    return data.get('polygons', [])
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='Simulate rover mission path')
     ap.add_argument('--lat',         type=float, required=True, help='Start latitude')
@@ -450,15 +638,23 @@ if __name__ == '__main__':
     ap.add_argument('--heading',     type=float, default=0.0,   help='Start heading (deg N)')
     ap.add_argument('--wheelbase',   type=float, default=DEFAULT_PHYS['wheelbase'])
     ap.add_argument('--turn-scale',  type=float, default=DEFAULT_PHYS['turn_scale'])
+    ap.add_argument('--obstacles',   type=str,   default=None,
+                    help='JSON file with obstacle polygons [[[lat,lon],...],...]')
     ap.add_argument('waypoints',     help='CSV file with lat,lon[,speed,hold_secs] columns')
     args = ap.parse_args()
 
     wps = _load_csv(args.waypoints)
     print(f'Loaded {len(wps)} waypoints')
 
+    obstacles = _load_obstacles(args.obstacles) if args.obstacles else None
+    if obstacles:
+        print(f'Loaded {len(obstacles)} obstacle polygon(s)')
+
     result = simulate(wps, args.lat, args.lon, args.heading,
+                      nav_params={},
                       phys_params={'wheelbase': args.wheelbase,
-                                   'turn_scale': args.turn_scale})
+                                   'turn_scale': args.turn_scale},
+                      obstacles=obstacles)
 
     print(f'Complete : {result.complete}  ({result.total_steps} steps, '
           f'{result.total_steps / DEFAULT_NAV["control_rate"]:.1f} s simulated)')
@@ -467,3 +663,5 @@ if __name__ == '__main__':
     print(f'XTE max  : {result.max_xte:.3f} m')
     print(f'XTE avg  : {result.avg_xte:.3f} m')
     print(f'Path pts : {len(result.path)}')
+    if result.obstacle_polygons:
+        print(f'Obstacles: {len(result.obstacle_polygons)} polygon(s) (expanded)')

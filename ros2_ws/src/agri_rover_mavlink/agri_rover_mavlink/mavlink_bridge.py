@@ -24,6 +24,7 @@ MAVLink addressing:
 
 from __future__ import annotations
 
+import json
 import os
 import socket as _socket
 import threading
@@ -96,6 +97,9 @@ class MavlinkBridgeNode(Node):
         self._xte         = 0.0   # cross-track error from navigator (metres)
         self._mission_buf: list[MissionWaypoint] = []
         self._mission_count = 0
+        # Fence polygon buffer: list of (lat, lon, vertex_count) for cmd=5003 items.
+        # Cleared on MISSION_COUNT; published as ~/mission_fence JSON when mission completes.
+        self._fence_buf: list[tuple[float, float, int]] = []
         # Servo state for PPM CH5-CH8 (servo numbers 5-8 → channel indices 4-7).
         # Updated by DO_SET_SERVO commands; forwarded to rp2040_bridge via cmd_override.
         self._servo_pwm = {5: 1500, 6: 1500, 7: 1500, 8: 1500}
@@ -125,6 +129,7 @@ class MavlinkBridgeNode(Node):
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
         self.cmd_pub           = self.create_publisher(RCInput,          'cmd_override',   10)
         self.mission_pub       = self.create_publisher(MissionWaypoint,  'mission',        10)
+        self.fence_pub         = self.create_publisher(String,           'mission_fence',  10)
         self.servo_pub         = self.create_publisher(RCInput,          'servo_state',    10)
         self.mode_pub          = self.create_publisher(String,           'mode',           10)
         self.armed_pub         = self.create_publisher(Bool,             'armed',          10)
@@ -331,6 +336,7 @@ class MavlinkBridgeNode(Node):
                     with self._mission_lock:
                         self._mission_count      = msg.count
                         self._mission_buf        = []
+                        self._fence_buf          = []   # clear fence data for new mission
                         self._mission_src        = (msg.get_srcSystem(), msg.get_srcComponent())
                         self._mission_expect_seq = 0
                         self._mission_last_req_t = time.monotonic()
@@ -382,6 +388,31 @@ class MavlinkBridgeNode(Node):
             return
         self.get_logger().info(f'Retrying MISSION_REQUEST_INT seq={seq} ({elapsed*1000:.0f}ms)')
         self._send_mission_request(seq)
+
+    def _parse_fence_polygons(self) -> list[list[list[float]]]:
+        """
+        Parse _fence_buf (list of (lat, lon, vertex_count)) into a list of polygons.
+
+        Each polygon is defined by consecutive items with the same vertex_count.
+        When vertex_count consecutive vertices have been collected, a polygon is closed
+        and the next vertex starts a new polygon.
+
+        Returns: [[[lat, lon], ...], ...] — JSON-serialisable list of polygons.
+        """
+        polygons: list[list[list[float]]] = []
+        current: list[list[float]] = []
+        expected = 0
+        for (lat, lon, vertex_count) in self._fence_buf:
+            if expected == 0:
+                expected = vertex_count
+            current.append([lat, lon])
+            if len(current) >= expected:
+                polygons.append(current)
+                current  = []
+                expected = 0
+        if current:
+            polygons.append(current)
+        return polygons
 
     def _apply_servo_cmd(self, servo: int, pwm: int):
         """Apply a DO_SET_SERVO command: update servo state and publish to servo_state.
@@ -463,6 +494,10 @@ class MavlinkBridgeNode(Node):
 
         if msg.command == 183:  # MAV_CMD_DO_SET_SERVO
             self._apply_servo_cmd(int(msg.param1), int(msg.param2))
+        elif msg.command == 5003:  # MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION
+            # Collect fence polygon vertices — published as ~/mission_fence JSON
+            # when the full mission has been received.
+            self._fence_buf.append((msg.x * 1e-7, msg.y * 1e-7, int(msg.param1)))
         else:
             wp = MissionWaypoint()
             wp.seq              = msg.seq
@@ -496,7 +531,14 @@ class MavlinkBridgeNode(Node):
                 self.get_logger().warn(f'mission_ack send error: {e}')
             self.get_logger().info(
                 f'Mission received: {self._mission_count} items '
-                f'({len(self._mission_buf)} waypoints)')
+                f'({len(self._mission_buf)} waypoints, {len(self._fence_buf)} fence vertices)')
+            # Publish fence polygons to navigator (and to monitor via broadcast).
+            if self._fence_buf:
+                polys = self._parse_fence_polygons()
+                if polys:
+                    fence_msg = String()
+                    fence_msg.data = json.dumps({'polygons': polys})
+                    self.fence_pub.publish(fence_msg)
 
 
 def main(args=None):

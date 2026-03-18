@@ -242,6 +242,15 @@ Servo channels (PPM CH5-CH8):
 - `_publish_cmd()` always includes `_servo_ch` in channels 4-7 of every `cmd_override` message.
 - Servo state is continuously re-sent at 25 Hz — an RP2040 reset does not lose servo state.
 
+**Obstacle avoidance (pre-mission reroute):**
+- `mavlink_bridge` buffers `MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION` (cmd=5003) items into `_fence_buf`.  On MISSION_ACK, if `_fence_buf` is non-empty it is parsed into polygon lists and published on the `mission_fence` topic as a JSON string `{"polygons": [[[lat, lon], ...], ...]}`.
+- Navigator subscribes to `mission_fence` (String) via `_cb_mission_fence()`.  On receipt it calls `_expand_polygon()` (radially expand each polygon by `obstacle_clearance_m` outward from the centroid) and stores the expanded set in `self._expanded_polygons`.
+- `_reroute_path()` is idempotent: always rebuilds `self._path` from `self._path_original` (immutable copy set on first mission item). For each segment `A→B`, `_seg_intersect_polygon()` checks for crossings using flat-earth Cramer's rule.  If a segment intersects a polygon the `_bypass_verts()` helper inserts entry point → CCW or CW vertex walk (shorter arc) → exit point as synthetic bypass waypoints.  Synthetic indices are tracked in `_bypass_indices`.
+- `_reroute_path()` is called from both `_cb_mission()` (if obstacles are already loaded) and `_cb_mission_fence()` (if the mission is already loaded) — handles either arrival order.
+- During navigation, `_advance_path()` skips publishing `wp_active` for bypass-index waypoints (transparent to GQC), and `_control_loop()` skips pivot-turn logic for them.
+- `_reroute_path()` is a no-op while the rover is actively navigating (`_mode == AUTONOMOUS` and `_armed` and `_path_idx > 0`).
+- Parameter `obstacle_clearance_m` (default 1.0 m) in `navigator_params.yaml`.
+
 ## gps_driver — NMEA parsing
 
 Reads two serial ports in background threads. Publishes at 5 Hz via timer.

@@ -264,6 +264,31 @@ python3 tools/rtk_forwarder.py ... --log-file /tmp/rtk.log
 | ~/rtk_status       | String          | gps_driver    | mavlink_bridge        |
 | ~/sensors          | SensorData      | sensor_node   | mavlink_bridge        |
 | ~/mission          | MissionWaypoint | mavlink_bridge| navigator             |
+| ~/mission_fence    | String (JSON)   | mavlink_bridge| navigator             |
+
+## Obstacle Avoidance
+
+The navigator supports **pre-mission obstacle avoidance** using exclusion polygons drawn in the GQC app.
+
+### Workflow
+
+1. In the Android GQC **PLANNER** mode, draw route waypoints as normal.
+2. Press **OBS** → tap the map to define obstacle polygon vertices → press **DONE** to close the polygon. Repeat for more obstacles.
+3. Press **UPLOAD** — fence vertices (MAVLink cmd=5003) are prepended to the mission and sent in a single upload.
+4. Press **START** to arm and begin navigation.
+
+The navigator pre-processes obstacles before the rover moves:
+- Each polygon is expanded radially outward by `obstacle_clearance_m` (default 1.0 m) from its centroid.
+- For each mission segment that intersects an expanded polygon, synthetic bypass waypoints are inserted around the polygon (shorter arc, CCW or CW).
+- Bypass waypoints are transparent to GQC — `wp_active` is only published for real mission waypoints.
+
+**Key parameter:** `obstacle_clearance_m: 1.0` in `navigator_params.yaml` — increase for wider buffer, decrease to allow tighter passes.
+
+**Limitation:** single-pass rerouting. A segment crossing two separate polygons is rerouted around the first; the second is handled in subsequent segments. Complex overlapping obstacle layouts may need manual mission adjustment.
+
+### Simulation
+
+`tools/monitor.py` renders obstacle polygons as red semi-transparent overlays on the Leaflet map. The SIL simulation (`sim_navigator.py`) also applies the same rerouting so the simulated path matches what the real navigator will do.
 
 ## MAVLink IDs
 

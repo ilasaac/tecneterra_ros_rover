@@ -312,6 +312,74 @@ class RoverPositionManager(
     }
 
     /**
+     * Upload a mission that includes obstacle fence polygons.
+     *
+     * Fence vertices (MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION, cmd=5003) are prepended
+     * before navigation items so the navigator can extract them when the mission upload
+     * completes.  Each vertex in a polygon becomes one MISSION_ITEM_INT with:
+     *   param1 = total vertices in this polygon  (so the receiver can reconstruct it)
+     *   x      = latitude  × 1e7
+     *   y      = longitude × 1e7
+     *
+     * @param actions   Full mission sequence (Waypoint + ServoCmd interleaved, same as uploadRecordedMission)
+     * @param obstacles List of polygons, each polygon is a list of (lat, lon) pairs
+     */
+    fun uploadMissionWithObstacles(
+        sysId: Int,
+        actions: List<MissionAction>,
+        obstacles: List<List<Pair<Double, Double>>>,
+    ) {
+        scope.launch {
+            val items = mutableListOf<MissionItemInt>()
+
+            // Fence items first (cmd=5003)
+            for (poly in obstacles) {
+                if (poly.size < 3) continue
+                for ((lat, lon) in poly) {
+                    items.add(MissionItemInt.builder()
+                        .seq(items.size).targetSystem(sysId).targetComponent(1)
+                        .frame(MavFrame.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT)
+                        .command(EnumValue.create(MavCmd::class.java, 5003))
+                        .current(0).autocontinue(1)
+                        .param1(poly.size.toFloat()).param2(0f).param3(0f).param4(0f)
+                        .x((lat * 1e7).toInt()).y((lon * 1e7).toInt()).z(0f)
+                        .build())
+                }
+            }
+
+            // Navigation / servo items
+            var firstNavWp = true
+            for (action in actions) {
+                when (action) {
+                    is MissionAction.Waypoint -> {
+                        val isCurrent = if (firstNavWp) { firstNavWp = false; 1 } else 0
+                        items.add(MissionItemInt.builder()
+                            .seq(items.size).targetSystem(sysId).targetComponent(1)
+                            .frame(MavFrame.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT)
+                            .command(MavCmd.MAV_CMD_NAV_WAYPOINT)
+                            .current(isCurrent).autocontinue(1)
+                            .x((action.lat * 1e7).toInt()).y((action.lon * 1e7).toInt())
+                            .z(action.speed).param1(action.holdSecs).param2(0f).param3(0f).param4(0f)
+                            .build())
+                    }
+                    is MissionAction.ServoCmd -> {
+                        items.add(MissionItemInt.builder()
+                            .seq(items.size).targetSystem(sysId).targetComponent(1)
+                            .frame(MavFrame.MAV_FRAME_MISSION)
+                            .command(MavCmd.MAV_CMD_DO_SET_SERVO)
+                            .current(0).autocontinue(1)
+                            .param1(action.servo.toFloat()).param2(action.pwm.toFloat())
+                            .param3(0f).param4(0f).x(0).y(0).z(0f)
+                            .build())
+                    }
+                }
+            }
+
+            streamMission(sysId, items)
+        }
+    }
+
+    /**
      * Streaming mission upload: disarm rover, send MISSION_COUNT, then push all items
      * immediately with a small inter-packet gap.  The rover accepts items as they arrive
      * and only falls back to REQUEST_INT handshake (via its retry timer) for missed items.

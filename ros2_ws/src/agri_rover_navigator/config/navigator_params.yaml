@@ -49,3 +49,9 @@ navigator:
     #   rover switches from path-lookahead to direct-to-waypoint aiming and begins
     #   slowing to min_speed. Ensures precise arrival at the turn point.
     pivot_approach_dist: 4.0
+
+    # obstacle_clearance_m (metres): radial buffer added around each obstacle polygon
+    #   when rerouting the mission path.  The rover's bypass path is at least this
+    #   distance from every obstacle vertex.  1.0 m is a safe default for a 0.5 m
+    #   rover body when RTK precision is ~2 cm.
+    obstacle_clearance_m: 1.0
