@@ -115,10 +115,19 @@ class RoverPositionManager(
             try {
                 val wm = appCtx.getSystemService(Context.WIFI_SERVICE) as? WifiManager
                     ?: return@let
-                @Suppress("DEPRECATION")
-                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AgriRover:UDP")
+                // WIFI_MODE_FULL_LOW_LATENCY (API 29) is more aggressive than HIGH_PERF
+                // and still effective on Android 12+. HIGH_PERF was deprecated in API 29
+                // and silently does less on newer devices. LOW_LATENCY explicitly requests
+                // the AP not to buffer packets, cutting per-item latency from ~100ms to ~1ms.
+                val lockMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wm.createWifiLock(lockMode, "AgriRover:UDP")
                     .also { it.acquire() }
-                Log.i("RoverMgr", "WiFi high-perf lock acquired")
+                Log.i("RoverMgr", "WiFi lock acquired (mode=$lockMode)")
             } catch (e: Exception) {
                 Log.w("RoverMgr", "WiFi lock unavailable: ${e.message}")
             }

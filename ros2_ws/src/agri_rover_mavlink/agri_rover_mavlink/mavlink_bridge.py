@@ -177,10 +177,17 @@ class MavlinkBridgeNode(Node):
         return int(time.time() * 1000) - self._boot_ms
 
     def _send(self, msg):
-        """Send a pre-packed MAVLink message to GQC via UDP."""
+        """Send a pre-packed MAVLink message to GQC via UDP.
+
+        Uses unicast once the GQC IP is known (discovered from first inbound packet).
+        Falls back to broadcast so GQC can still discover the rover on a fresh start.
+        Unicast avoids the WiFi AP DTIM beacon buffering that adds ~100 ms per packet
+        when the Android device is in power-save mode.
+        """
         try:
-            buf = msg.pack(self._mav.mav)
-            self._udp_sock.sendto(buf, self._gqc_addr)
+            buf  = msg.pack(self._mav.mav)
+            addr = self._gqc_unicast or self._gqc_addr
+            self._udp_sock.sendto(buf, addr)
         except Exception as e:
             self.get_logger().warn(f'MAVLink send error: {e}')
 
