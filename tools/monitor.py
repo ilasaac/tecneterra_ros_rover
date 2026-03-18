@@ -185,6 +185,10 @@ def _build_map_html() -> str:
                 if rv.sim_result else []
             )
             actual_path = [[lat, lon] for lat, lon in rv.actual_path]
+            rerouted_wps = (
+                rv.sim_result.rerouted_wps
+                if rv.sim_result and rv.sim_result.rerouted_wps else []
+            )
             rovers_snapshot.append({
                 'id':               rv_id,
                 'lat':              rv.lat,
@@ -193,6 +197,7 @@ def _build_map_html() -> str:
                 'mode':             rv.mode,
                 'mission_path':     mission_path,
                 'sim_path':         sim_path,
+                'rerouted_wps':     rerouted_wps,
                 'actual_path':      actual_path,
                 'obstacle_polygons': list(rv.obstacle_polygons),
                 'sim_rms':          rv.sim_result.rms_xte if rv.sim_result else None,
@@ -289,6 +294,18 @@ data.forEach(function(rv) {{
                               dashArray: '7 5'}}).addTo(map);
   }}
 
+  // — Rerouted waypoints (cyan) — shows bypass points inserted around obstacles.
+  //   Identical to mission_path when no obstacles are present.
+  if (rv.rerouted_wps && rv.rerouted_wps.length > 1) {{
+    L.polyline(rv.rerouted_wps, {{color: '#00bcd4', weight: 3, opacity: 0.95,
+                                  dashArray: '4 3'}}).addTo(map);
+    rv.rerouted_wps.forEach(function(pt, i) {{
+      L.circleMarker(pt, {{radius: 4, color: '#00bcd4', fillColor: '#00bcd4',
+                           fillOpacity: 1.0, weight: 1}})
+       .bindTooltip('RWP' + i).addTo(map);
+    }});
+  }}
+
   // — Actual path (green)
   if (rv.actual_path && rv.actual_path.length > 1) {{
     L.polyline(rv.actual_path, {{color: '#66bb6a', weight: 2, opacity: 0.9}}).addTo(map);
@@ -329,6 +346,7 @@ data.forEach(function(rv) {{
 
 infoHtml += '<br>';
 infoHtml += '<span class="swatch" style="background:#ff9800;"></span>Simulated path &nbsp;';
+infoHtml += '<span class="swatch" style="background:#00bcd4;"></span>Rerouted WPs &nbsp;';
 infoHtml += '<span class="swatch" style="background:#66bb6a;"></span>Actual path &nbsp;';
 infoHtml += '<span class="swatch" style="background:#f44336; opacity:0.6;"></span>Obstacle &nbsp;';
 infoHtml += '<span style="color:#aaa">&nbsp; Marker: yellow=AUTO, orange=armed, green=disarmed</span>';
@@ -345,8 +363,9 @@ if (autoFit) {{
   var allPts = [];
   data.forEach(function(rv) {{
     if (rv.lat !== 0.0) allPts.push([rv.lat, rv.lon]);
-    (rv.mission_path || []).forEach(function(p) {{ allPts.push(p); }});
-    (rv.sim_path     || []).forEach(function(p) {{ allPts.push(p); }});
+    (rv.mission_path  || []).forEach(function(p) {{ allPts.push(p); }});
+    (rv.sim_path      || []).forEach(function(p) {{ allPts.push(p); }});
+    (rv.rerouted_wps  || []).forEach(function(p) {{ allPts.push(p); }});
     // Sample actual_path to avoid fitting to thousands of points
     var ap = rv.actual_path || [];
     if (ap.length > 0) {{ allPts.push(ap[0]); allPts.push(ap[ap.length - 1]); }}

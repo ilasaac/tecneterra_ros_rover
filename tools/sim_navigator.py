@@ -84,7 +84,9 @@ class SimResult:
     avg_xte:            float
     total_steps:        int
     complete:           bool   # True if all waypoints were reached within timeout
-    obstacle_polygons:  list   # [[(lat,lon),...], ...] polygons used (may be expanded)
+    obstacle_polygons:  list   # [[(lat,lon),...], ...] polygons used (expanded)
+    rerouted_wps:       list   # [[lat,lon], ...] effective waypoints after rerouting
+                               # (includes bypass points; same as original when no obstacles)
 
 
 # ── Math helpers ──────────────────────────────────────────────────────────────
@@ -603,6 +605,7 @@ def simulate(waypoints:       list[SimWaypoint],
         total_steps       = step + 1,
         complete          = path_n.path_idx >= len(effective_wps),
         obstacle_polygons = [list(poly) for poly in expanded_polygons],
+        rerouted_wps      = [[wp.lat, wp.lon] for wp in effective_wps],
     )
 
 
