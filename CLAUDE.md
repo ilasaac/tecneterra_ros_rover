@@ -8,9 +8,9 @@ build commands, and conventions. Read this before touching any file.
 ## Project purpose
 
 Dual autonomous ground rover platform for agriculture.
-- **RV1 (master):** Jetson Nano, HM30 air unit, RP2040 with SBUS→SX1278 TX
-- **RV2 (slave):**  Jetson Nano, RP2040 with SX1278 RX→PPM
-- **GQC:** custom Android app, MAVLink over WiFi
+- **RV1 (master):** Jetson Orin Nano, HM30 air unit, RP2040 with SBUS→SX1278 TX
+- **RV2 (slave):**  Jetson Orin Nano, RP2040 with SX1278 RX→PPM
+- **GQC:** SIYI MK32 Android GCS, MAVLink over WiFi
 - **Prior codebase:** `C:\agri_rover` (standalone Python, nRF24) — reference only, do not modify
 
 ---
@@ -114,7 +114,8 @@ GQC identifies rovers by **sysid in HEARTBEAT**, not by port.
 - `_send()` always uses `self._gqc_addr` (broadcast) so passive tools (`monitor.py`, `simulator.py`) continue to receive telemetry without registering their IPs.
 - If `self._gqc_unicast` is known, `_send()` **also** sends a second copy to that unicast address to bypass WiFi AP DTIM buffering (~100 ms latency).
 - `_send_mission_request()` uses `self._gqc_unicast or self._gqc_addr` for the handshake.
-- `_gqc_unicast` is updated from the **source IP of every inbound packet** via raw `sock.recvfrom()` in `_recv_loop`.
+- `_gqc_unicast` is updated only from **sysid 255** packets via raw `sock.recvfrom()`.
+- Unicast target port is forced to `gqc_port` (14550) to ensure delivery even if GQC uses a random source port.
 - Mission upload retry: `0.5` s (500 ms) timer and logic.
 
 ---

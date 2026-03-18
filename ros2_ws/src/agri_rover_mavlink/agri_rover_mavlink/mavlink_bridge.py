@@ -283,14 +283,18 @@ class MavlinkBridgeNode(Node):
             except OSError:
                 continue
 
-            # Every inbound packet reveals GQC's address — use unicast from here on
-            self._gqc_unicast = (src_ip, src_port)
-
             msgs = self._mav.mav.parse_buffer(data)
             if not msgs:
                 continue
 
             for msg in msgs:
+                # Discovery: only record GQC address if packet comes from sysid 255.
+                # If we recorded every packet, rovers would try to unicast to each other!
+                # We force the port to gqc_port (14550) because GQC binds that port for RX,
+                # even if its OS-assigned source port for sending is a random high port.
+                if msg.get_srcSystem() == 255:
+                    self._gqc_unicast = (src_ip, self._gqc_addr[1])
+
                 mt = msg.get_type()
                 if mt == 'RC_CHANNELS_OVERRIDE':
                     self._on_rc_override(msg)
