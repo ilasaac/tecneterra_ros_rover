@@ -42,7 +42,7 @@ ros_agri_rover/
     ├── start_rover1_sim.sh          ← single-command RV1 simulation launcher
     ├── start_rover2_sim.sh          ← single-command RV2 simulation launcher
     ├── sim_navigator.py             ← software-in-the-loop simulation of navigator.py (full-path Stanley + pivot turns); importable by monitor.py or standalone CLI
-    ├── monitor.py                   ← terminal MAVLink dashboard; rover IPs, SBUS/PPM, XTE stats; snoops GQC missions, runs SIL sim, serves Leaflet map on :8088 (HTTP)
+    ├── monitor.py                   ← terminal MAVLink dashboard; rover IPs, SBUS/PPM, XTE stats; snoops GQC missions, runs SIL sim, serves Leaflet map on :8088 (HTTP) — features: auto-fit toggle, persistent zoom/center via localStorage, 5s auto-refresh
     └── mission_uploader.py          ← CSV waypoints → MAVLink mission upload
 ```
 
