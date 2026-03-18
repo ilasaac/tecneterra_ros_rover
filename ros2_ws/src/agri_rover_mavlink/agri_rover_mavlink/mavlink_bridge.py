@@ -302,6 +302,8 @@ class MavlinkBridgeNode(Node):
                 elif mt == 'COMMAND_LONG':
                     self._on_command_long(msg)
                 elif mt == 'MISSION_COUNT':
+                    if msg.get_srcSystem() != 255:
+                        continue  # ignore re-broadcasts from other rovers (feedback loop prevention)
                     if msg.target_system not in (0, 255, self._rover_id):
                         continue  # not addressed to this rover
                     if msg.count == 0:
@@ -441,6 +443,8 @@ class MavlinkBridgeNode(Node):
                 msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
 
     def _on_mission_item(self, msg):
+        if msg.get_srcSystem() != 255:
+            return  # ignore re-broadcasts from other rovers (feedback loop prevention)
         with self._mission_lock:
             expected = self._mission_expect_seq
             rtt_ms = (time.monotonic() - self._mission_last_req_t) * 1000
