@@ -22,6 +22,11 @@ import kotlin.math.*
 
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
+    companion object {
+        /** Must match navigator_params.yaml max_speed — used to convert throttle PPM → m/s. */
+        const val MAX_SPEED_MPS = 1.5f
+    }
+
     // --- ENUMS & STATE ---
     enum class AppMode { MANUAL, PLANNER, AUTO }
 
@@ -92,7 +97,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         override fun run() {
             if (!isRecording) return
             roverPositions[selectedRoverId]?.let { pos ->
-                recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude))
+                // Capture forward speed from throttle PPM (logical ch[0] = PPM CH1).
+                // (throttle - 1500) / 500 * max_speed; clamp to 0 so reverse = 0 speed.
+                val throttlePpm = roverPpmChannels[selectedRoverId]?.getOrNull(0) ?: 1500
+                val speed = ((throttlePpm - 1500) / 500f * MAX_SPEED_MPS).coerceAtLeast(0f)
+                recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, speed))
                 routePoints.add(pos)
                 redrawMap()
             }

@@ -73,7 +73,6 @@ class NavigatorNode(Node):
         self.declare_parameter('gps_timeout',             2.0)
         self.declare_parameter('heading_deadband',        3.0)
         self.declare_parameter('align_threshold',         10.0)
-        self.declare_parameter('approach_distance',       2.0)
 
         self._lookahead      = self.get_parameter('lookahead_distance').value
         self._accept_r       = self.get_parameter('default_acceptance_radius').value
@@ -83,7 +82,6 @@ class NavigatorNode(Node):
         self._gps_timeout    = self.get_parameter('gps_timeout').value
         self._hdb            = self.get_parameter('heading_deadband').value
         self._align_thresh   = self.get_parameter('align_threshold').value
-        self._approach_dist  = self.get_parameter('approach_distance').value
 
         # ── State ────────────────────────────────────────────────────────────
         self._fix:          NavSatFix | None = None
@@ -202,12 +200,7 @@ class NavigatorNode(Node):
                                min(self._max_steer, heading_err / 45.0))
             steer_ppm    = int(PPM_CENTER - steer_frac * 500)
             speed_frac   = 1.0 - 0.5 * abs(steer_frac)
-            # Slow to min_speed on final approach so the rover can stop cleanly
-            # inside the acceptance circle (important at 0.3 m precision).
-            if dist < self._approach_dist:
-                target_spd = self._min_speed
-            else:
-                target_spd = wp.speed if wp.speed > 0 else self._max_speed
+            target_spd   = wp.speed if wp.speed > 0 else self._max_speed
             speed_frac  *= target_spd / self._max_speed
             speed_frac   = max(self._min_speed / self._max_speed, speed_frac)
             throttle_ppm = int(PPM_CENTER + speed_frac * 500)

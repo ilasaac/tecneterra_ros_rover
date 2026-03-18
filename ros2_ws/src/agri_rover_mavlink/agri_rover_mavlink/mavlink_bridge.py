@@ -378,7 +378,7 @@ class MavlinkBridgeNode(Node):
             wp.seq       = msg.seq
             wp.latitude  = msg.x * 1e-7
             wp.longitude = msg.y * 1e-7
-            wp.speed     = 1.0
+            wp.speed     = float(msg.z) if msg.z > 0.0 else 0.0
             wp.acceptance_radius = 0.3
             self._mission_buf.append(wp)
             self.mission_pub.publish(wp)

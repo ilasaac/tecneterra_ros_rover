@@ -12,9 +12,6 @@ navigator:
     # Minimum speed when turning (m/s)
     min_speed: 0.3
 
-    # Approach distance (metres) — rover slows to min_speed within this distance
-    # of each waypoint so it can stop cleanly inside the 0.3 m acceptance circle.
-    approach_distance: 2.0
 
     # Maximum steering angle rate (maps to PPM steering range 1000–2000)
     max_steering: 0.8   # fraction of full deflection
