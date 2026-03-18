@@ -91,22 +91,58 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     // Last PPM µs values for aux channels (PPM CH5–CH8, logical indices 4–7).
     // Initialised to 1500 (neutral) and updated when a >100 µs change is detected.
     private val lastAuxPwm = IntArray(4) { 1500 }
+    // Stationary hold tracking: last position where a waypoint was saved, and
+    // accumulated stationary time. When rover moves again, the hold time is
+    // written into the last recorded waypoint so the navigator waits there.
+    private var lastRecordedPos: LatLng? = null
+    private var pendingHoldSecs = 0f
+    private val MIN_RECORD_DIST = 0.3   // metres — below this = considered stationary
 
     private val recordHandler = Handler(Looper.getMainLooper())
     private val recordRunnable = object : Runnable {
         override fun run() {
             if (!isRecording) return
-            roverPositions[selectedRoverId]?.let { pos ->
-                // Capture forward speed from throttle PPM (logical ch[0] = PPM CH1).
-                // (throttle - 1500) / 500 * max_speed; clamp to 0 so reverse = 0 speed.
-                val throttlePpm = roverPpmChannels[selectedRoverId]?.getOrNull(0) ?: 1500
-                val speed = ((throttlePpm - 1500) / 500f * MAX_SPEED_MPS).coerceAtLeast(0f)
-                recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, speed))
-                routePoints.add(pos)
-                redrawMap()
+            val pos = roverPositions[selectedRoverId]
+            if (pos != null) {
+                val last = lastRecordedPos
+                val dist = if (last != null)
+                    haversineMetres(last.latitude, last.longitude, pos.latitude, pos.longitude)
+                else Double.MAX_VALUE
+
+                if (dist >= MIN_RECORD_DIST) {
+                    // Rover moved — flush accumulated hold into the last waypoint
+                    if (last != null && pendingHoldSecs > 0f) {
+                        val idx = recordedMission.indexOfLast { it is MissionAction.Waypoint }
+                        if (idx >= 0) {
+                            val old = recordedMission[idx] as MissionAction.Waypoint
+                            recordedMission[idx] = old.copy(holdSecs = pendingHoldSecs)
+                        }
+                        pendingHoldSecs = 0f
+                    }
+                    lastRecordedPos = pos
+                    val throttlePpm = roverPpmChannels[selectedRoverId]?.getOrNull(0) ?: 1500
+                    val speed = ((throttlePpm - 1500) / 500f * MAX_SPEED_MPS).coerceAtLeast(0f)
+                    recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, speed))
+                    routePoints.add(pos)
+                    redrawMap()
+                } else {
+                    // Rover stationary — accumulate hold time (500 ms per tick)
+                    pendingHoldSecs += 0.5f
+                }
             }
             recordHandler.postDelayed(this, 500)
         }
+    }
+
+    /** Flat-earth haversine distance in metres. */
+    private fun haversineMetres(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val R = 6_371_000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(dLat / 2).pow(2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2).pow(2)
+        return 2 * R * Math.asin(Math.sqrt(a))
     }
 
     // --- ROVER MANAGER ---
@@ -361,6 +397,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         routePoints.clear()
         recordedMission.clear()
         nextWaypointIndex = 0
+        lastRecordedPos = null
+        pendingHoldSecs = 0f
         // Snapshot current aux channel states and prepend as initial DO_SET_SERVO
         // items so the rover restores servo positions at mission start.
         val ch = roverPpmChannels[selectedRoverId]
@@ -392,6 +430,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         nextWaypointIndex = 0
         routePoints.clear()
         recordedMission.clear()
+        lastRecordedPos = null
+        pendingHoldSecs = 0f
         redrawMap()
         roverManager.uploadMission(selectedRoverId, emptyList())
     }

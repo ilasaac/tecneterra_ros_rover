@@ -375,10 +375,11 @@ class MavlinkBridgeNode(Node):
             self._apply_servo_cmd(int(msg.param1), int(msg.param2))
         else:
             wp = MissionWaypoint()
-            wp.seq       = msg.seq
-            wp.latitude  = msg.x * 1e-7
-            wp.longitude = msg.y * 1e-7
-            wp.speed     = float(msg.z) if msg.z > 0.0 else 0.0
+            wp.seq              = msg.seq
+            wp.latitude         = msg.x * 1e-7
+            wp.longitude        = msg.y * 1e-7
+            wp.speed            = float(msg.z)    if msg.z    > 0.0 else 0.0
+            wp.hold_secs        = float(msg.param1) if msg.param1 > 0.0 else 0.0
             wp.acceptance_radius = 0.3
             self._mission_buf.append(wp)
             self.mission_pub.publish(wp)

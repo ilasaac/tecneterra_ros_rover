@@ -18,8 +18,10 @@ import java.io.ByteArrayOutputStream
  * Built by MainActivity during recording and passed to uploadRecordedMission().
  */
 sealed class MissionAction {
-    /** speed: m/s at record time (0f = use navigator default max_speed). */
-    data class Waypoint(val lat: Double, val lon: Double, val speed: Float = 0f) : MissionAction()
+    /** speed: m/s at record time (0f = use navigator default max_speed).
+     *  holdSecs: seconds to wait after arriving (0f = no hold). */
+    data class Waypoint(val lat: Double, val lon: Double,
+                        val speed: Float = 0f, val holdSecs: Float = 0f) : MissionAction()
     /** servo: 5–8 (PPM CH5–CH8).  pwm: µs value to set on that channel. */
     data class ServoCmd(val servo: Int, val pwm: Int) : MissionAction()
 }
@@ -292,7 +294,7 @@ class RoverPositionManager(
                             .command(MavCmd.MAV_CMD_NAV_WAYPOINT)
                             .current(if (seq++ == 0) 1 else 0).autocontinue(1)
                             .x((action.lat * 1e7).toInt()).y((action.lon * 1e7).toInt())
-                            .z(action.speed).param1(0f).param2(0f).param3(0f).param4(0f)
+                            .z(action.speed).param1(action.holdSecs).param2(0f).param3(0f).param4(0f)
                             .build()
                     is MissionAction.ServoCmd ->
                         MissionItemInt.builder()

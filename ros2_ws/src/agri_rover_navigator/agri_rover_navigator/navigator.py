@@ -116,6 +116,10 @@ class NavigatorNode(Node):
         # define the current path segment for lookahead and overshoot detection.
         self._prev_lat:     float | None     = None
         self._prev_lon:     float | None     = None
+        # Hold state — rover waits at a waypoint for hold_secs before advancing.
+        self._holding:      bool             = False
+        self._hold_end:     float            = 0.0   # monotonic time when hold expires
+        self._dt:           float            = 1.0 / self.get_parameter('control_rate').value
         # Servo state (PPM CH5-CH8) updated from servo_state topic; re-published
         # in every cmd_override so the RP2040 always has the current servo values.
         self._servo_ch:     list[int]        = [PPM_CENTER] * 4
@@ -264,6 +268,15 @@ class NavigatorNode(Node):
             self._publish_halt()
             return
 
+        # ── Hold at waypoint ─────────────────────────────────────────────────
+        if self._holding:
+            self._publish_halt()
+            if time.monotonic() >= self._hold_end:
+                self._holding = False
+                self.get_logger().info('Hold complete — advancing')
+                self._advance_waypoint()
+            return
+
         wp     = self._active_wp
         rlat   = self._fix.latitude
         rlon   = self._fix.longitude
@@ -272,8 +285,15 @@ class NavigatorNode(Node):
 
         # ── Waypoint advance ─────────────────────────────────────────────────
         if dist < accept:
-            self.get_logger().info(f'Waypoint {wp.seq} reached ({dist:.2f} m)')
-            self._advance_waypoint()
+            if wp.hold_secs > 0.0:
+                self.get_logger().info(
+                    f'Waypoint {wp.seq} reached — holding {wp.hold_secs:.1f} s')
+                self._holding  = True
+                self._hold_end = time.monotonic() + wp.hold_secs
+                self._publish_halt()
+            else:
+                self.get_logger().info(f'Waypoint {wp.seq} reached ({dist:.2f} m)')
+                self._advance_waypoint()
             return
 
         # Overshoot: rover has passed the waypoint along the path direction.
@@ -327,6 +347,7 @@ class NavigatorNode(Node):
             self._active_wp = None
             self._prev_lat  = None
             self._prev_lon  = None
+            self._holding   = False
             self.get_logger().info('Mission complete')
             m = Int32(); m.data = -1
             self.wp_pub.publish(m)
