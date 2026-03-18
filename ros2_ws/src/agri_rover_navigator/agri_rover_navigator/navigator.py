@@ -185,7 +185,7 @@ class NavigatorNode(Node):
         # Steering: proportional to heading error, capped at max_steering
         steer_frac = max(-self._max_steer,
                          min(self._max_steer, heading_err / 45.0))
-        steer_ppm  = int(PPM_CENTER + steer_frac * 500)
+        steer_ppm  = int(PPM_CENTER - steer_frac * 500)  # inverted: PPM CH2 wiring is ~SBUS CH1
 
         # Speed: reduce when turning hard
         speed_frac  = 1.0 - 0.5 * abs(steer_frac)
