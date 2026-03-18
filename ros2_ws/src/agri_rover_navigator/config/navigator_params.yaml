@@ -25,7 +25,7 @@ navigator:
     # Heading deadband (degrees) — ignore small heading errors
     heading_deadband: 3.0
 
-    # Stop-and-spin threshold (degrees) — if heading error exceeds this,
-    # stop forward motion and spin in place until aligned before driving.
-    # Lower = more precise turns. 10° gives tight corner tracking.
-    align_threshold: 10.0
+    # Stop-and-spin threshold (degrees) — only spin in place when heading
+    # error exceeds this. Normal turns use proportional steering while moving.
+    # 30° lets the rover handle curves continuously without stopping.
+    align_threshold: 30.0
