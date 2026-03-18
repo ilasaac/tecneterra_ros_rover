@@ -177,17 +177,15 @@ class MavlinkBridgeNode(Node):
         return int(time.time() * 1000) - self._boot_ms
 
     def _send(self, msg):
-        """Send a pre-packed MAVLink message to GQC via UDP.
+        """Broadcast a MAVLink message to GQC and all listeners (monitor.py, simulator).
 
-        Uses unicast once the GQC IP is known (discovered from first inbound packet).
-        Falls back to broadcast so GQC can still discover the rover on a fresh start.
-        Unicast avoids the WiFi AP DTIM beacon buffering that adds ~100 ms per packet
-        when the Android device is in power-save mode.
+        Regular telemetry always goes to broadcast so passive tools (monitor.py,
+        simulator) can receive it without being registered.  Only the mission
+        handshake (MISSION_REQUEST_INT) uses unicast via _send_mission_request().
         """
         try:
-            buf  = msg.pack(self._mav.mav)
-            addr = self._gqc_unicast or self._gqc_addr
-            self._udp_sock.sendto(buf, addr)
+            buf = msg.pack(self._mav.mav)
+            self._udp_sock.sendto(buf, self._gqc_addr)
         except Exception as e:
             self.get_logger().warn(f'MAVLink send error: {e}')
 
