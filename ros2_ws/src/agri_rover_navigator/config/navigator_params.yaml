@@ -48,4 +48,4 @@ navigator:
     # pivot_approach_dist (metres): distance from a pivot waypoint at which the
     #   rover switches from path-lookahead to direct-to-waypoint aiming and begins
     #   slowing to min_speed. Ensures precise arrival at the turn point.
-    pivot_approach_dist: 2.0
+    pivot_approach_dist: 4.0
