@@ -500,7 +500,12 @@ class MavlinkBridgeNode(Node):
             self._fence_buf.append((msg.x * 1e-7, msg.y * 1e-7, int(msg.param1)))
         else:
             wp = MissionWaypoint()
-            wp.seq              = msg.seq
+            # Normalize seq to 0-based index within nav waypoints only.
+            # When fence items (cmd=5003) are prepended, the first nav waypoint
+            # has msg.seq = N_fence (not 0), which would prevent the navigator from
+            # detecting a new mission (it resets on seq==0).  Using len(_mission_buf)
+            # ensures seq is always 0 for the first waypoint regardless of fence items.
+            wp.seq              = len(self._mission_buf)
             wp.latitude         = msg.x * 1e-7
             wp.longitude        = msg.y * 1e-7
             wp.speed            = float(msg.z)    if msg.z    > 0.0 else 0.0
