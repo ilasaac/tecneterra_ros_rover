@@ -109,6 +109,9 @@ class MavlinkBridgeNode(Node):
         # _mission_src: (srcSys, srcComp) from MISSION_COUNT; None when no upload active.
         # _mission_expect_seq: next seq we're waiting for; None when no upload active.
         # _mission_last_req_t: monotonic time of last MISSION_REQUEST_INT sent.
+        self._last_rerouted_json  = '[]'
+        self._reroute_retries     = 0
+        self._reroute_timer       = None
         self._mission_lock        = threading.Lock()
         self._gqc_unicast         = None            # (ip, port) or None
         self._mission_src         = None            # (srcSys, srcComp)
@@ -183,15 +186,24 @@ class MavlinkBridgeNode(Node):
         Forward the navigator's rerouted path to GQC as MAVLink TUNNEL messages.
         Payload format: [chunk_idx, total_chunks, ...utf8 json bytes...]
         payload_type = 0x5250 ('RP' — Rerouted Path), max 128 bytes per packet.
+
+        Sends immediately then retransmits twice (at +2 s, +4 s) to survive
+        UDP packet loss — the GQC reassembler is idempotent.
         """
+        # Cancel any pending retransmit for the previous path
+        if hasattr(self, '_reroute_timer') and self._reroute_timer is not None:
+            self._reroute_timer.cancel()
+            self._reroute_timer = None
+
+        self._last_rerouted_json = msg.data
+        self._reroute_retries    = 0
+        self._send_rerouted_chunks(msg.data)
+        self._schedule_reroute_retransmit()
+
+    def _send_rerouted_chunks(self, json_str: str):
         try:
-            json_bytes = msg.data.encode('utf-8')
-            # Each chunk: 2 header bytes (idx, total) + up to 126 data bytes
-            chunk_size = 126
-            if not json_bytes:
-                json_bytes = b'[]'
-            chunks = [json_bytes[i:i + chunk_size]
-                      for i in range(0, len(json_bytes), chunk_size)]
+            json_bytes = (json_str or '[]').encode('utf-8')
+            chunks = [json_bytes[i:i + 126] for i in range(0, len(json_bytes), 126)]
             n = len(chunks)
             for i, chunk in enumerate(chunks):
                 payload_bytes = bytes([i, n]) + chunk
@@ -205,6 +217,18 @@ class MavlinkBridgeNode(Node):
                 self._send(tunnel)
         except Exception as e:
             self.get_logger().warn(f'rerouted_path tunnel send: {e}')
+
+    def _schedule_reroute_retransmit(self):
+        if self._reroute_retries < 2:
+            self._reroute_timer = threading.Timer(2.0, self._retransmit_rerouted)
+            self._reroute_timer.start()
+
+    def _retransmit_rerouted(self):
+        self._reroute_retries += 1
+        self.get_logger().info(
+            f'rerouted_path retransmit #{self._reroute_retries}')
+        self._send_rerouted_chunks(self._last_rerouted_json)
+        self._schedule_reroute_retransmit()
 
     # ── MAVLink send helpers ──────────────────────────────────────────────────
 
