@@ -1132,12 +1132,18 @@ class NavigatorNode(Node):
         # rover arrives precisely instead of cutting the corner.
         target_spd = wp.speed if wp.speed > 0 else self._max_speed
 
-        if needs_pivot and dist_to_wp < self._pivot_approach_dist:
-            la_lat     = wp.latitude
-            la_lon     = wp.longitude
-            # Scale speed linearly from target_spd down to min_speed
-            approach_t = dist_to_wp / self._pivot_approach_dist   # 1.0 → 0.0
-            target_spd = max(self._min_speed, target_spd * approach_t)
+        if needs_pivot:
+            # Always aim directly at the pivot waypoint — never use arc-length
+            # projection past it.  _nearest_on_path can snap ahead to the
+            # post-turn segment when the rover is close to the pivot, projecting
+            # the lookahead into the outgoing direction and triggering a premature
+            # ~180° spin before arrival.
+            la_lat = wp.latitude
+            la_lon = wp.longitude
+            if dist_to_wp < self._pivot_approach_dist:
+                # Scale speed linearly from target_spd down to min_speed
+                approach_t = dist_to_wp / self._pivot_approach_dist
+                target_spd = max(self._min_speed, target_spd * approach_t)
         elif is_bypass:
             # Bypass waypoints: steer directly to the waypoint.
             # _nearest_on_path can snap to later original-route segments (they are
@@ -1183,11 +1189,11 @@ class NavigatorNode(Node):
             v_mps        = max(target_spd, self._min_speed)
             throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
 
-            # MPC active only for normal path tracking
-            # (bypass and pivot-approach use direct heading-error steering)
-            if (self._algo == 'mpc'
-                    and not is_bypass
-                    and not (needs_pivot and dist_to_wp < self._pivot_approach_dist)):
+            # MPC active only for normal (non-pivot, non-bypass) path tracking.
+            # For pivot WPs the lookahead is always direct-to-waypoint; MPC with
+            # a clipped horizon near the pivot produces a degenerate reference
+            # (all points at the same location) and generates erratic steering.
+            if self._algo == 'mpc' and not is_bypass and not needs_pivot:
                 steer_frac = self._mpc_steer(
                     rlat, rlon, self._heading, s_nearest, v_mps)
             else:

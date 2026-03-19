@@ -707,15 +707,20 @@ class PathNavigator:
                 self._advance()
                 return PPM_CENTER, PPM_CENTER, best_seg, self.path_idx >= len(self._wps)
 
-        # Precision approach to pivot waypoint
+        # Lookahead target
         target_spd = wp.speed if wp.speed > 0 else max_spd
-        if needs_pivot and dist_to_wp < pivot_app_dist:
+        if needs_pivot:
+            # Always aim directly at the pivot waypoint — never use arc-length
+            # projection past it.  _nearest_on_path can snap ahead to the
+            # post-turn segment when the rover is physically close to the pivot,
+            # which would project the lookahead into the outgoing direction and
+            # trigger a premature ~180° spin before arrival.
             la_lat, la_lon = wp.lat, wp.lon
-            target_spd = max(min_spd, target_spd * dist_to_wp / pivot_app_dist)
+            if dist_to_wp < pivot_app_dist:
+                target_spd = max(min_spd, target_spd * dist_to_wp / pivot_app_dist)
         elif is_bypass:
-            # Bypass waypoints: steer directly to the waypoint.
-            # _nearest_on_path can snap to later original-route segments, giving a
-            # wrong lookahead that causes the rover to ignore the detour.
+            # Same reason as pivot: bypass arcs are short and _nearest_on_path
+            # can snap to a later original segment.
             la_lat, la_lon = wp.lat, wp.lon
         else:
             la_lat, la_lon = self._point_at_s(s_nearest + lookahead)
@@ -736,9 +741,13 @@ class PathNavigator:
         v_mps        = max(target_spd, min_spd)
         throttle_ppm = int(PPM_CENTER + (v_mps / max_spd) * 500)
 
-        if (self._algo == 'mpc'
-                and not is_bypass
-                and not (needs_pivot and dist_to_wp < pivot_app_dist)):
+        # Use MPC only on normal (non-pivot, non-bypass) segments.
+        # For pivot WPs: Stanley with direct-to-waypoint aim is reliable;
+        # MPC with a horizon clipped at the pivot produces a degenerate
+        # reference (all points at the same location) when s_nearest is
+        # close to s_clip, causing erratic steering.
+        use_mpc = self._algo == 'mpc' and not is_bypass and not needs_pivot
+        if use_mpc:
             steer_frac = self._mpc_steer(rlat, rlon, heading, s_nearest, v_mps)
         else:
             # Stanley controller: δ = θ_e + arctan(k · e_cte / (v + ε))
@@ -749,7 +758,7 @@ class PathNavigator:
         self._step_info.update({
             'steer_frac': steer_frac,
             'v_mps': v_mps,
-            'mode': 'mpc' if (self._algo == 'mpc' and not is_bypass and not (needs_pivot and dist_to_wp < pivot_app_dist)) else 'stanley',
+            'mode': 'mpc' if use_mpc else 'stanley',
         })
         steer_ppm = int(PPM_CENTER - steer_frac * 500)
 
