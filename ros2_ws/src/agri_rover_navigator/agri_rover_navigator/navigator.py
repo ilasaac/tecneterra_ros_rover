@@ -980,11 +980,22 @@ class NavigatorNode(Node):
         def to_xy(lat: float, lon: float) -> tuple[float, float]:
             return (lon - rlon) * m_lon, (lat - rlat) * m_lat
 
-        # Sample N+1 reference points along the path
+        # Clip horizon at the next pivot waypoint so MPC never optimises
+        # across a sharp turn — the rover must reach and stop at the pivot
+        # point before the post-turn segment becomes visible.
+        s_clip = float('inf')
+        for i in range(self._path_idx, len(self._path)):
+            if i not in self._bypass_indices and self._turn_angle_at(i) >= self._pivot_threshold:
+                if i < len(self._path_s):
+                    s_clip = self._path_s[i]
+                break
+
+        # Sample N+1 reference points along the path (clamped at pivot)
         ref_x: list[float] = []
         ref_y: list[float] = []
         for ki in range(N + 1):
-            pt = self._point_at_s(s_nearest + v_mps * ki * dt)
+            s_ref = min(s_nearest + v_mps * ki * dt, s_clip)
+            pt = self._point_at_s(s_ref)
             rx, ry = to_xy(pt[0], pt[1])
             ref_x.append(rx)
             ref_y.append(ry)

@@ -51,14 +51,14 @@
     align_threshold:           30.0
     stanley_k:                 1.0
     stanley_softening:         0.3
-    pivot_threshold:           30.0
+    pivot_threshold:           25.0
     pivot_approach_dist:       4.0
     rover_width_m:             1.0
     obstacle_clearance_m:      0.5
     control_algorithm:         mpc
-    mpc_horizon:               10
-    mpc_dt:                    0.2
-    mpc_w_cte:                 2.0
+    mpc_horizon:               5
+    mpc_dt:                    0.1
+    mpc_w_cte:                 5.0
     mpc_w_heading:             1.0
     mpc_w_steer:               0.1
     mpc_w_dsteer:              0.05
