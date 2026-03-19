@@ -147,7 +147,7 @@ class NavigatorNode(Node):
         self.declare_parameter('rover_width_m',              1.4)
         self.declare_parameter('obstacle_clearance_m',       0.5)
         # Control algorithm — 'stanley' (default) or 'mpc'
-        self.declare_parameter('control_algorithm',          'stanley')
+        self.declare_parameter('control_algorithm',          'mpc')
         # MPC parameters (only used when control_algorithm == 'mpc')
         self.declare_parameter('mpc_horizon',                10)
         self.declare_parameter('mpc_dt',                     0.2)

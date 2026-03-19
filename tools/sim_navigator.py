@@ -69,7 +69,7 @@ DEFAULT_NAV: dict = {
     'control_rate':              25.0,
     'max_timeout':               300.0,  # simulation hard stop (seconds)
     # Control algorithm — 'stanley' or 'mpc'
-    'control_algorithm':         'stanley',
+    'control_algorithm':         'mpc',
     'mpc_horizon':               10,
     'mpc_dt':                    0.2,
     'mpc_w_cte':                 2.0,
