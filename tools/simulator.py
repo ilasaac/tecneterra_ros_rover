@@ -346,7 +346,7 @@ def parse_args():
     p.add_argument('--baseline',    default=0.30, type=float, metavar='M',
                    help='Antenna separation in metres')
     p.add_argument('--alt',       default=45.0, type=float, metavar='M')
-    p.add_argument('--rate',      default=25.0, type=float, metavar='HZ')
+    p.add_argument('--rate',      default=10.0, type=float, metavar='HZ')
     p.add_argument('--thr-ch',    default=0,    type=int)
     p.add_argument('--str-ch',    default=1,    type=int)
     p.add_argument('--dry-run',   action='store_true',

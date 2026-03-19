@@ -6,13 +6,9 @@ Reads two uBlox RTK GPS receivers over serial (NMEA 0183).
   Secondary GPS → position used to compute heading via baseline vector
 
 Publishes:
-  ~/fix          (sensor_msgs/NavSatFix)   — primary position, up to publish_rate Hz
-  ~/heading      (std_msgs/Float32)        — degrees from north, up to publish_rate Hz
+  ~/fix          (sensor_msgs/NavSatFix)   — primary position, 5 Hz
+  ~/heading      (std_msgs/Float32)        — degrees from north, 5 Hz
   ~/rtk_status   (std_msgs/String)         — NO_FIX|GPS|DGPS|RTK_FLT|RTK_FIX
-
-Note: publish_rate (default 25 Hz) is the timer rate; actual publish rate is bounded
-by the GPS hardware NMEA output rate. A message is only published when new primary
-GGA data has arrived, so the navigator's gps_timeout still fires if the GPS goes silent.
 """
 
 from __future__ import annotations
@@ -53,16 +49,11 @@ class GpsDriverNode(Node):
         # heading_source: 'baseline' (secondary GPS vector) | 'vtg' (primary VTG COG)
         # Use 'vtg' when a single serial port provides both GGA and VTG (e.g. simulator).
         self.declare_parameter('heading_source', 'baseline')
-        # publish_rate: timer rate (Hz). Set to match GPS hardware NMEA output rate so the
-        # navigator gets every fix immediately. The actual publish rate is bounded by the
-        # GPS hardware; messages are only sent when new primary GGA data has arrived.
-        self.declare_parameter('publish_rate', 25.0)
 
         primary_port   = self.get_parameter('primary_port').value
         secondary_port = self.get_parameter('secondary_port').value
         baud           = self.get_parameter('baud').value
         self._heading_source = self.get_parameter('heading_source').value
-        publish_rate   = self.get_parameter('publish_rate').value
 
         # ── Publishers ───────────────────────────────────────────────────────
         self.fix_pub       = self.create_publisher(NavSatFix, 'fix',        10)
@@ -71,26 +62,22 @@ class GpsDriverNode(Node):
         self.status_pub    = self.create_publisher(String,    'rtk_status', 10)
 
         # ── GPS state ────────────────────────────────────────────────────────
-        self._primary          = {'lat': 0.0, 'lon': 0.0, 'fix': '0', 'hdop': 99.9}
-        self._secondary        = {'lat': 0.0, 'lon': 0.0}
-        self._vtg_heading      = None   # degrees, filled when heading_source=='vtg'
-        self._lock             = threading.Lock()
-        self._primary_updated  = False  # set True on each new primary GGA sentence
+        self._primary       = {'lat': 0.0, 'lon': 0.0, 'fix': '0', 'hdop': 99.9}
+        self._secondary     = {'lat': 0.0, 'lon': 0.0}
+        self._vtg_heading   = None   # degrees, filled when heading_source=='vtg'
+        self._lock          = threading.Lock()
 
         # ── Serial threads ───────────────────────────────────────────────────
         self._start_reader(primary_port, baud, is_primary=True)
         if self._heading_source == 'baseline':
             self._start_reader(secondary_port, baud, is_primary=False)
 
-        # ── Publish timer ────────────────────────────────────────────────────
-        # Set to match GPS hardware NMEA output rate (default 25 Hz = RTK update rate).
-        # Timer fires at publish_rate but _publish() skips if no new primary GGA arrived.
-        self.create_timer(1.0 / publish_rate, self._publish)
+        # ── Publish timer (5 Hz) ─────────────────────────────────────────────
+        self.create_timer(0.2, self._publish)
 
         self.get_logger().info(
             f'GPS driver on {primary_port} (primary), '
-            f'heading_source={self._heading_source}, '
-            f'publish_rate={publish_rate:.0f} Hz'
+            f'heading_source={self._heading_source}'
             + (f', secondary={secondary_port}' if self._heading_source == 'baseline' else '')
         )
 
@@ -145,7 +132,6 @@ class GpsDriverNode(Node):
                 if is_primary:
                     self._primary.update({'lat': lat, 'lon': lon,
                                           'fix': fix_q, 'hdop': hdop})
-                    self._primary_updated = True
                 else:
                     self._secondary.update({'lat': lat, 'lon': lon})
         except (ValueError, IndexError):
@@ -176,9 +162,6 @@ class GpsDriverNode(Node):
 
     def _publish(self):
         with self._lock:
-            if not self._primary_updated:
-                return   # no new GPS sentence since last publish — skip to preserve gps_timeout
-            self._primary_updated = False
             p           = self._primary.copy()
             s           = self._secondary.copy()
             vtg_heading = self._vtg_heading
