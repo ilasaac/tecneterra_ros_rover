@@ -427,7 +427,7 @@ class NavigatorNode(Node):
             x2, y2 = pts[(i + 1) % n]
             dx, dy = x2 - x1, y2 - y1
             length  = math.hypot(dx, dy) or 1e-9
-            nx, ny  = -w * dy / length, w * dx / length      # outward unit normal
+            nx, ny  =  w * dy / length, -w * dx / length     # outward unit normal
             ox, oy  = nx * clearance_m, ny * clearance_m
             off.append((x1 + ox, y1 + oy, x2 + ox, y2 + oy))
 

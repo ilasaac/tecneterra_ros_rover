@@ -166,7 +166,7 @@ def _expand_polygon(polygon: list[tuple[float, float]],
         x1, y1 = pts[i]; x2, y2 = pts[(i+1)%n]
         dx, dy = x2-x1, y2-y1
         lg = math.hypot(dx, dy) or 1e-9
-        nx, ny = -w*dy/lg, w*dx/lg
+        nx, ny = w*dy/lg, -w*dx/lg
         off.append((x1+nx*clearance_m, y1+ny*clearance_m,
                     x2+nx*clearance_m, y2+ny*clearance_m))
 
