@@ -196,6 +196,8 @@ function clearSimOverlay() {
 
 async function runSimulate() {
   if (waypoints.length < 2) { status('Need at least 2 waypoints.','#e74c3c'); return; }
+  // Auto-finalize any in-progress obstacle polygon before running
+  if (obsMode) obsFinish();
   clearSimOverlay();
   const statsEl = document.getElementById('stats');
   statsEl.style.display = 'block';
@@ -397,7 +399,12 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path in ('/', '/index.html'):
             body = _build_page(self.server.default_lat,
                                self.server.default_lon).encode()
-            self._ok('text/html', body)
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-cache, no-store')
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_error(404)
 
@@ -425,6 +432,8 @@ class _Handler(BaseHTTPRequestHandler):
             nav_p      = {**DEFAULT_NAV,  **(data.get('nav_params',  {}) or {})}
             phys_p     = {**DEFAULT_PHYS, **(data.get('phys_params', {}) or {})}
             obstacles  = data.get('obstacles') or []
+
+            print(f'[simulate] wps={len(wps)}  obstacles={len(obstacles)}', flush=True)
 
             result = simulate(wps, start_lat, start_lon, start_hdg,
                               nav_params=nav_p, phys_params=phys_p,

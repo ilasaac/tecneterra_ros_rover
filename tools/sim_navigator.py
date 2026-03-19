@@ -342,26 +342,33 @@ def _reroute_waypoints(
 
     Handles the case where an obstacle polygon spans across a waypoint (entry and
     exit on different segments) by scanning ahead when a segment has a 1-hit entry.
+    Includes the rover-start → wp[0] segment in obstacle detection.
     """
     if not waypoints or not expanded_polygons:
         return list(waypoints)
 
-    new_wps: list[SimWaypoint] = []
     seq_counter = [max(w.seq for w in waypoints) + 1]  # synthetic seq for bypass wps
 
     def make_bypass(lat: float, lon: float, ref: SimWaypoint) -> SimWaypoint:
         s = seq_counter[0]; seq_counter[0] += 1
         return SimWaypoint(seq=s, lat=lat, lon=lon, speed=ref.speed, is_bypass=True)
 
+    # Prepend a synthetic origin waypoint so the rover-start → wp[0] segment is
+    # also checked for obstacle intersections.  It is stripped from the output.
+    _ORIGIN_SEQ = -9999
+    origin_wp = SimWaypoint(seq=_ORIGIN_SEQ, lat=origin_lat, lon=origin_lon)
+    all_wps = [origin_wp] + list(waypoints)
+
+    new_wps: list[SimWaypoint] = []
     i = 0
-    while i < len(waypoints):
+    while i < len(all_wps):
         if not new_wps:
-            new_wps.append(waypoints[i])
+            new_wps.append(all_wps[i])
             i += 1
             continue
 
         prev = new_wps[-1]
-        wp   = waypoints[i]
+        wp   = all_wps[i]
         a_lat, a_lon = prev.lat, prev.lon
         b_lat, b_lon = wp.lat, wp.lon
 
@@ -397,14 +404,14 @@ def _reroute_waypoints(
             entry_pt = (a_lat + entry_t * (b_lat - a_lat),
                         a_lon + entry_t * (b_lon - a_lon))
 
-            # Scan ahead through original waypoints to find the exit crossing
+            # Scan ahead through all_wps to find the exit crossing
             j = i + 1
             found_exit = False
-            while j < len(waypoints):
-                c_lat = waypoints[j - 1].lat
-                c_lon = waypoints[j - 1].lon
-                d_lat = waypoints[j].lat
-                d_lon = waypoints[j].lon
+            while j < len(all_wps):
+                c_lat = all_wps[j - 1].lat
+                c_lon = all_wps[j - 1].lon
+                d_lat = all_wps[j].lat
+                d_lon = all_wps[j].lon
                 exit_hits = _seg_intersect_polygon(c_lat, c_lon, d_lat, d_lon, poly)
                 _dbg(f'  scan-ahead j={j}: '
                      f'seg ({c_lat:.6f},{c_lon:.6f})->({d_lat:.6f},{d_lon:.6f}) '
@@ -418,8 +425,8 @@ def _reroute_waypoints(
                     _dbg(f'  -> cross-segment bypass: {len(bypass)} pts, '
                          f'poly[{entry_pi}] spans wps {i}..{j-1}')
                     for blat, blon in bypass:
-                        new_wps.append(make_bypass(blat, blon, waypoints[j]))
-                    new_wps.append(waypoints[j])
+                        new_wps.append(make_bypass(blat, blon, all_wps[j]))
+                    new_wps.append(all_wps[j])
                     i = j + 1
                     found_exit = True
                     break
@@ -435,7 +442,8 @@ def _reroute_waypoints(
         new_wps.append(wp)
         i += 1
 
-    return new_wps
+    # Strip the synthetic origin waypoint from the output
+    return [w for w in new_wps if w.seq != _ORIGIN_SEQ]
 
 
 # ── Path navigator (mirrors navigator.py) ────────────────────────────────────
