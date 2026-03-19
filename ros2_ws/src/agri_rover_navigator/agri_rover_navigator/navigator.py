@@ -1075,8 +1075,12 @@ class NavigatorNode(Node):
                 self.get_logger().info('Pivot complete — continuing')
                 self._advance_path()
             else:
-                spin_dir  = math.copysign(1.0, pivot_err)
-                steer_ppm = int(PPM_CENTER - spin_dir * self._max_steer * 500)
+                # Proportional spin: full speed above 45°, linear ramp below.
+                # Prevents overshoot oscillation — at 25 Hz full steer gives
+                # ~9°/step which exceeds the 3° deadband and causes hunting.
+                steer_frac = max(-self._max_steer,
+                                 min(self._max_steer, pivot_err / 45.0))
+                steer_ppm  = int(PPM_CENTER - steer_frac * 500)
                 self._publish_cmd(PPM_CENTER, steer_ppm)
             return
 

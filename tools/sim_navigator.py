@@ -665,8 +665,11 @@ class PathNavigator:
                 self._pivoting = False
                 self._advance()
             else:
-                spin_dir  = math.copysign(1.0, pivot_err)
-                steer_ppm = int(PPM_CENTER - spin_dir * max_steer * 500)
+                # Proportional spin: full speed above 45°, linear ramp below.
+                # Prevents overshoot oscillation caused by the 9°/step rate at
+                # full steer exceeding the 3° heading deadband.
+                steer_frac = max(-max_steer, min(max_steer, pivot_err / 45.0))
+                steer_ppm  = int(PPM_CENTER - steer_frac * 500)
                 return PPM_CENTER, steer_ppm, self.path_idx, False
             return PPM_CENTER, PPM_CENTER, self.path_idx, False
 
