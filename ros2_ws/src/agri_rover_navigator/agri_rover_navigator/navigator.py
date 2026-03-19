@@ -344,9 +344,14 @@ class NavigatorNode(Node):
         if self._obstacle_polygons:
             self.get_logger().info(
                 f'Obstacle fence: {len(self._obstacle_polygons)} polygon(s), '
-                f'clearance={self._clearance:.1f} m')
+                f'clearance={self._clearance:.1f} m, '
+                f'path_original={len(self._path_original)} wps')
             if self._path_original:
                 self._reroute_path()
+            else:
+                self.get_logger().warn(
+                    'Obstacle fence arrived before waypoints — reroute deferred '
+                    '(will trigger on next waypoint via _cb_mission)')
         else:
             self.get_logger().info('Obstacle fence: empty (no polygons)')
 
@@ -630,6 +635,10 @@ class NavigatorNode(Node):
             self.get_logger().info(
                 f'Path rerouted: {len(self._path_original)} → {len(self._path)} wps '
                 f'({n_bypass} bypass inserted)')
+        else:
+            self.get_logger().info(
+                f'Reroute complete: {len(self._path_original)} wps, '
+                f'no bypass needed (path does not cross any obstacle)')
 
     # ── Full-path geometry ────────────────────────────────────────────────────
 
