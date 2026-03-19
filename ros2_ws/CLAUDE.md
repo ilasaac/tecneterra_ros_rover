@@ -213,7 +213,7 @@ Speed is held constant at the recorded waypoint speed. No steering-based slowdow
 - If `turn_angle >= pivot_threshold` and not the last waypoint: `needs_pivot = True`. This applies equally to original mission waypoints and synthetic bypass-corner waypoints inserted by `_reroute_path()`.
 - **Approach phase** (when `needs_pivot` and `dist_to_wp < pivot_approach_dist`): lookahead target is set to the waypoint itself (not a projected point); speed scaled down to `min_speed * (dist / pivot_approach_dist)`.
 - **Pivot phase** (after reaching the waypoint): throttle=neutral, proportional steer (`steer_frac = pivot_err / 45°`, clamped to `max_steer`) until `|heading_error| < heading_deadband`. Then `_advance_path()`.
-- MPC horizon is clipped at the next sharp turn whether that turn is at an original waypoint or a bypass corner.
+- MPC horizon is clipped at the next sharp turn (original waypoint or bypass corner). Beyond `s_clip`, reference points are projected along the **incoming tangent** at the pivot — this keeps the reference non-degenerate even when `s_nearest ≈ s_clip` (avoids all ref points collapsing to one location). MPC is now active for all non-bypass segments **including pivot approach** — it guides the rover cleanly to the turn point; only after arrival does the rover stop-and-spin and the post-turn segment become visible.
 - Arc-length advance (`s_nearest > wp_s + accept`) is disabled for pivot waypoints — only proximity (`dist_to_wp < accept`) triggers arrival so the rover reaches the exact turn point.
 
 **Waypoint advance logic:**

@@ -614,8 +614,9 @@ class PathNavigator:
         def to_xy(lat: float, lon: float) -> tuple[float, float]:
             return (lon - rlon) * m_lon, (lat - rlat) * m_lat
 
-        # Clip horizon at the next pivot waypoint so MPC never optimises
-        # across a sharp turn (mirrors navigator.py._mpc_steer).
+        # Clip horizon at the next pivot waypoint so MPC never sees past a sharp
+        # turn — rover must reach and stop at the pivot before the post-turn
+        # segment becomes visible (mirrors navigator.py._mpc_steer).
         pivot_thresh_nav = self._nav.get('pivot_threshold', 25.0)
         s_clip = float('inf')
         for i in range(self.path_idx, len(self._wps)):
@@ -625,13 +626,35 @@ class PathNavigator:
                 break
         self._step_info['s_clip'] = s_clip
 
+        # When s_nearest approaches s_clip all reference points would collapse to
+        # the same location, producing a degenerate ref_h.  Instead, once the
+        # path arc hits s_clip, project reference points along the INCOMING
+        # tangent at the pivot — rover tracks correctly to the turn and the
+        # reference stays non-degenerate all the way up to arrival.
+        if s_clip < float('inf'):
+            eps = 0.5
+            pt_before = self._point_at_s(max(0.0, s_clip - eps))
+            pt_at     = self._point_at_s(s_clip)
+            clip_x, clip_y = to_xy(pt_at[0], pt_at[1])
+            bx, by = to_xy(pt_before[0], pt_before[1])
+            dx = clip_x - bx; dy = clip_y - by
+            norm = math.hypot(dx, dy) or 1.0
+            tang_x = dx / norm; tang_y = dy / norm
+        else:
+            clip_x = clip_y = tang_x = tang_y = 0.0
+
         ref_x: list[float] = []
         ref_y: list[float] = []
         for ki in range(N + 1):
-            s_ref = min(s_nearest + v_mps * ki * dt, s_clip)
-            pt = self._point_at_s(s_ref)
-            rx, ry = to_xy(pt[0], pt[1])
-            ref_x.append(rx); ref_y.append(ry)
+            s_ref = s_nearest + v_mps * ki * dt
+            if s_clip < float('inf') and s_ref >= s_clip:
+                beyond = s_ref - s_clip
+                ref_x.append(clip_x + tang_x * beyond)
+                ref_y.append(clip_y + tang_y * beyond)
+            else:
+                pt = self._point_at_s(s_ref)
+                rx, ry = to_xy(pt[0], pt[1])
+                ref_x.append(rx); ref_y.append(ry)
 
         h0 = math.radians(90.0 - heading_deg)
         ref_h: list[float] = []
@@ -799,12 +822,11 @@ class PathNavigator:
         v_mps        = max(target_spd, min_spd)
         throttle_ppm = int(PPM_CENTER + (v_mps / max_spd) * 500)
 
-        # Use MPC only on normal (non-pivot, non-bypass) segments.
-        # For pivot WPs: Stanley with direct-to-waypoint aim is reliable;
-        # MPC with a horizon clipped at the pivot produces a degenerate
-        # reference (all points at the same location) when s_nearest is
-        # close to s_clip, causing erratic steering.
-        use_mpc = self._algo == 'mpc' and not is_bypass and not needs_pivot
+        # Use MPC for all non-bypass segments — including the approach to a
+        # pivot waypoint.  The horizon clips at the pivot; beyond s_clip the
+        # reference is projected along the incoming tangent so the reference
+        # never degenerates when s_nearest ≈ s_clip.
+        use_mpc = self._algo == 'mpc' and not is_bypass
         if use_mpc:
             steer_frac = self._mpc_steer(rlat, rlon, heading, s_nearest, v_mps)
         else:
