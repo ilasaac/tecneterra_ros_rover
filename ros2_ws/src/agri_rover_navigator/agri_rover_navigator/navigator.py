@@ -818,7 +818,17 @@ class NavigatorNode(Node):
         best_seg  = self._path_idx
         best_dist = float('inf')
 
-        for seg_k in range(self._path_idx, len(self._path)):
+        # Never search past the next pivot waypoint — the rover hasn't turned yet
+        # so segments on the far side of the turn are not reachable.  Without this
+        # limit a curving path brings later segments physically close to the rover
+        # and _nearest_on_path snaps s_nearest there, skipping intermediate WPs.
+        search_limit = len(self._path)
+        for k in range(self._path_idx, len(self._path)):
+            if self._turn_angle_at(k) >= self._pivot_threshold:
+                search_limit = k + 1   # include the pivot wp itself, stop there
+                break
+
+        for seg_k in range(self._path_idx, search_limit):
             # Segment endpoints and arc-length bounds
             if seg_k == 0:
                 if self._path_origin_lat is None:

@@ -492,7 +492,18 @@ class PathNavigator:
             return 0.0, 0
         best_s, best_seg, best_dist = 0.0, self.path_idx, float('inf')
 
-        for seg_k in range(self.path_idx, len(self._wps)):
+        # Never search past the next pivot waypoint — the rover hasn't turned yet
+        # so segments on the far side of the turn are not reachable.  Without this
+        # limit a curving path brings later segments physically close to the rover
+        # and _nearest_on_path snaps s_nearest there, skipping intermediate WPs.
+        pivot_thresh = self._nav.get('pivot_threshold', 25.0)
+        search_limit = len(self._wps)
+        for k in range(self.path_idx, len(self._wps)):
+            if self._turn_angle_at(k) >= pivot_thresh:
+                search_limit = k + 1   # include the pivot wp itself, stop there
+                break
+
+        for seg_k in range(self.path_idx, search_limit):
             if seg_k == 0:
                 a_lat, a_lon, s_a = self._origin_lat, self._origin_lon, 0.0
             else:
