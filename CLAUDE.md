@@ -572,7 +572,7 @@ All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
 | `simulator.py` | Simulator Jetson | Dead-reckoning physics → NMEA over UDP WiFi |
 | `nmea_wifi_rx.py` | Each rover Jetson | Receives UDP NMEA → PTY virtual serial ports for gps_driver |
 | `rtk_forwarder.py` | Each rover Jetson | NTRIP/E610 RTCM3 → u-blox serial (real hardware) |
-| `sim_navigator.py` | Any (no ROS2) | SIL simulation of full-path Stanley navigator; importable by monitor.py; standalone CLI with CSV waypoints |
+| `sim_navigator.py` | Any (no ROS2) | SIL simulation of full-path Stanley navigator; importable by monitor.py; standalone CLI with CSV waypoints. Writes obstacle reroute diagnostics to `tools/obstacle_debug.log` |
 | `monitor.py` | Dev machine / RPi (SSH) | Terminal dashboard + Leaflet map (HTTP :8088); snoops GQC mission uploads and auto-simulates via sim_navigator.py |
 | `mission_uploader.py` | Dev machine | CSV waypoints → MAVLink mission upload |
 
@@ -592,5 +592,5 @@ All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
 - `firmware/*/main.cpp`: SX1278 driver is complete but needs `pico_sdk_import.cmake` copied from `$PICO_SDK_PATH/external/`
 - `ppm_tx.pio`: slave uses SM0 (not SM1) — one less state machine needed vs master
 - Android GQC: RTSP dual video screen, settings dialog, STATUSTEXT log screen still TODO (see android/AgriRoverGQC/README.md)
-- Navigator obstacle avoidance: single-pass rerouting — a segment that intersects multiple non-adjacent polygons is rerouted around the first one only; subsequent polygons are handled in the next segment. Complex overlapping obstacle layouts may require manual mission adjustment.
+- Navigator obstacle avoidance: single-pass per segment — a segment intersecting multiple non-adjacent polygons is rerouted around the first one only; complex overlapping layouts may need manual adjustment. Polygons spanning waypoints (cross-segment case) are handled correctly via scan-ahead.
 - DO_SET_SERVO in missions: applied at upload time, re-published continuously by navigator at 25 Hz. For precise per-waypoint timing during replay (servo fires when rover physically reaches GPS position), the navigator would need to sequence through mixed mission items (requires MissionWaypoint interface change or a new ServoEvent topic).
