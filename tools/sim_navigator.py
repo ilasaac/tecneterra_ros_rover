@@ -62,14 +62,14 @@ EARTH_R    = 6_371_000.0
 
 # Navigator parameter defaults — keep in sync with navigator_params.yaml
 DEFAULT_NAV: dict = {
-    'lookahead_distance':        3.0,
+    'lookahead_distance':        2.0,
     'default_acceptance_radius': 0.4,
     'max_speed':                 1.5,
     'min_speed':                 0.3,
     'max_steering':              0.8,
     'align_threshold':           30.0,
     'heading_deadband':          3.0,
-    'stanley_k':                 1.0,
+    'stanley_k':                 1.5,
     'stanley_softening':         0.3,
     'pivot_threshold':           25.0,
     'pivot_approach_dist':       4.0,
