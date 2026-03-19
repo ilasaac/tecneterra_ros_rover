@@ -192,41 +192,13 @@ def _seg_intersect_polygon(
     return hits
 
 
-def _smooth_corners(
-        pts: list[tuple[float, float]],
-        corner_r: float) -> list[tuple[float, float]]:
-    """Round each intermediate vertex with approach+depart points corner_r metres
-    before/after, creating a chamfered path. Radius capped at 45% of each edge."""
-    if corner_r < 0.01 or len(pts) <= 2:
-        return pts
-
-    def lerp(a: tuple, b: tuple, t: float) -> tuple[float, float]:
-        return (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
-
-    result: list[tuple[float, float]] = [pts[0]]
-    for i in range(1, len(pts) - 1):
-        prev, curr, nxt = pts[i - 1], pts[i], pts[i + 1]
-        d_in  = _haversine(prev[0], prev[1], curr[0], curr[1])
-        d_out = _haversine(curr[0], curr[1], nxt[0],  nxt[1])
-        r = min(corner_r, d_in * 0.45, d_out * 0.45)
-        if r < 0.05:
-            result.append(curr)
-            continue
-        result.append(lerp(prev, curr, 1.0 - r / d_in))   # approach
-        result.append(lerp(curr, nxt,        r / d_out))   # depart
-    result.append(pts[-1])
-    return result
-
-
 def _bypass_arc(
         entry_pt: tuple[float, float],
         exit_pt: tuple[float, float],
         entry_edge: int,
         exit_edge: int,
-        polygon: list[tuple[float, float]],
-        corner_r: float = 0.0) -> list[tuple[float, float]]:
-    """Return the shorter arc path: entry_pt → polygon vertices → exit_pt,
-    with intermediate vertices rounded by corner_r metres."""
+        polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Return the shorter arc path: entry_pt → polygon vertices → exit_pt."""
     n = len(polygon)
 
     ccw: list[tuple[float, float]] = []
@@ -252,16 +224,14 @@ def _bypass_arc(
 
     ccw_path = [entry_pt] + ccw + [exit_pt]
     cw_path  = [entry_pt] + cw  + [exit_pt]
-    chosen   = ccw_path if path_len(ccw_path) <= path_len(cw_path) else cw_path
-    return _smooth_corners(chosen, corner_r)
+    return ccw_path if path_len(ccw_path) <= path_len(cw_path) else cw_path
 
 
 def _bypass_verts(
         a_lat: float, a_lon: float,
         b_lat: float, b_lon: float,
         hits: list[tuple[float, int]],
-        polygon: list[tuple[float, float]],
-        corner_r: float = 0.0) -> list[tuple[float, float]]:
+        polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Return bypass (lat, lon) points that detour around the polygon boundary."""
     if len(hits) < 2:
         return []
@@ -271,14 +241,13 @@ def _bypass_verts(
     def interp(t: float) -> tuple[float, float]:
         return (a_lat + t * (b_lat - a_lat), a_lon + t * (b_lon - a_lon))
 
-    return _bypass_arc(interp(t_entry), interp(t_exit), entry_edge, exit_edge, polygon, corner_r)
+    return _bypass_arc(interp(t_entry), interp(t_exit), entry_edge, exit_edge, polygon)
 
 
 def _reroute_waypoints(
         waypoints: list[SimWaypoint],
         expanded_polygons: list[list[tuple[float, float]]],
-        origin_lat: float, origin_lon: float,
-        corner_r: float = 0.0) -> list[SimWaypoint]:
+        origin_lat: float, origin_lon: float) -> list[SimWaypoint]:
     """
     Return a new waypoint list with bypass points inserted around obstacles.
 
@@ -322,7 +291,7 @@ def _reroute_waypoints(
             complete.sort(key=lambda x: x[1][0][0])
             best_pi, best_hits = complete[0]
             bypass = _bypass_verts(a_lat, a_lon, b_lat, b_lon,
-                                   best_hits, expanded_polygons[best_pi], corner_r)
+                                   best_hits, expanded_polygons[best_pi])
             _dbg(f'  -> bypass inserted: {len(bypass)} points around poly[{best_pi}]')
             for blat, blon in bypass:
                 new_wps.append(make_bypass(blat, blon, wp))
@@ -356,7 +325,7 @@ def _reroute_waypoints(
                     exit_pt = (c_lat + exit_t * (d_lat - c_lat),
                                c_lon + exit_t * (d_lon - c_lon))
                     bypass = _bypass_arc(entry_pt, exit_pt,
-                                         entry_edge, exit_edge, poly, corner_r)
+                                         entry_edge, exit_edge, poly)
                     _dbg(f'  -> cross-segment bypass: {len(bypass)} pts, '
                          f'poly[{entry_pi}] spans wps {i}..{j-1}')
                     for blat, blon in bypass:
@@ -679,8 +648,7 @@ def simulate(waypoints:       list[SimWaypoint],
             _dbg(f'--- reroute start: {len(waypoints)} wps, '
                  f'{len(expanded_polygons)} expanded polys ---')
             effective_wps = _reroute_waypoints(
-                waypoints, expanded_polygons, start_lat, start_lon,
-                corner_r=nav.get('obstacle_clearance_m', 1.0) * 2.0)
+                waypoints, expanded_polygons, start_lat, start_lon)
             _dbg(f'--- reroute done: {len(effective_wps)} effective wps ---')
     _dbg(f'simulate: obstacles={len(obstacles) if obstacles else 0} '
          f'expanded={len(expanded_polygons)} '
