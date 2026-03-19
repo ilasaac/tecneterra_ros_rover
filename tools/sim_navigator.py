@@ -557,10 +557,19 @@ def simulate(waypoints:       list[SimWaypoint],
     import time as _time
     _dbg(f'\n=== simulate() called {_time.strftime("%H:%M:%S")} ==='
          f' obstacles={len(obstacles) if obstacles else 0} wps={len(waypoints)} ===')
+    _dbg(f'start=({start_lat:.6f},{start_lon:.6f})')
+    if waypoints:
+        _dbg(f'WP[0]=({waypoints[0].lat:.6f},{waypoints[0].lon:.6f})'
+             f'  WP[-1]=({waypoints[-1].lat:.6f},{waypoints[-1].lon:.6f})')
     if obstacles:
         clearance = nav['obstacle_clearance_m']
         for i, poly_raw in enumerate(obstacles):
             poly = [(float(v[0]), float(v[1])) for v in poly_raw]
+            c_lat = sum(p[0] for p in poly) / len(poly)
+            c_lon = sum(p[1] for p in poly) / len(poly)
+            _dbg(f'obstacle[{i}]: {len(poly)} verts, centroid=({c_lat:.6f},{c_lon:.6f})')
+            for j, v in enumerate(poly):
+                _dbg(f'  v[{j}]=({v[0]:.6f},{v[1]:.6f})')
             if len(poly) >= 3:
                 expanded_polygons.append(_expand_polygon(poly, clearance))
             else:
