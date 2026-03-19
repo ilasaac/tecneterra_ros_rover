@@ -56,7 +56,7 @@
     pivot_approach_dist:       4.0
     rover_width_m:             1.0
     obstacle_clearance_m:      0.5
-    control_algorithm:         'mpc'
+    control_algorithm:         mpc
     mpc_horizon:               10
     mpc_dt:                    0.2
     mpc_w_cte:                 2.0
