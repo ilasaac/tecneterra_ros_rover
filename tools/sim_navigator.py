@@ -62,7 +62,7 @@ DEFAULT_NAV: dict = {
     'heading_deadband':          3.0,
     'stanley_k':                 1.0,
     'stanley_softening':         0.3,
-    'pivot_threshold':           60.0,
+    'pivot_threshold':           30.0,
     'pivot_approach_dist':       4.0,
     'obstacle_clearance_m':      0.5,
     'rover_width_m':             1.0,

@@ -43,7 +43,7 @@ navigator:
     #   stops and spins in place to the new heading instead of trying to curve.
     #   90° field turns typically need this. Set lower (e.g. 45°) for tighter
     #   course changes; set higher (e.g. 120°) to only pivot on very sharp turns.
-    pivot_threshold: 60.0
+    pivot_threshold: 30.0
 
     # pivot_approach_dist (metres): distance from a pivot waypoint at which the
     #   rover switches from path-lookahead to direct-to-waypoint aiming and begins
