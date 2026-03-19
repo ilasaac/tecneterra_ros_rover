@@ -538,6 +538,44 @@ class PathNavigator:
 
         return best_s, best_seg
 
+    def _s_on_current_seg(self, lat: float, lon: float, clamp: bool = True) -> float:
+        """Project rover onto the CURRENT segment (path_idx) only.
+
+        Returns the arc-length s of the projection.
+        clamp=True  → s clamped to [s_a, s_b]  (for MPC starting point / Stanley).
+        clamp=False → s unclamped              (for overshoot detection: s > wp_s means
+                                                rover has physically passed the waypoint).
+
+        Using only the current segment prevents _nearest_on_path from snapping to a
+        later segment that happens to be geometrically close when the path curves back,
+        which previously caused waypoints to be skipped en-masse after a pivot turn.
+        """
+        seg_k = self.path_idx
+        if not self._wps or seg_k >= len(self._wps):
+            return 0.0
+        if seg_k == 0:
+            a_lat, a_lon, s_a = self._origin_lat, self._origin_lon, 0.0
+        else:
+            a_lat = self._wps[seg_k - 1].lat
+            a_lon = self._wps[seg_k - 1].lon
+            s_a   = self._path_s[seg_k - 1]
+        b_lat, b_lon, s_b = self._wps[seg_k].lat, self._wps[seg_k].lon, self._path_s[seg_k]
+
+        mid_lat = math.radians((a_lat + b_lat) / 2)
+        cos_lat = math.cos(mid_lat) or 1e-9
+        m_lat, m_lon = 111_320.0, 111_320.0 * cos_lat
+        seg_dy = (b_lat - a_lat) * m_lat
+        seg_dx = (b_lon - a_lon) * m_lon
+        seg_len_sq = seg_dx ** 2 + seg_dy ** 2
+        if seg_len_sq < 1e-6:
+            return s_b
+        rv_dy = (lat - a_lat) * m_lat
+        rv_dx = (lon - a_lon) * m_lon
+        t = (rv_dx * seg_dx + rv_dy * seg_dy) / seg_len_sq
+        if clamp:
+            t = max(0.0, min(1.0, t))
+        return s_a + t * (s_b - s_a)
+
     def _cte_to_seg(self, lat: float, lon: float, seg_idx: int) -> float:
         if seg_idx == 0:
             if not self._wps:
@@ -764,9 +802,17 @@ class PathNavigator:
         turn_angle  = self._turn_angle_at(self.path_idx)
         needs_pivot = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
 
-        s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
-        wp_s                = self._path_s[self.path_idx]
-        dist_to_wp          = _haversine(rlat, rlon, wp.lat, wp.lon)
+        # Project rover onto the CURRENT segment only.
+        # s_nearest (clamped)   → MPC starting point, Stanley lookahead origin.
+        # s_overshoot (unclamped) → arc-length advance: > wp_s means rover passed the wp.
+        # Using only the current segment prevents snap-ahead to later segments when the
+        # path curves back near the rover (e.g. after a pivot on a looping route), which
+        # previously caused a cascade of waypoints to be skipped in one tick.
+        s_nearest   = self._s_on_current_seg(rlat, rlon, clamp=True)
+        s_overshoot = self._s_on_current_seg(rlat, rlon, clamp=False)
+        best_seg    = self.path_idx
+        wp_s        = self._path_s[self.path_idx]
+        dist_to_wp  = _haversine(rlat, rlon, wp.lat, wp.lon)
 
         self._step_info.update({
             'wp_idx': self.path_idx,
@@ -779,7 +825,7 @@ class PathNavigator:
 
         # Waypoint advance — bypass waypoints require physical proximity (arc-length
         # advance is disabled so short bypass arcs are not immediately skipped).
-        reached = dist_to_wp < accept or (not needs_pivot and not is_bypass and s_nearest > wp_s + accept)
+        reached = dist_to_wp < accept or (not needs_pivot and not is_bypass and s_overshoot > wp_s + accept)
         if reached:
             if wp.hold_secs > 0.0:
                 self._holding  = True
