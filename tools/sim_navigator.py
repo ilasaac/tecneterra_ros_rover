@@ -918,6 +918,137 @@ def simulate(waypoints:       list[SimWaypoint],
     )
 
 
+# ── HTML result export ────────────────────────────────────────────────────────
+
+def _write_html_result(result: SimResult,
+                       waypoints: list[SimWaypoint],
+                       start_lat: float, start_lon: float,
+                       nav: dict,
+                       outfile: str) -> None:
+    """Write a self-contained Leaflet HTML file visualising the simulation result."""
+
+    # Compute pivot waypoints
+    if result.rerouted_wps:
+        rw = [SimWaypoint(seq=i, lat=r[0], lon=r[1],
+                          is_bypass=not any(abs(w.lat - r[0]) < 1e-8 and
+                                            abs(w.lon - r[1]) < 1e-8
+                                            for w in waypoints))
+              for i, r in enumerate(result.rerouted_wps)]
+    else:
+        rw = list(waypoints)
+    path_n_tmp = PathNavigator(rw, start_lat, start_lon, nav)
+    pivot_wps = []
+    for i in range(len(path_n_tmp._wps)):
+        if not path_n_tmp._wps[i].is_bypass:
+            ta = path_n_tmp._turn_angle_at(i)
+            if ta >= nav.get('pivot_threshold', 25.0):
+                pivot_wps.append({'lat': path_n_tmp._wps[i].lat,
+                                  'lon': path_n_tmp._wps[i].lon,
+                                  'turn_angle': round(ta, 1)})
+
+    centre_lat = start_lat
+    centre_lon = start_lon
+
+    data_js = json.dumps({
+        'path':        result.path,
+        'xte_log':     result.xte_log,
+        'waypoints':   [{'lat': w.lat, 'lon': w.lon, 'seq': w.seq} for w in waypoints],
+        'pivot_wps':   pivot_wps,
+        'rerouted':    result.rerouted_wps,
+        'stats': {
+            'complete':    result.complete,
+            'rms_xte':     result.rms_xte,
+            'max_xte':     result.max_xte,
+            'total_steps': result.total_steps,
+            'n_wps':       len(waypoints),
+            'reached':     len(result.waypoints_reached),
+        },
+    })
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Sim Result</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+body{{margin:0;font-family:Arial,sans-serif}}
+#map{{height:100vh}}
+#panel{{position:absolute;top:10px;right:10px;z-index:999;background:rgba(20,20,40,.9);
+       color:#ddd;padding:12px 16px;border-radius:6px;font-size:12px;line-height:1.8;
+       min-width:200px;border:1px solid #444}}
+#panel h3{{color:#2ecc71;margin-bottom:6px;font-size:13px}}
+.lbl{{color:#888}}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel"><h3>Simulation Result</h3><div id="stats-text"></div></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const DATA = {data_js};
+
+const map = L.map('map').setView([{centre_lat}, {centre_lon}], 18);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}',
+  {{attribution:'ESRI',maxZoom:21,maxNativeZoom:19}}).addTo(map);
+
+// Planned route
+if (DATA.waypoints.length > 1) {{
+  L.polyline(DATA.waypoints.map(w=>[w.lat,w.lon]),
+    {{color:'#2ecc71',weight:2,dashArray:'8,5',opacity:.7}}).addTo(map)
+    .bindTooltip('Planned route');
+}}
+
+// Waypoint markers
+DATA.waypoints.forEach((w,i) => {{
+  const icon = L.divIcon({{
+    html:`<div style="background:#1a7a3a;color:#fff;border-radius:50%;width:20px;height:20px;
+          display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;
+          border:2px solid #fff">${{i}}</div>`,
+    className:'',iconAnchor:[10,10]
+  }});
+  L.marker([w.lat,w.lon],{{icon}}).addTo(map).bindTooltip(`WP${{i}}`);
+}});
+
+// Pivot markers
+DATA.pivot_wps.forEach(pw => {{
+  L.circleMarker([pw.lat,pw.lon],
+    {{radius:9,color:'#e67e22',fillColor:'#e67e22',fillOpacity:.85,weight:2}})
+    .addTo(map).bindTooltip(`Pivot ${{pw.turn_angle.toFixed(0)}}\u00b0`);
+}});
+
+// Simulated path - coloured by XTE
+const xteMax = Math.max(...(DATA.xte_log||[0.001]),0.001);
+for (let i=0;i+1<DATA.path.length && i<DATA.xte_log.length;i++) {{
+  const t = DATA.xte_log[i]/xteMax;
+  const r2 = Math.round(255*Math.min(t*2,1));
+  const g2 = Math.round(255*Math.max(1-t*2+1,0));
+  L.polyline([DATA.path[i],DATA.path[i+1]],
+    {{color:`rgb(${{r2}},${{g2}},30)`,weight:3,opacity:.85}}).addTo(map);
+}}
+
+// Stats
+const s = DATA.stats;
+document.getElementById('stats-text').innerHTML = `
+  <div><span class="lbl">Complete:</span> ${{s.complete?'\u2713 Yes':'\u2717 Timeout'}}</div>
+  <div><span class="lbl">Duration:</span> ${{(s.total_steps/25).toFixed(1)}} s</div>
+  <div><span class="lbl">WP reached:</span> ${{s.reached}}/${{s.n_wps}}</div>
+  <div><span class="lbl">XTE rms:</span> ${{s.rms_xte.toFixed(3)}} m</div>
+  <div><span class="lbl">XTE max:</span> ${{s.max_xte.toFixed(3)}} m</div>
+  <div><span class="lbl">Pivots:</span> ${{DATA.pivot_wps.length}}</div>
+  <div style="font-size:10px;color:#555;margin-top:6px">green dashed = planned<br>coloured = simulated (green=low XTE, red=high)<br>orange circles = pivot turns</div>
+`;
+
+// Fit map to path
+if (DATA.path.length) {{
+  map.fitBounds(L.latLngBounds(DATA.path.concat(DATA.waypoints.map(w=>[w.lat,w.lon]))).pad(.05));
+}}
+</script>
+</body></html>"""
+
+    with open(outfile, 'w') as f:
+        f.write(html)
+    print(f'Map written -> {outfile}')
+
+
 # ── CLI standalone ────────────────────────────────────────────────────────────
 
 def _load_csv(path: str) -> list[SimWaypoint]:
@@ -952,6 +1083,8 @@ if __name__ == '__main__':
     ap.add_argument('--turn-scale',  type=float, default=DEFAULT_PHYS['turn_scale'])
     ap.add_argument('--obstacles',   type=str,   default=None,
                     help='JSON file with obstacle polygons [[[lat,lon],...],...]')
+    ap.add_argument('--html-out',    type=str,   default=None, metavar='FILE',
+                    help='Write simulation result to a Leaflet HTML file')
     ap.add_argument('--debug', action='store_true', help='Print per-step controller state')
     ap.add_argument('waypoints',     help='CSV file with lat,lon[,speed,hold_secs] columns')
     args = ap.parse_args()
@@ -979,3 +1112,7 @@ if __name__ == '__main__':
     print(f'Path pts : {len(result.path)}')
     if result.obstacle_polygons:
         print(f'Obstacles: {len(result.obstacle_polygons)} polygon(s) (expanded)')
+
+    if args.html_out:
+        _write_html_result(result, wps, args.lat, args.lon,
+                           {**DEFAULT_NAV}, args.html_out)
