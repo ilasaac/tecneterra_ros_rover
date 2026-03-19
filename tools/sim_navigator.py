@@ -54,7 +54,7 @@ EARTH_R    = 6_371_000.0
 # Navigator parameter defaults — keep in sync with navigator_params.yaml
 DEFAULT_NAV: dict = {
     'lookahead_distance':        3.0,
-    'default_acceptance_radius': 0.3,
+    'default_acceptance_radius': 1.5,
     'max_speed':                 1.5,
     'min_speed':                 0.3,
     'max_steering':              0.8,
@@ -1008,10 +1008,15 @@ DATA.waypoints.forEach((w,i) => {{
   L.marker([w.lat,w.lon],{{icon}}).addTo(map).bindTooltip(`WP${{i}}`);
 }});
 
-// Pivot markers
+// Pivot markers — added after path segments so they appear on top
 DATA.pivot_wps.forEach(pw => {{
-  L.circleMarker([pw.lat,pw.lon],
-    {{radius:9,color:'#e67e22',fillColor:'#e67e22',fillOpacity:.85,weight:2}})
+  const icon = L.divIcon({{
+    html:`<div style="background:#e67e22;color:#fff;border-radius:50%;width:28px;height:28px;
+          display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;
+          border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.8)">&#8635;</div>`,
+    className:'',iconAnchor:[14,14]
+  }});
+  L.marker([pw.lat,pw.lon],{{icon,zIndexOffset:1000}})
     .addTo(map).bindTooltip(`Pivot ${{pw.turn_angle.toFixed(0)}}\u00b0`);
 }});
 

@@ -213,11 +213,17 @@ async function runSimulate() {
       simLayers.push(seg);
     }
 
-    // Pivot waypoint markers
+    // Pivot waypoint markers — rendered after path so they appear on top
     (d.pivot_wps||[]).forEach(pw => {
-      const m = L.circleMarker([pw.lat, pw.lon], {
-        radius:8, color:'#e67e22', fillColor:'#e67e22', fillOpacity:.8, weight:2
-      }).addTo(map).bindTooltip(`Pivot ${pw.turn_angle.toFixed(0)}\u00b0`);
+      const icon = L.divIcon({
+        html: `<div style="background:#e67e22;color:#fff;border-radius:50%;width:28px;height:28px;
+               display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;
+               border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.8);
+               white-space:nowrap">&#8635;</div>`,
+        className:'', iconAnchor:[14,14]
+      });
+      const m = L.marker([pw.lat, pw.lon], {icon, zIndexOffset:1000})
+        .addTo(map).bindTooltip(`Pivot ${pw.turn_angle.toFixed(0)}\u00b0`);
       simLayers.push(m);
     });
 
