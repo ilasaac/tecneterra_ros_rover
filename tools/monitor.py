@@ -86,6 +86,18 @@ _MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'monitor_ma
 _MAP_PORT = 8088   # overridden by --map-port arg
 
 
+def _local_ip() -> str:
+    """Return the LAN IP of the interface used to reach the network."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return socket.gethostname()
+
+
 def _sbus_to_ppm(ch: list) -> list:
     """
     Mirror firmware apply_ppm_map() — converts raw SBUS (0-indexed) to the 8
@@ -616,7 +628,7 @@ def render():
                     print(f'  LOG  {rv.log[-1]}')
 
         print('\n' + '─' * 72)
-        print(f'  map: http://<this-ip>:{_MAP_PORT}/monitor_map.html  (auto-refresh 5 s)')
+        print(f'  map: http://{_local_ip()}:{_MAP_PORT}/monitor_map.html  (auto-refresh 5 s)')
         print('  Ctrl+C to exit')
 
 
