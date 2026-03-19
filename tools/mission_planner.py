@@ -229,14 +229,19 @@ async function runSimulate() {
 
     // Pivot waypoint markers — rendered after path so they appear on top
     (d.pivot_wps||[]).forEach(pw => {
+      const isBypass = pw.is_bypass;
+      const sz = isBypass ? 22 : 26;
+      const fs = isBypass ? 11 : 13;
+      const bg = isBypass ? 'rgba(180,80,200,0.5)' : 'rgba(230,126,34,0.45)';
       const icon = L.divIcon({
-        html: `<div style="background:rgba(230,126,34,0.45);color:#fff;border-radius:50%;width:26px;height:26px;
-               display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:bold;
+        html: `<div style="background:${bg};color:#fff;border-radius:50%;width:${sz}px;height:${sz}px;
+               display:flex;align-items:center;justify-content:center;font-size:${fs}px;font-weight:bold;
                border:1.5px solid rgba(255,255,255,0.7);box-shadow:0 1px 3px rgba(0,0,0,.4)">&#8635;</div>`,
-        className:'', iconAnchor:[13,13]
+        className:'', iconAnchor:[sz/2,sz/2]
       });
+      const label = (isBypass ? 'Bypass pivot ' : 'Pivot ') + pw.turn_angle.toFixed(0) + '\u00b0';
       const m = L.marker([pw.lat, pw.lon], {icon, zIndexOffset:1000})
-        .addTo(map).bindTooltip(`Pivot ${pw.turn_angle.toFixed(0)}\u00b0`);
+        .addTo(map).bindTooltip(label);
       simLayers.push(m);
     });
 
@@ -257,7 +262,7 @@ async function runSimulate() {
       <div><span class="lbl">XTE max:</span> ${d.max_xte.toFixed(3)} m</div>
       <div><span class="lbl">Pivot WPs:</span> ${(d.pivot_wps||[]).length}</div>
       <div><span class="lbl">Obstacles:</span> ${obstacles.length}</div>
-      <div style="font-size:10px;color:#666;margin-top:4px">Path: green=on-track \u2192 red=high XTE<br>Orange \u21bb = pivot &nbsp; White dashed = reroute</div>`;
+      <div style="font-size:10px;color:#666;margin-top:4px">Path: green=on-track \u2192 red=high XTE<br>Orange \u21bb = pivot &nbsp; Purple \u21bb = bypass pivot &nbsp; White dashed = reroute</div>`;
     status(`Done. XTE rms=${d.rms_xte.toFixed(3)}m max=${d.max_xte.toFixed(3)}m`);
   } catch(e) {
     statsEl.innerHTML = `<span style="color:#e74c3c">Error: ${e}</span>`;
@@ -445,12 +450,12 @@ class _Handler(BaseHTTPRequestHandler):
                 start_lat, start_lon, nav_p)
             pivot_wps = []
             for i in range(len(path_n._wps)):
-                if not path_n._wps[i].is_bypass:
-                    ta = path_n._turn_angle_at(i)
-                    if ta >= nav_p.get('pivot_threshold', 25.0):
-                        pivot_wps.append({'lat': path_n._wps[i].lat,
-                                          'lon': path_n._wps[i].lon,
-                                          'turn_angle': round(ta, 1)})
+                ta = path_n._turn_angle_at(i)
+                if ta >= nav_p.get('pivot_threshold', 25.0):
+                    pivot_wps.append({'lat': path_n._wps[i].lat,
+                                      'lon': path_n._wps[i].lon,
+                                      'turn_angle': round(ta, 1),
+                                      'is_bypass': path_n._wps[i].is_bypass})
 
             self._json({
                 'complete':          result.complete,

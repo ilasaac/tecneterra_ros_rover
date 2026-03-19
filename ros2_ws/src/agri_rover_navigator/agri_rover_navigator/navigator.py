@@ -985,7 +985,7 @@ class NavigatorNode(Node):
         # point before the post-turn segment becomes visible.
         s_clip = float('inf')
         for i in range(self._path_idx, len(self._path)):
-            if i not in self._bypass_indices and self._turn_angle_at(i) >= self._pivot_threshold:
+            if self._turn_angle_at(i) >= self._pivot_threshold:
                 if i < len(self._path_s):
                     s_clip = self._path_s[i]
                 break
@@ -1089,11 +1089,9 @@ class NavigatorNode(Node):
         rlat, rlon  = self._center_pos()
         flat, flon  = self._front_pos()
 
-        # Bypass waypoints never trigger pivot turns — they are smooth throughpoints.
         is_bypass   = self._path_idx in self._bypass_indices
-        turn_angle  = self._turn_angle_at(self._path_idx) if not is_bypass else 0.0
-        needs_pivot = (not is_bypass
-                       and turn_angle >= self._pivot_threshold
+        turn_angle  = self._turn_angle_at(self._path_idx)
+        needs_pivot = (turn_angle >= self._pivot_threshold
                        and self._path_idx < len(self._path) - 1)
 
         # ── Full-path nearest-point projection ───────────────────────────────

@@ -619,7 +619,7 @@ class PathNavigator:
         pivot_thresh_nav = self._nav.get('pivot_threshold', 25.0)
         s_clip = float('inf')
         for i in range(self.path_idx, len(self._wps)):
-            if not self._wps[i].is_bypass and self._turn_angle_at(i) >= pivot_thresh_nav:
+            if self._turn_angle_at(i) >= pivot_thresh_nav:
                 if i < len(self._path_s):
                     s_clip = self._path_s[i]
                 break
@@ -727,8 +727,8 @@ class PathNavigator:
         wp          = self._wps[self.path_idx]
         accept      = wp.acceptance_radius if wp.acceptance_radius > 0 else accept_r
         is_bypass   = wp.is_bypass
-        turn_angle  = self._turn_angle_at(self.path_idx) if not is_bypass else 0.0
-        needs_pivot = (not is_bypass and turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
+        turn_angle  = self._turn_angle_at(self.path_idx)
+        needs_pivot = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
 
         s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
         wp_s                = self._path_s[self.path_idx]
@@ -902,7 +902,7 @@ def simulate(waypoints:       list[SimWaypoint],
         print(f'  {"WP":>3}  {"lat":>11}  {"lon":>12}  {"turn°":>6}  {"type":>8}  {"arc_s":>6}')
         for i, wp in enumerate(effective_wps):
             ta = path_n._turn_angle_at(i)
-            pv = '★PIVOT' if (not wp.is_bypass and ta >= nav['pivot_threshold']) else ('bypass' if wp.is_bypass else 'normal')
+            pv = '★PIVOT' if ta >= nav['pivot_threshold'] else ('bypass' if wp.is_bypass else 'normal')
             arc = path_n._path_s[i] if i < len(path_n._path_s) else 0.0
             print(f'  {wp.seq:>3}  {wp.lat:>11.6f}  {wp.lon:>12.6f}  {ta:>6.1f}  {pv:>8}  {arc:>6.1f}m')
         print(f'{"─"*60}')
