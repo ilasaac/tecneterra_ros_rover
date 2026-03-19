@@ -593,7 +593,7 @@ class RoverPositionManager(
 
             // TUNNEL (#385) payload_type=0x5250 — rerouted path chunks from navigator
             is Tunnel -> {
-                if (payload.payloadType() != 0x5250) return
+                if (payload.payloadType().value() != 0x5250) return
                 val raw       = payload.payload()          // ByteArray[128]
                 val pLen      = payload.payloadLength()    // bytes actually used
                 if (pLen < 2) return
