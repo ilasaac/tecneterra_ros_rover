@@ -432,39 +432,16 @@ class NavigatorNode(Node):
         hits.sort(key=lambda h: h[0])
         return hits
 
-    def _bypass_verts(
+    def _bypass_arc(
             self,
-            a_lat: float, a_lon: float,
-            b_lat: float, b_lon: float,
-            hits: list[tuple[float, int]],
+            entry_pt: tuple[float, float],
+            exit_pt: tuple[float, float],
+            entry_edge: int,
+            exit_edge: int,
             polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
-        """
-        Given segment A→B and its sorted intersections with polygon, return a list
-        of (lat, lon) points that detour around the polygon boundary.
-
-        The detour includes:
-          - entry point (on polygon boundary, along A→B)
-          - polygon vertices walked CW or CCW around the boundary
-          - exit point (on polygon boundary, along A→B)
-
-        CW vs CCW is chosen to minimise total detour length.
-        Returns an empty list if fewer than 2 intersections (tangent or no crossing).
-        """
-        if len(hits) < 2:
-            return []
-
-        t_entry, entry_edge = hits[0]
-        t_exit,  exit_edge  = hits[-1]
-
-        def interp(t: float) -> tuple[float, float]:
-            return (a_lat + t * (b_lat - a_lat),
-                    a_lon + t * (b_lon - a_lon))
-
-        p_entry = interp(t_entry)
-        p_exit  = interp(t_exit)
+        """Return the shorter arc path: entry_pt → polygon vertices → exit_pt."""
         n = len(polygon)
 
-        # CCW walk: polygon[(entry_edge+1)%n] → ... → polygon[exit_edge]
         ccw_verts: list[tuple[float, float]] = []
         idx = (entry_edge + 1) % n
         for _ in range(n):
@@ -473,7 +450,6 @@ class NavigatorNode(Node):
                 break
             idx = (idx + 1) % n
 
-        # CW walk: polygon[entry_edge] → ... → polygon[(exit_edge+1)%n]
         cw_verts: list[tuple[float, float]] = []
         target = (exit_edge + 1) % n
         idx = entry_edge
@@ -489,21 +465,43 @@ class NavigatorNode(Node):
                 total += haversine(pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1])
             return total
 
-        ccw_path = [p_entry] + ccw_verts + [p_exit]
-        cw_path  = [p_entry] + cw_verts  + [p_exit]
-
+        ccw_path = [entry_pt] + ccw_verts + [exit_pt]
+        cw_path  = [entry_pt] + cw_verts  + [exit_pt]
         return ccw_path if path_len(ccw_path) <= path_len(cw_path) else cw_path
+
+    def _bypass_verts(
+            self,
+            a_lat: float, a_lon: float,
+            b_lat: float, b_lon: float,
+            hits: list[tuple[float, int]],
+            polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        """
+        Given segment A→B and its sorted intersections with polygon, return a list
+        of (lat, lon) points that detour around the polygon boundary.
+        Returns an empty list if fewer than 2 intersections.
+        """
+        if len(hits) < 2:
+            return []
+        t_entry, entry_edge = hits[0]
+        t_exit,  exit_edge  = hits[-1]
+
+        def interp(t: float) -> tuple[float, float]:
+            return (a_lat + t * (b_lat - a_lat),
+                    a_lon + t * (b_lon - a_lon))
+
+        return self._bypass_arc(interp(t_entry), interp(t_exit),
+                                entry_edge, exit_edge, polygon)
 
     def _reroute_path(self):
         """
         Rebuild _path and _path_s from _path_original, inserting bypass waypoints
         around any expanded obstacle polygon that a path segment intersects.
 
+        Handles polygons that span across a waypoint (entry and exit on different
+        segments) via cross-segment scan-ahead.
+
         Skipped if the rover is currently navigating autonomously (path_idx > 0
         while armed and in AUTONOMOUS mode) to avoid disrupting an active mission.
-        One pass of rerouting is performed — multiple overlapping obstacle polygons
-        on a single segment are handled by processing the first-encountered polygon
-        and noting the known limitation for rare complex cases.
         """
         if self._mode == 'AUTONOMOUS' and self._armed and self._path_idx > 0:
             self.get_logger().warn('Obstacle reroute skipped — rover is navigating')
@@ -526,41 +524,86 @@ class NavigatorNode(Node):
             bp.acceptance_radius = self._accept_r
             return bp
 
-        for wp in self._path_original:
+        orig = self._path_original
+        i = 0
+        while i < len(orig):
             if not new_wps:
-                new_wps.append(wp)
+                new_wps.append(orig[i])
+                i += 1
                 continue
 
             prev     = new_wps[-1]
+            wp       = orig[i]
             a_lat, a_lon = prev.latitude, prev.longitude
             b_lat, b_lon = wp.latitude, wp.longitude
 
-            # Find the first polygon (by entry t) that this segment intersects
-            best_poly_idx = -1
-            best_hits: list[tuple[float, int]] = []
-            best_t_entry = 1.0
-
+            # Compute intersections with all polygons for this segment
+            seg_hits: list[tuple[int, list]] = []
             for poly_idx, poly in enumerate(self._expanded_polygons):
                 hits = self._seg_intersect_polygon(a_lat, a_lon, b_lat, b_lon, poly)
-                if len(hits) >= 2 and hits[0][0] < best_t_entry:
-                    best_poly_idx = poly_idx
-                    best_hits     = hits
-                    best_t_entry  = hits[0][0]
+                if hits:
+                    seg_hits.append((poly_idx, hits))
 
-            if best_poly_idx < 0:
-                # No intersection — keep original waypoint
+            # Case 1: complete in-segment crossing (>=2 hits)
+            complete = [(pi, h) for pi, h in seg_hits if len(h) >= 2]
+            if complete:
+                complete.sort(key=lambda x: x[1][0][0])
+                best_pi, best_hits = complete[0]
+                poly   = self._expanded_polygons[best_pi]
+                bypass = self._bypass_verts(a_lat, a_lon, b_lat, b_lon, best_hits, poly)
+                for bp_lat, bp_lon in bypass:
+                    idx = len(new_wps)
+                    new_bypass_indices.add(idx)
+                    new_wps.append(make_bypass_wp(bp_lat, bp_lon, wp))
                 new_wps.append(wp)
+                i += 1
                 continue
 
-            # Insert bypass waypoints around best_poly
-            poly   = self._expanded_polygons[best_poly_idx]
-            bypass = self._bypass_verts(a_lat, a_lon, b_lat, b_lon, best_hits, poly)
-            for bp_lat, bp_lon in bypass:
-                idx = len(new_wps)
-                new_bypass_indices.add(idx)
-                new_wps.append(make_bypass_wp(bp_lat, bp_lon, wp))
+            # Case 2: 1-hit entry — polygon spans across a waypoint, scan ahead
+            entries = [(pi, h[0]) for pi, h in seg_hits if len(h) == 1]
+            if entries:
+                entries.sort(key=lambda x: x[1][0])
+                entry_pi, (entry_t, entry_edge) = entries[0]
+                poly = self._expanded_polygons[entry_pi]
+                entry_pt = (a_lat + entry_t * (b_lat - a_lat),
+                            a_lon + entry_t * (b_lon - a_lon))
 
+                # Scan ahead through original waypoints to find the exit crossing
+                j = i + 1
+                found_exit = False
+                while j < len(orig):
+                    c_lat = orig[j - 1].latitude
+                    c_lon = orig[j - 1].longitude
+                    d_lat = orig[j].latitude
+                    d_lon = orig[j].longitude
+                    exit_hits = self._seg_intersect_polygon(c_lat, c_lon, d_lat, d_lon, poly)
+                    if exit_hits:
+                        exit_t, exit_edge = exit_hits[0]
+                        exit_pt = (c_lat + exit_t * (d_lat - c_lat),
+                                   c_lon + exit_t * (d_lon - c_lon))
+                        bypass = self._bypass_arc(entry_pt, exit_pt,
+                                                  entry_edge, exit_edge, poly)
+                        self.get_logger().info(
+                            f'Cross-segment bypass: {len(bypass)} pts, '
+                            f'poly[{entry_pi}] spans wps {i}..{j-1}')
+                        for bp_lat, bp_lon in bypass:
+                            idx = len(new_wps)
+                            new_bypass_indices.add(idx)
+                            new_wps.append(make_bypass_wp(bp_lat, bp_lon, orig[j]))
+                        new_wps.append(orig[j])
+                        i = j + 1
+                        found_exit = True
+                        break
+                    j += 1
+
+                if not found_exit:
+                    new_wps.append(wp)
+                    i += 1
+                continue
+
+            # No intersection — keep original waypoint
             new_wps.append(wp)
+            i += 1
 
         # Rebuild path arc-lengths from new_wps
         new_s: list[float] = []

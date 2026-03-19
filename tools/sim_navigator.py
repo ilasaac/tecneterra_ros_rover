@@ -191,22 +191,13 @@ def _seg_intersect_polygon(
     return hits
 
 
-def _bypass_verts(
-        a_lat: float, a_lon: float,
-        b_lat: float, b_lon: float,
-        hits: list[tuple[float, int]],
+def _bypass_arc(
+        entry_pt: tuple[float, float],
+        exit_pt: tuple[float, float],
+        entry_edge: int,
+        exit_edge: int,
         polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """Return bypass (lat, lon) points that detour around the polygon boundary."""
-    if len(hits) < 2:
-        return []
-    t_entry, entry_edge = hits[0]
-    t_exit,  exit_edge  = hits[-1]
-
-    def interp(t: float) -> tuple[float, float]:
-        return (a_lat + t * (b_lat - a_lat), a_lon + t * (b_lon - a_lon))
-
-    p_entry = interp(t_entry)
-    p_exit  = interp(t_exit)
+    """Return the shorter arc path: entry_pt → polygon vertices → exit_pt."""
     n = len(polygon)
 
     ccw: list[tuple[float, float]] = []
@@ -230,9 +221,26 @@ def _bypass_verts(
         return sum(_haversine(pts[k][0], pts[k][1], pts[k+1][0], pts[k+1][1])
                    for k in range(len(pts) - 1))
 
-    ccw_path = [p_entry] + ccw + [p_exit]
-    cw_path  = [p_entry] + cw  + [p_exit]
+    ccw_path = [entry_pt] + ccw + [exit_pt]
+    cw_path  = [entry_pt] + cw  + [exit_pt]
     return ccw_path if path_len(ccw_path) <= path_len(cw_path) else cw_path
+
+
+def _bypass_verts(
+        a_lat: float, a_lon: float,
+        b_lat: float, b_lon: float,
+        hits: list[tuple[float, int]],
+        polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Return bypass (lat, lon) points that detour around the polygon boundary."""
+    if len(hits) < 2:
+        return []
+    t_entry, entry_edge = hits[0]
+    t_exit,  exit_edge  = hits[-1]
+
+    def interp(t: float) -> tuple[float, float]:
+        return (a_lat + t * (b_lat - a_lat), a_lon + t * (b_lon - a_lon))
+
+    return _bypass_arc(interp(t_entry), interp(t_exit), entry_edge, exit_edge, polygon)
 
 
 def _reroute_waypoints(
@@ -241,7 +249,9 @@ def _reroute_waypoints(
         origin_lat: float, origin_lon: float) -> list[SimWaypoint]:
     """
     Return a new waypoint list with bypass points inserted around obstacles.
-    Mirrors navigator.py _reroute_path() logic.
+
+    Handles the case where an obstacle polygon spans across a waypoint (entry and
+    exit on different segments) by scanning ahead when a segment has a 1-hit entry.
     """
     if not waypoints or not expanded_polygons:
         return list(waypoints)
@@ -253,36 +263,87 @@ def _reroute_waypoints(
         s = seq_counter[0]; seq_counter[0] += 1
         return SimWaypoint(seq=s, lat=lat, lon=lon, speed=ref.speed)
 
-    for wp in waypoints:
+    i = 0
+    while i < len(waypoints):
         if not new_wps:
-            new_wps.append(wp)
+            new_wps.append(waypoints[i])
+            i += 1
             continue
+
         prev = new_wps[-1]
+        wp   = waypoints[i]
         a_lat, a_lon = prev.lat, prev.lon
         b_lat, b_lon = wp.lat, wp.lon
 
-        best_poly_idx = -1
-        best_hits: list[tuple[float, int]] = []
-        best_t = 1.0
+        # Compute intersections with all polygons for this segment
+        seg_hits: list[tuple[int, list]] = []
         for pi, poly in enumerate(expanded_polygons):
             hits = _seg_intersect_polygon(a_lat, a_lon, b_lat, b_lon, poly)
             _dbg(f'seg ({a_lat:.6f},{a_lon:.6f})->({b_lat:.6f},{b_lon:.6f}) '
                  f'poly[{pi}] verts={len(poly)} hits={len(hits)}')
-            if len(hits) >= 2 and hits[0][0] < best_t:
-                best_poly_idx = pi
-                best_hits     = hits
-                best_t        = hits[0][0]
+            if hits:
+                seg_hits.append((pi, hits))
 
-        if best_poly_idx < 0:
+        # Case 1: complete in-segment crossing (>=2 hits) — use existing logic
+        complete = [(pi, h) for pi, h in seg_hits if len(h) >= 2]
+        if complete:
+            complete.sort(key=lambda x: x[1][0][0])
+            best_pi, best_hits = complete[0]
+            bypass = _bypass_verts(a_lat, a_lon, b_lat, b_lon,
+                                   best_hits, expanded_polygons[best_pi])
+            _dbg(f'  -> bypass inserted: {len(bypass)} points around poly[{best_pi}]')
+            for blat, blon in bypass:
+                new_wps.append(make_bypass(blat, blon, wp))
             new_wps.append(wp)
+            i += 1
             continue
 
-        bypass = _bypass_verts(a_lat, a_lon, b_lat, b_lon,
-                               best_hits, expanded_polygons[best_poly_idx])
-        _dbg(f'  -> bypass inserted: {len(bypass)} points around poly[{best_poly_idx}]')
-        for blat, blon in bypass:
-            new_wps.append(make_bypass(blat, blon, wp))
+        # Case 2: 1-hit entry — polygon spans across one or more waypoints
+        entries = [(pi, h[0]) for pi, h in seg_hits if len(h) == 1]
+        if entries:
+            entries.sort(key=lambda x: x[1][0])
+            entry_pi, (entry_t, entry_edge) = entries[0]
+            poly = expanded_polygons[entry_pi]
+            entry_pt = (a_lat + entry_t * (b_lat - a_lat),
+                        a_lon + entry_t * (b_lon - a_lon))
+
+            # Scan ahead through original waypoints to find the exit crossing
+            j = i + 1
+            found_exit = False
+            while j < len(waypoints):
+                c_lat = waypoints[j - 1].lat
+                c_lon = waypoints[j - 1].lon
+                d_lat = waypoints[j].lat
+                d_lon = waypoints[j].lon
+                exit_hits = _seg_intersect_polygon(c_lat, c_lon, d_lat, d_lon, poly)
+                _dbg(f'  scan-ahead j={j}: '
+                     f'seg ({c_lat:.6f},{c_lon:.6f})->({d_lat:.6f},{d_lon:.6f}) '
+                     f'hits={len(exit_hits)}')
+                if exit_hits:
+                    exit_t, exit_edge = exit_hits[0]
+                    exit_pt = (c_lat + exit_t * (d_lat - c_lat),
+                               c_lon + exit_t * (d_lon - c_lon))
+                    bypass = _bypass_arc(entry_pt, exit_pt,
+                                         entry_edge, exit_edge, poly)
+                    _dbg(f'  -> cross-segment bypass: {len(bypass)} pts, '
+                         f'poly[{entry_pi}] spans wps {i}..{j-1}')
+                    for blat, blon in bypass:
+                        new_wps.append(make_bypass(blat, blon, waypoints[j]))
+                    new_wps.append(waypoints[j])
+                    i = j + 1
+                    found_exit = True
+                    break
+                j += 1
+
+            if not found_exit:
+                _dbg(f'  scan-ahead: no exit found for poly[{entry_pi}] — appending wp')
+                new_wps.append(wp)
+                i += 1
+            continue
+
+        # No intersection — keep original waypoint
         new_wps.append(wp)
+        i += 1
 
     return new_wps
 
