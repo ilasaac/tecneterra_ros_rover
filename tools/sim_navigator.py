@@ -79,6 +79,7 @@ class SimWaypoint:
     speed:             float = 0.0
     hold_secs:         float = 0.0
     acceptance_radius: float = 0.0
+    is_bypass:         bool  = False
 
 
 @dataclass
@@ -261,7 +262,7 @@ def _reroute_waypoints(
 
     def make_bypass(lat: float, lon: float, ref: SimWaypoint) -> SimWaypoint:
         s = seq_counter[0]; seq_counter[0] += 1
-        return SimWaypoint(seq=s, lat=lat, lon=lon, speed=ref.speed)
+        return SimWaypoint(seq=s, lat=lat, lon=lon, speed=ref.speed, is_bypass=True)
 
     i = 0
     while i < len(waypoints):
@@ -529,15 +530,17 @@ class PathNavigator:
 
         wp          = self._wps[self.path_idx]
         accept      = wp.acceptance_radius if wp.acceptance_radius > 0 else accept_r
-        turn_angle  = self._turn_angle_at(self.path_idx)
-        needs_pivot = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
+        is_bypass   = wp.is_bypass
+        turn_angle  = self._turn_angle_at(self.path_idx) if not is_bypass else 0.0
+        needs_pivot = (not is_bypass and turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
 
         s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
         wp_s                = self._path_s[self.path_idx]
         dist_to_wp          = _haversine(rlat, rlon, wp.lat, wp.lon)
 
-        # Waypoint advance
-        reached = dist_to_wp < accept or (not needs_pivot and s_nearest > wp_s + accept)
+        # Waypoint advance — bypass waypoints require physical proximity (arc-length
+        # advance is disabled so short bypass arcs are not immediately skipped).
+        reached = dist_to_wp < accept or (not needs_pivot and not is_bypass and s_nearest > wp_s + accept)
         if reached:
             if wp.hold_secs > 0.0:
                 self._holding  = True

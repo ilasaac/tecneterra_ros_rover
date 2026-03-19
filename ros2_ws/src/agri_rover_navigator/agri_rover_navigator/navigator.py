@@ -885,7 +885,7 @@ class NavigatorNode(Node):
         # For pivot waypoints: only proximity triggers advance (arc-length shortcut
         # disabled) so the rover must physically arrive at the turn point.
         # For normal waypoints: both proximity and arc-length overshoot trigger.
-        reached = dist_to_wp < accept or (not needs_pivot and s_nearest > wp_s + accept)
+        reached = dist_to_wp < accept or (not needs_pivot and not is_bypass and s_nearest > wp_s + accept)
 
         if reached:
             if not is_bypass and wp.hold_secs > 0.0:
