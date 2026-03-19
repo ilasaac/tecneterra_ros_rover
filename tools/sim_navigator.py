@@ -702,7 +702,11 @@ class PathNavigator:
                 return PPM_CENTER, PPM_CENTER, best_seg, False
             elif needs_pivot:
                 nxt = self._wps[self.path_idx + 1]
-                self._pivot_hdg       = _bearing_to(wp.lat, wp.lon, nxt.lat, nxt.lon)
+                # Bearing from rover's ACTUAL position to next WP, not from the
+                # waypoint itself — the rover may have triggered "reached" up to
+                # accept_r metres away, so the segment bearing from wp would point
+                # in the wrong direction from where the rover actually is.
+                self._pivot_hdg       = _bearing_to(rlat, rlon, nxt.lat, nxt.lon)
                 self._pivoting        = True
                 self._mpc_prev_steers = []
                 return PPM_CENTER, PPM_CENTER, best_seg, False

@@ -1116,8 +1116,12 @@ class NavigatorNode(Node):
                 self._publish_halt()
             elif needs_pivot:
                 nxt = self._path[self._path_idx + 1]
+                # Bearing from rover's ACTUAL position to next WP, not from the
+                # waypoint itself — the rover may have triggered "reached" up to
+                # accept_r metres away, so the segment bearing from wp would point
+                # in the wrong direction from where the rover actually is.
                 self._pivot_target_hdg = bearing_to(
-                    wp.latitude, wp.longitude, nxt.latitude, nxt.longitude)
+                    rlat, rlon, nxt.latitude, nxt.longitude)
                 self._pivoting        = True
                 self._mpc_prev_steers = []   # warm-start stale after stop-and-spin
                 self.get_logger().info(
