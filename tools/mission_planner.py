@@ -135,10 +135,10 @@ function refresh() {
 
   waypoints.forEach((wp, i) => {
     const icon = L.divIcon({
-      html: `<div style="background:#1a7a3a;color:#fff;border-radius:50%;width:24px;height:24px;
+      html: `<div style="background:rgba(26,122,58,0.45);color:#fff;border-radius:50%;width:22px;height:22px;
              display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;
-             border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.7)">${i}</div>`,
-      className:'', iconAnchor:[12,12]
+             border:1.5px solid rgba(255,255,255,0.7);box-shadow:0 1px 3px rgba(0,0,0,.4)">${i}</div>`,
+      className:'', iconAnchor:[11,11]
     });
     const m = L.marker([wp.lat, wp.lon], {icon, draggable:true})
       .addTo(map)
@@ -154,7 +154,7 @@ function refresh() {
 
   if (waypoints.length > 1)
     routeLine = L.polyline(waypoints.map(w=>[w.lat,w.lon]),
-      {color:'#2ecc71',weight:2,dashArray:'8,5',opacity:.7}).addTo(map);
+      {color:'#2ecc71',weight:1.5,dashArray:'6,4',opacity:.5}).addTo(map);
 
   refreshTable();
   status(`${waypoints.length} waypoint(s).`);
@@ -216,11 +216,10 @@ async function runSimulate() {
     // Pivot waypoint markers — rendered after path so they appear on top
     (d.pivot_wps||[]).forEach(pw => {
       const icon = L.divIcon({
-        html: `<div style="background:#e67e22;color:#fff;border-radius:50%;width:28px;height:28px;
-               display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;
-               border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.8);
-               white-space:nowrap">&#8635;</div>`,
-        className:'', iconAnchor:[14,14]
+        html: `<div style="background:rgba(230,126,34,0.45);color:#fff;border-radius:50%;width:26px;height:26px;
+               display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:bold;
+               border:1.5px solid rgba(255,255,255,0.7);box-shadow:0 1px 3px rgba(0,0,0,.4)">&#8635;</div>`,
+        className:'', iconAnchor:[13,13]
       });
       const m = L.marker([pw.lat, pw.lon], {icon, zIndexOffset:1000})
         .addTo(map).bindTooltip(`Pivot ${pw.turn_angle.toFixed(0)}\u00b0`);
