@@ -28,6 +28,13 @@ import os
 import sys
 from dataclasses import dataclass, field
 
+try:
+    from scipy.optimize import minimize as _scipy_minimize
+    _SCIPY_OK = True
+except ImportError:
+    _scipy_minimize = None
+    _SCIPY_OK = False
+
 # Import RoverState (dead-reckoning physics) from sibling simulator.py
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -61,6 +68,15 @@ DEFAULT_NAV: dict = {
     'rover_width_m':             1.0,
     'control_rate':              25.0,
     'max_timeout':               300.0,  # simulation hard stop (seconds)
+    # Control algorithm — 'stanley' or 'mpc'
+    'control_algorithm':         'stanley',
+    'mpc_horizon':               10,
+    'mpc_dt':                    0.2,
+    'mpc_w_cte':                 2.0,
+    'mpc_w_heading':             1.0,
+    'mpc_w_steer':               0.1,
+    'mpc_w_dsteer':              0.05,
+    'wheelbase_m':               0.6,
 }
 
 # Physical rover parameters — tune to match the real rover
@@ -399,7 +415,9 @@ class PathNavigator:
         self._pivot_hdg  = 0.0
         self._holding    = False
         self._hold_end   = 0.0          # simulated monotonic time
-        self._path_s     = self._compute_arclens()
+        self._path_s          = self._compute_arclens()
+        self._algo            = nav.get('control_algorithm', 'stanley')
+        self._mpc_prev_steers: list[float] = []
 
     # ── Arc-length ─────────────────────────────────────────────────────────
 
@@ -513,6 +531,85 @@ class PathNavigator:
                                  self._wps[idx].lat, self._wps[idx].lon)
         return abs(((hdg_out - hdg_in + 180) % 360) - 180)
 
+    # ── MPC controller ─────────────────────────────────────────────────────
+
+    def _mpc_steer(self, rlat: float, rlon: float,
+                   heading_deg: float, s_nearest: float,
+                   v_mps: float) -> float:
+        """MPC lateral controller — mirrors navigator.py._mpc_steer()."""
+        nav      = self._nav
+        N        = int(nav.get('mpc_horizon', 10))
+        dt       = nav.get('mpc_dt', 0.2)
+        wb       = max(nav.get('wheelbase_m', 0.6), 0.1)
+        max_s    = nav['max_steering']
+        w_cte    = nav.get('mpc_w_cte',     2.0)
+        w_hdg    = nav.get('mpc_w_heading', 1.0)
+        w_str    = nav.get('mpc_w_steer',   0.1)
+        w_dstr   = nav.get('mpc_w_dsteer',  0.05)
+        lookahead = nav['lookahead_distance']
+
+        if not _SCIPY_OK:
+            la_lat, la_lon = self._point_at_s(s_nearest + lookahead)
+            brg = _bearing_to(rlat, rlon, la_lat, la_lon)
+            err = ((brg - heading_deg + 180) % 360) - 180
+            return max(-max_s, min(max_s, err / 45.0))
+
+        cos_lat = math.cos(math.radians(rlat)) or 1e-9
+        m_lat   = 111_320.0
+        m_lon   = 111_320.0 * cos_lat
+
+        def to_xy(lat: float, lon: float) -> tuple[float, float]:
+            return (lon - rlon) * m_lon, (lat - rlat) * m_lat
+
+        ref_x: list[float] = []
+        ref_y: list[float] = []
+        for ki in range(N + 1):
+            pt = self._point_at_s(s_nearest + v_mps * ki * dt)
+            rx, ry = to_xy(pt[0], pt[1])
+            ref_x.append(rx); ref_y.append(ry)
+
+        h0 = math.radians(90.0 - heading_deg)
+        ref_h: list[float] = []
+        for ki in range(N):
+            dx = ref_x[ki + 1] - ref_x[ki]
+            dy = ref_y[ki + 1] - ref_y[ki]
+            ref_h.append(math.atan2(dy, dx) if math.hypot(dx, dy) > 1e-6 else h0)
+
+        prev0 = self._mpc_prev_steers[0] if self._mpc_prev_steers else 0.0
+
+        def cost_fn(steers) -> float:
+            x, y, h = 0.0, 0.0, h0
+            cost, prev = 0.0, prev0
+            for ki in range(N):
+                s = float(steers[ki])
+                h += -s * 2.0 * v_mps / wb * dt
+                x += v_mps * math.cos(h) * dt
+                y += v_mps * math.sin(h) * dt
+                rh   = ref_h[ki]
+                cte  = -(x - ref_x[ki]) * math.sin(rh) + (y - ref_y[ki]) * math.cos(rh)
+                herr = (h - rh + math.pi) % (2 * math.pi) - math.pi
+                cost += w_cte * cte * cte + w_hdg * herr * herr
+                cost += w_str * s * s + w_dstr * (s - prev) * (s - prev)
+                prev = s
+            return cost
+
+        if len(self._mpc_prev_steers) == N:
+            x0 = self._mpc_prev_steers[1:] + [self._mpc_prev_steers[-1]]
+        else:
+            x0 = [0.0] * N
+
+        try:
+            result = _scipy_minimize(
+                cost_fn, x0, method='L-BFGS-B',
+                bounds=[(-max_s, max_s)] * N,
+                options={'maxiter': 50, 'ftol': 1e-4})
+            steers = list(result.x)
+        except Exception:
+            steers = x0
+
+        self._mpc_prev_steers = steers
+        return max(-max_s, min(max_s, float(steers[0])))
+
     # ── Control step ───────────────────────────────────────────────────────
 
     def step(self, rlat: float, rlon: float,
@@ -577,8 +674,9 @@ class PathNavigator:
                 return PPM_CENTER, PPM_CENTER, best_seg, False
             elif needs_pivot:
                 nxt = self._wps[self.path_idx + 1]
-                self._pivot_hdg = _bearing_to(wp.lat, wp.lon, nxt.lat, nxt.lon)
-                self._pivoting  = True
+                self._pivot_hdg       = _bearing_to(wp.lat, wp.lon, nxt.lat, nxt.lon)
+                self._pivoting        = True
+                self._mpc_prev_steers = []
                 return PPM_CENTER, PPM_CENTER, best_seg, False
             else:
                 self._advance()
@@ -603,17 +701,25 @@ class PathNavigator:
         cte            = 0.0 if is_bypass else self._cte_to_seg(flat, flon, best_seg)
 
         if abs(heading_err) > align_thresh:
-            spin_dir  = math.copysign(1.0, heading_err)
-            steer_ppm = int(PPM_CENTER - spin_dir * max_steer * 500)
+            spin_dir              = math.copysign(1.0, heading_err)
+            steer_ppm             = int(PPM_CENTER - spin_dir * max_steer * 500)
+            self._mpc_prev_steers = []
             return PPM_CENTER, steer_ppm, best_seg, False
 
         v_mps        = max(target_spd, min_spd)
         throttle_ppm = int(PPM_CENTER + (v_mps / max_spd) * 500)
-        stanley_ang  = heading_err + math.degrees(
-            math.atan2(k * cte, max(v_mps, softening)))
-        stanley_ang  = max(-90.0, min(90.0, stanley_ang))
-        steer_frac   = max(-max_steer, min(max_steer, stanley_ang / 45.0))
-        steer_ppm    = int(PPM_CENTER - steer_frac * 500)
+
+        if (self._algo == 'mpc'
+                and not is_bypass
+                and not (needs_pivot and dist_to_wp < pivot_app_dist)):
+            steer_frac = self._mpc_steer(rlat, rlon, heading, s_nearest, v_mps)
+        else:
+            # Stanley controller: δ = θ_e + arctan(k · e_cte / (v + ε))
+            stanley_ang = heading_err + math.degrees(
+                math.atan2(k * cte, max(v_mps, softening)))
+            stanley_ang = max(-90.0, min(90.0, stanley_ang))
+            steer_frac  = max(-max_steer, min(max_steer, stanley_ang / 45.0))
+        steer_ppm = int(PPM_CENTER - steer_frac * 500)
 
         return throttle_ppm, steer_ppm, best_seg, False
 

@@ -58,3 +58,28 @@ navigator:
     #   half-width.  Effective expansion = rover_width_m/2 + obstacle_clearance_m.
     #   e.g. rover 1.0 m wide + 0.5 m buffer → 1.0 m total edge offset.
     obstacle_clearance_m: 0.5
+
+    # ── Control algorithm ──────────────────────────────────────────────────
+    # control_algorithm: 'stanley' (default) or 'mpc'
+    #   stanley — full-path Stanley lateral controller (heading error + CTE)
+    #   mpc     — Model Predictive Control over a receding horizon; requires
+    #             scipy (pip install scipy).  Falls back to Stanley if scipy
+    #             is not installed.
+    control_algorithm: 'stanley'
+
+    # MPC tuning (only active when control_algorithm: 'mpc')
+    #   mpc_horizon  — prediction horizon (number of steps).  10 @ 0.2 s = 2 s ahead.
+    #   mpc_dt       — seconds between prediction steps.  Keep >= 1/control_rate.
+    #   mpc_w_cte    — cross-track error weight.  Higher = tighter path hugging.
+    #   mpc_w_heading — heading error weight.  Higher = faster heading correction.
+    #   mpc_w_steer  — steering effort weight.  Higher = less aggressive steering.
+    #   mpc_w_dsteer — steering rate weight.  Higher = smoother steering transitions.
+    #   wheelbase_m  — effective rover wheelbase used in the kinematic prediction
+    #                  model.  Tune to match observed turn rate (smaller = tighter).
+    mpc_horizon:   10
+    mpc_dt:        0.2
+    mpc_w_cte:     2.0
+    mpc_w_heading: 1.0
+    mpc_w_steer:   0.1
+    mpc_w_dsteer:  0.05
+    wheelbase_m:   0.6
