@@ -509,9 +509,9 @@ lat += speed * cos(heading) * dt / 111320
 lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))
 ```
 
-`turn_scale` (0.0–1.0, default **0.1**): scales the maximum turn rate relative to full differential.
-- `0.1` → ~10% of max (≈ 360° in 17 s at full steer) — default, good for testing
-- `1.0` → full differential (≈ 360° in 1.7 s at full steer)
+`turn_scale` (0.0–1.0, default **1.0**): scales the maximum turn rate relative to full differential.
+- `1.0` → full differential (≈ 360° in 1.7 s at full steer) — default, matches MPC kinematic model
+- `0.1` → ~10% of max (≈ 360° in 17 s at full steer) — slow testing
 - Pass `--turn-scale` to `tools/simulator.py` or set `turn_scale` in `simulator_params.yaml`.
 
 ### Startup order (simulation)
