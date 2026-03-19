@@ -41,7 +41,7 @@
 /rv2/navigator:
   ros__parameters:
     lookahead_distance:        3.0
-    default_acceptance_radius: 1.5
+    default_acceptance_radius: 0.4
     max_speed:                 1.5
     min_speed:                 0.3
     max_steering:              0.8
