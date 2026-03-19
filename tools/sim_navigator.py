@@ -857,7 +857,7 @@ def simulate(waypoints:       list[SimWaypoint],
         print(f'{"─"*60}')
         print(f'  {"step":>5}  {"t":>5}  {"wp":>3}  {"dist":>6}  {"hdg_err":>8}  {"cte":>7}  {"steer":>6}  {"mode":>7}  {"s_clip":>8}')
 
-    result_path: list[tuple[float, float]] = [_center_pos(rover, bm)]
+    result_path: list[tuple[float, float]] = [(rover.lat, rover.lon)]
     xte_log:     list[float]               = []
     wps_reached: list[int]                 = []
     t_mono = 0.0
@@ -903,7 +903,7 @@ def simulate(waypoints:       list[SimWaypoint],
 
         rlat_new, rlon_new = _center_pos(rover, bm)
         flat_new, flon_new = _front_pos(rover, bm)
-        result_path.append((rlat_new, rlon_new))
+        result_path.append((rover.lat, rover.lon))   # rear GPS — stays fixed during spin
         cte = path_n._cte_to_seg(flat_new, flon_new, best_seg)
         xte_log.append(abs(cte))
 
