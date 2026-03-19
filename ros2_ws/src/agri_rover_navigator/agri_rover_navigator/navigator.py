@@ -479,7 +479,40 @@ class NavigatorNode(Node):
 
         ccw_path = [entry_pt] + ccw_verts + [exit_pt]
         cw_path  = [entry_pt] + cw_verts  + [exit_pt]
-        return ccw_path if path_len(ccw_path) <= path_len(cw_path) else cw_path
+        chosen   = ccw_path if path_len(ccw_path) <= path_len(cw_path) else cw_path
+        return self._smooth_corners(chosen, self._clearance * 2.0)
+
+    def _smooth_corners(
+            self,
+            pts: list[tuple[float, float]],
+            corner_r: float) -> list[tuple[float, float]]:
+        """
+        Round each intermediate vertex in pts by replacing it with two points:
+        one corner_r metres before the vertex (approach) and one corner_r metres
+        after (depart), creating a chamfered path the rover can follow smoothly.
+
+        corner_r is capped at 45% of either adjacent edge so that approach/depart
+        points never overlap across consecutive corners.
+        """
+        if corner_r < 0.01 or len(pts) <= 2:
+            return pts
+
+        def lerp(a: tuple, b: tuple, t: float) -> tuple[float, float]:
+            return (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+
+        result: list[tuple[float, float]] = [pts[0]]
+        for i in range(1, len(pts) - 1):
+            prev, curr, nxt = pts[i - 1], pts[i], pts[i + 1]
+            d_in  = haversine(prev[0], prev[1], curr[0], curr[1])
+            d_out = haversine(curr[0], curr[1], nxt[0],  nxt[1])
+            r = min(corner_r, d_in * 0.45, d_out * 0.45)
+            if r < 0.05:
+                result.append(curr)
+                continue
+            result.append(lerp(prev, curr, 1.0 - r / d_in))   # approach
+            result.append(lerp(curr, nxt,        r / d_out))   # depart
+        result.append(pts[-1])
+        return result
 
     def _bypass_verts(
             self,
