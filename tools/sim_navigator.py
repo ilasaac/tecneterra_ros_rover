@@ -58,7 +58,7 @@ DEFAULT_NAV: dict = {
     'pivot_threshold':           60.0,
     'pivot_approach_dist':       4.0,
     'obstacle_clearance_m':      0.5,
-    'rover_width_m':             1.4,
+    'rover_width_m':             1.0,
     'control_rate':              25.0,
     'max_timeout':               300.0,  # simulation hard stop (seconds)
 }
