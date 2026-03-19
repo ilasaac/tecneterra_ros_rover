@@ -68,6 +68,7 @@ tr:hover td{background:#1e1e3a}
 <div id="sidebar">
   <div class="toolbar">
     <button class="btn-blue" id="btn-add" onclick="toggleAddMode()">+ Add WP</button>
+    <button id="btn-obs" class="btn-red" onclick="toggleObsMode()">&#9632; Obstacle</button>
     <button class="btn-green" onclick="runSimulate()">&#9654; Simulate</button>
     <button class="btn-orange" onclick="exportCSV()">&#8595; CSV</button>
     <button class="btn-blue" onclick="document.getElementById('file-import').click()">&#8593; Import</button>
@@ -95,13 +96,21 @@ tr:hover td{background:#1e1e3a}
 // ── Map ──────────────────────────────────────────────────────────
 const map = L.map('map').setView([START_LAT, START_LON], 18);
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-  {attribution:'ESRI',maxZoom:21,maxNativeZoom:19}).addTo(map);
+  {attribution:'ESRI',maxZoom:23,maxNativeZoom:19}).addTo(map);
 
 // ── State ────────────────────────────────────────────────────────
 let waypoints = [];
 let wpMarkers = [], routeLine = null;
 let simLayers = [];
 let addMode = false;
+
+// Obstacle drawing state
+let obstacles = [];          // completed polygons: [[[lat,lon],...], ...]
+let obsMode = false;         // currently drawing an obstacle
+let obsCurPts = [];          // vertices of polygon being drawn
+let obsCurMarkers = [];      // temporary vertex markers
+let obsCurLine = null;       // preview polyline while drawing
+let obsLayers = [];          // rendered completed obstacle layers
 
 function status(msg, color='#27ae60') {
   const el = document.getElementById('status-bar');
@@ -118,7 +127,10 @@ function toggleAddMode() {
   status(addMode ? 'Click map to place waypoints. Right-click marker to delete.' : 'Add mode off.');
 }
 
-map.on('click', e => { if (addMode) addWp(e.latlng.lat, e.latlng.lng); });
+map.on('click', e => {
+  if (addMode) addWp(e.latlng.lat, e.latlng.lng);
+  else if (obsMode) obsAddVertex(e.latlng.lat, e.latlng.lng);
+});
 
 // ── Waypoints ────────────────────────────────────────────────────
 function addWp(lat, lon, speed=0, hold=0) {
@@ -198,7 +210,7 @@ async function runSimulate() {
     const resp = await fetch('/simulate', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({waypoints, start:{lat:startLat, lon:startLon, heading:startHdg}})
+      body: JSON.stringify({waypoints, start:{lat:startLat, lon:startLon, heading:startHdg}, obstacles})
     });
     const d = await resp.json();
 
@@ -226,6 +238,14 @@ async function runSimulate() {
       simLayers.push(m);
     });
 
+    // Rerouted path (bypass around obstacles) — white dashed overlay
+    if (obstacles.length && (d.rerouted_wps||[]).length > 1) {
+      const rl = L.polyline(d.rerouted_wps, {
+        color:'#fff', weight:1.5, dashArray:'5,4', opacity:.55
+      }).addTo(map);
+      simLayers.push(rl);
+    }
+
     const dur = (d.total_steps / 25).toFixed(1);
     statsEl.innerHTML = `
       <div><span class="lbl">Complete:</span> ${d.complete?'<b style="color:#2ecc71">\u2713 Yes</b>':'<b style="color:#e74c3c">\u2717 Timeout</b>'}</div>
@@ -234,7 +254,8 @@ async function runSimulate() {
       <div><span class="lbl">XTE rms:</span> ${d.rms_xte.toFixed(3)} m</div>
       <div><span class="lbl">XTE max:</span> ${d.max_xte.toFixed(3)} m</div>
       <div><span class="lbl">Pivot WPs:</span> ${(d.pivot_wps||[]).length}</div>
-      <div style="font-size:10px;color:#666;margin-top:4px">Path: green=on-track \u2192 red=off-track<br>Orange circles = pivot turns</div>`;
+      <div><span class="lbl">Obstacles:</span> ${obstacles.length}</div>
+      <div style="font-size:10px;color:#666;margin-top:4px">Path: green=on-track \u2192 red=high XTE<br>Orange \u21bb = pivot &nbsp; White dashed = reroute</div>`;
     status(`Done. XTE rms=${d.rms_xte.toFixed(3)}m max=${d.max_xte.toFixed(3)}m`);
   } catch(e) {
     statsEl.innerHTML = `<span style="color:#e74c3c">Error: ${e}</span>`;
@@ -276,9 +297,83 @@ function importCSV(event) {
   reader.readAsText(file);
 }
 
+// ── Obstacles ────────────────────────────────────────────────────
+function toggleObsMode() {
+  if (obsMode) {
+    obsFinish();
+  } else {
+    obsMode = true;
+    addMode = false;
+    document.getElementById('btn-add').classList.remove('btn-active');
+    document.getElementById('btn-obs').textContent = '\u2713 Done';
+    document.getElementById('btn-obs').style.background = '#8b0000';
+    map.getContainer().style.cursor = 'crosshair';
+    status('Click map to draw obstacle polygon. Click "Done" to close it.', '#e74c3c');
+  }
+}
+
+function obsAddVertex(lat, lon) {
+  obsCurPts.push([lat, lon]);
+  const m = L.circleMarker([lat, lon], {
+    radius:4, color:'#e74c3c', fillColor:'#e74c3c', fillOpacity:1, weight:1
+  }).addTo(map);
+  obsCurMarkers.push(m);
+  if (obsCurLine) map.removeLayer(obsCurLine);
+  if (obsCurPts.length > 1) {
+    const pts = [...obsCurPts, obsCurPts[0]];
+    obsCurLine = L.polyline(pts, {color:'#e74c3c', weight:1.5, dashArray:'4,3', opacity:.7}).addTo(map);
+  }
+  status(`Obstacle: ${obsCurPts.length} vertex(es). Click "Done" to close (min 3).`, '#e74c3c');
+}
+
+function obsFinish() {
+  obsMode = false;
+  document.getElementById('btn-obs').textContent = '\u25a0 Obstacle';
+  document.getElementById('btn-obs').style.background = '';
+  map.getContainer().style.cursor = '';
+  // Clear preview markers and line
+  obsCurMarkers.forEach(m => map.removeLayer(m)); obsCurMarkers = [];
+  if (obsCurLine) { map.removeLayer(obsCurLine); obsCurLine = null; }
+  if (obsCurPts.length < 3) {
+    status('Need at least 3 vertices — obstacle discarded.', '#e74c3c');
+    obsCurPts = [];
+    return;
+  }
+  const poly = [...obsCurPts];
+  obsCurPts = [];
+  const idx = obstacles.length;
+  obstacles.push(poly);
+  renderObstacle(poly, idx);
+  status(`Obstacle ${idx} added (${poly.length} vertices). Total: ${obstacles.length}.`);
+}
+
+function renderObstacle(poly, idx) {
+  const layer = L.polygon(poly, {
+    color:'#e74c3c', weight:1.5,
+    fillColor:'#e74c3c', fillOpacity:0.2, opacity:0.7
+  }).addTo(map);
+  layer.bindTooltip(`Obstacle ${idx} — right-click to delete`);
+  layer.on('contextmenu', () => removeObstacle(idx));
+  obsLayers.push({layer, idx});
+}
+
+function removeObstacle(idx) {
+  obstacles.splice(idx, 1);
+  obsLayers.forEach(o => map.removeLayer(o.layer)); obsLayers = [];
+  obstacles.forEach((poly, i) => renderObstacle(poly, i));
+  status(`Obstacle removed. Total: ${obstacles.length}.`);
+}
+
+function clearObstacles() {
+  obstacles = []; obsCurPts = [];
+  obsCurMarkers.forEach(m => map.removeLayer(m)); obsCurMarkers = [];
+  if (obsCurLine) { map.removeLayer(obsCurLine); obsCurLine = null; }
+  obsLayers.forEach(o => map.removeLayer(o.layer)); obsLayers = [];
+}
+
 // ── Clear ────────────────────────────────────────────────────────
 function clearAll() {
-  waypoints=[];refresh();clearSimOverlay();
+  waypoints=[];refresh();clearSimOverlay();clearObstacles();
   document.getElementById('stats').style.display='none';
   status('Cleared.');
 }
@@ -327,11 +422,13 @@ class _Handler(BaseHTTPRequestHandler):
             start_lon = float(start.get('lon') or wps[0].lon)
             start_hdg = float(start.get('heading') or 0)
 
-            nav_p   = {**DEFAULT_NAV,  **(data.get('nav_params',  {}) or {})}
-            phys_p  = {**DEFAULT_PHYS, **(data.get('phys_params', {}) or {})}
+            nav_p      = {**DEFAULT_NAV,  **(data.get('nav_params',  {}) or {})}
+            phys_p     = {**DEFAULT_PHYS, **(data.get('phys_params', {}) or {})}
+            obstacles  = data.get('obstacles') or []
 
             result = simulate(wps, start_lat, start_lon, start_hdg,
-                              nav_params=nav_p, phys_params=phys_p)
+                              nav_params=nav_p, phys_params=phys_p,
+                              obstacles=obstacles if obstacles else None)
 
             # Compute pivot waypoints for the frontend
             path_n = PathNavigator(
