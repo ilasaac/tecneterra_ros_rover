@@ -57,7 +57,8 @@ DEFAULT_NAV: dict = {
     'stanley_softening':         0.3,
     'pivot_threshold':           60.0,
     'pivot_approach_dist':       4.0,
-    'obstacle_clearance_m':      1.0,
+    'obstacle_clearance_m':      0.5,
+    'rover_width_m':             1.4,
     'control_rate':              25.0,
     'max_timeout':               300.0,  # simulation hard stop (seconds)
 }
@@ -137,20 +138,48 @@ def _front_pos(rover: RoverState, baseline_m: float) -> tuple[float, float]:
 
 def _expand_polygon(polygon: list[tuple[float, float]],
                     clearance_m: float) -> list[tuple[float, float]]:
-    """Radially expand polygon vertices away from the centroid by clearance_m."""
-    if len(polygon) < 3:
+    """
+    Offset each polygon edge outward by clearance_m (uniform Minkowski buffer).
+    Gives exactly clearance_m perpendicular distance from every edge.
+    """
+    n = len(polygon)
+    if n < 3:
         return list(polygon)
-    c_lat = sum(p[0] for p in polygon) / len(polygon)
-    c_lon = sum(p[1] for p in polygon) / len(polygon)
+    c_lat = sum(p[0] for p in polygon) / n
+    c_lon = sum(p[1] for p in polygon) / n
+    cos_lat = math.cos(math.radians(c_lat)) or 1e-9
+    m_lat, m_lon = 111_320.0, 111_320.0 * cos_lat
+
+    def to_m(lat, lon):
+        return (lon - c_lon) * m_lon, (lat - c_lat) * m_lat
+
+    def to_ll(x, y):
+        return c_lat + y / m_lat, c_lon + x / m_lon
+
+    pts = [to_m(lat, lon) for lat, lon in polygon]
+    area2 = sum(pts[i][0] * pts[(i+1)%n][1] - pts[(i+1)%n][0] * pts[i][1]
+                for i in range(n))
+    w = 1.0 if area2 > 0 else -1.0   # +1 = CCW, -1 = CW
+
+    off = []
+    for i in range(n):
+        x1, y1 = pts[i]; x2, y2 = pts[(i+1)%n]
+        dx, dy = x2-x1, y2-y1
+        lg = math.hypot(dx, dy) or 1e-9
+        nx, ny = -w*dy/lg, w*dx/lg
+        off.append((x1+nx*clearance_m, y1+ny*clearance_m,
+                    x2+nx*clearance_m, y2+ny*clearance_m))
+
     result = []
-    for (lat, lon) in polygon:
-        d = _haversine(c_lat, c_lon, lat, lon)
-        if d < 0.01:
-            result.append((lat + clearance_m / 111_320.0, lon))
-            continue
-        scale = (d + clearance_m) / d
-        result.append((c_lat + (lat - c_lat) * scale,
-                        c_lon + (lon - c_lon) * scale))
+    for i in range(n):
+        x1,y1,x2,y2 = off[i]; x3,y3,x4,y4 = off[(i+1)%n]
+        dx1,dy1 = x2-x1,y2-y1; dx2,dy2 = x4-x3,y4-y3
+        denom = dx1*dy2 - dy1*dx2
+        if abs(denom) < 1e-9:
+            result.append(to_ll(x2, y2))
+        else:
+            t = ((x3-x1)*dy2 - (y3-y1)*dx2) / denom
+            result.append(to_ll(x1+t*dx1, y1+t*dy1))
     return result
 
 
@@ -632,7 +661,7 @@ def simulate(waypoints:       list[SimWaypoint],
         _dbg(f'WP[0]=({waypoints[0].lat:.6f},{waypoints[0].lon:.6f})'
              f'  WP[-1]=({waypoints[-1].lat:.6f},{waypoints[-1].lon:.6f})')
     if obstacles:
-        clearance = nav['obstacle_clearance_m']
+        clearance = nav['rover_width_m'] / 2.0 + nav['obstacle_clearance_m']
         for i, poly_raw in enumerate(obstacles):
             poly = [(float(v[0]), float(v[1])) for v in poly_raw]
             c_lat = sum(p[0] for p in poly) / len(poly)

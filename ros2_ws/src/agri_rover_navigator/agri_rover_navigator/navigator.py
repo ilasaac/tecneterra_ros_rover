@@ -39,7 +39,7 @@ Obstacle avoidance
 When a `mission_fence` JSON message arrives (published by mavlink_bridge when
 the full mission has been received), the navigator:
   1. Parses the fence polygons.
-  2. Expands each polygon radially by `obstacle_clearance_m` from its centroid.
+  2. Expands each polygon by a uniform edge offset of rover_width_m/2 + obstacle_clearance_m.
   3. Rebuilds `_path` from `_path_original` inserting bypass waypoints around
      any expanded polygon that a path segment intersects.
   4. Bypass direction (CW vs CCW around polygon boundary) is chosen to minimise
@@ -133,8 +133,12 @@ class NavigatorNode(Node):
         self.declare_parameter('pivot_threshold',           60.0)
         self.declare_parameter('pivot_approach_dist',        2.0)
         # Obstacle avoidance:
-        #   obstacle_clearance_m — radial buffer (metres) added around obstacle polygons.
-        self.declare_parameter('obstacle_clearance_m',       1.0)
+        #   rover_width_m       — physical rover width; half of this is the minimum
+        #                         clearance needed to keep the rover body off obstacles.
+        #   obstacle_clearance_m — additional safety buffer on top of rover half-width.
+        #   effective clearance  = rover_width_m/2 + obstacle_clearance_m
+        self.declare_parameter('rover_width_m',              1.4)
+        self.declare_parameter('obstacle_clearance_m',       0.5)
 
         self._lookahead           = self.get_parameter('lookahead_distance').value
         self._accept_r            = self.get_parameter('default_acceptance_radius').value
@@ -148,7 +152,9 @@ class NavigatorNode(Node):
         self._stanley_softening   = self.get_parameter('stanley_softening').value
         self._pivot_threshold     = self.get_parameter('pivot_threshold').value
         self._pivot_approach_dist = self.get_parameter('pivot_approach_dist').value
-        self._clearance           = self.get_parameter('obstacle_clearance_m').value
+        rover_width               = self.get_parameter('rover_width_m').value
+        self._clearance           = (rover_width / 2.0
+                                     + self.get_parameter('obstacle_clearance_m').value)
 
         # ── State ────────────────────────────────────────────────────────────
         self._fix:       NavSatFix | None = None
@@ -380,21 +386,64 @@ class NavigatorNode(Node):
 
     def _expand_polygon(self, polygon: list[tuple[float, float]],
                         clearance_m: float) -> list[tuple[float, float]]:
-        """Radially expand polygon vertices away from the centroid by clearance_m."""
-        if len(polygon) < 3:
+        """
+        Offset each polygon edge outward by clearance_m (uniform Minkowski buffer).
+
+        Each edge is moved along its outward normal, then adjacent offset edges are
+        re-intersected to find the new vertices.  This guarantees exactly clearance_m
+        perpendicular distance from every edge, unlike centroid-based expansion which
+        gives unequal offsets on non-circular polygons.
+        """
+        n = len(polygon)
+        if n < 3:
             return list(polygon)
-        c_lat = sum(p[0] for p in polygon) / len(polygon)
-        c_lon = sum(p[1] for p in polygon) / len(polygon)
-        result = []
-        for (lat, lon) in polygon:
-            d = haversine(c_lat, c_lon, lat, lon)
-            if d < 0.01:
-                # Vertex at centroid — push north by clearance_m
-                result.append((lat + clearance_m / 111_320.0, lon))
-                continue
-            scale = (d + clearance_m) / d
-            result.append((c_lat + (lat - c_lat) * scale,
-                            c_lon + (lon - c_lon) * scale))
+
+        # Flat-earth conversion centred at polygon centroid
+        c_lat = sum(p[0] for p in polygon) / n
+        c_lon = sum(p[1] for p in polygon) / n
+        cos_lat = math.cos(math.radians(c_lat)) or 1e-9
+        m_lat   = 111_320.0
+        m_lon   = 111_320.0 * cos_lat
+
+        def to_m(lat: float, lon: float) -> tuple[float, float]:
+            return (lon - c_lon) * m_lon, (lat - c_lat) * m_lat
+
+        def to_ll(x: float, y: float) -> tuple[float, float]:
+            return c_lat + y / m_lat, c_lon + x / m_lon
+
+        pts = [to_m(lat, lon) for lat, lon in polygon]
+
+        # Signed area — positive = CCW, negative = CW
+        area2 = sum(pts[i][0] * pts[(i + 1) % n][1] -
+                    pts[(i + 1) % n][0] * pts[i][1]
+                    for i in range(n))
+        # Outward normal direction: left of edge for CCW (+1), right for CW (-1)
+        w = 1.0 if area2 > 0 else -1.0
+
+        # Offset each edge outward by clearance_m
+        off: list[tuple[float, float, float, float]] = []
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+            dx, dy = x2 - x1, y2 - y1
+            length  = math.hypot(dx, dy) or 1e-9
+            nx, ny  = -w * dy / length, w * dx / length      # outward unit normal
+            ox, oy  = nx * clearance_m, ny * clearance_m
+            off.append((x1 + ox, y1 + oy, x2 + ox, y2 + oy))
+
+        # Intersect consecutive offset edges to produce new vertices
+        result: list[tuple[float, float]] = []
+        for i in range(n):
+            x1, y1, x2, y2 = off[i]
+            x3, y3, x4, y4 = off[(i + 1) % n]
+            dx1, dy1 = x2 - x1, y2 - y1
+            dx2, dy2 = x4 - x3, y4 - y3
+            denom = dx1 * dy2 - dy1 * dx2
+            if abs(denom) < 1e-9:
+                result.append(to_ll(x2, y2))   # parallel — use edge endpoint
+            else:
+                t = ((x3 - x1) * dy2 - (y3 - y1) * dx2) / denom
+                result.append(to_ll(x1 + t * dx1, y1 + t * dy1))
         return result
 
     def _seg_intersect_polygon(

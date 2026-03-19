@@ -50,8 +50,11 @@ navigator:
     #   slowing to min_speed. Ensures precise arrival at the turn point.
     pivot_approach_dist: 4.0
 
-    # obstacle_clearance_m (metres): radial buffer added around each obstacle polygon
-    #   when rerouting the mission path.  The rover's bypass path is at least this
-    #   distance from every obstacle vertex.  1.0 m is a safe default for a 0.5 m
-    #   rover body when RTK precision is ~2 cm.
-    obstacle_clearance_m: 1.0
+    # rover_width_m (metres): physical width of the rover.  Half of this is always
+    #   enforced as minimum clearance from obstacle edges regardless of obstacle_clearance_m.
+    rover_width_m: 1.4
+
+    # obstacle_clearance_m (metres): additional safety buffer added on top of the rover
+    #   half-width.  Effective expansion = rover_width_m/2 + obstacle_clearance_m.
+    #   e.g. rover 1.4 m wide + 0.5 m buffer → 1.2 m total edge offset.
+    obstacle_clearance_m: 0.5
