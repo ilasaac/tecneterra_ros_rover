@@ -426,8 +426,13 @@ if __name__ == '__main__':
     server.default_lat = args.lat
     server.default_lon = args.lon
 
-    print(f'Mission Planner ->  http://{local_ip}:{args.port}')
+    url = f'http://{local_ip}:{args.port}'
+    print(f'Mission Planner ->  {url}')
     print('Ctrl+C to stop')
+
+    import threading, webbrowser
+    threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
