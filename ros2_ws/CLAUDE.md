@@ -256,7 +256,7 @@ Servo channels (PPM CH5-CH8):
 
 ## gps_driver — NMEA parsing
 
-Reads two serial ports in background threads. Publishes at 5 Hz via timer.
+Reads two serial ports in background threads. Publishes on every new primary GGA sentence (event-driven), up to `publish_rate` Hz (default 25 Hz). Timer fires at `publish_rate` but skips if no new primary GGA has arrived — so the navigator's gps_timeout still fires correctly if the GPS goes silent.
 - **Primary** (USB0): position, fix quality from GGA sentences → published as `~/fix` (rear antenna)
 - **Secondary** (USB1): position only — baseline vector → heading; also published as `~/fix_front` (front antenna) when `heading_source == 'baseline'`
 - Heading: `bearing = atan2(dlon * cos(lat_rad), dlat)` — `cos(lat)` correction is required because `secondary_pos()` scales `dlon` by `1/cos(lat)` when placing the secondary antenna; without the correction heading drifts as the rover moves and latitude changes.
