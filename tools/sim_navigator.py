@@ -62,7 +62,7 @@ DEFAULT_NAV: dict = {
     'heading_deadband':          3.0,
     'stanley_k':                 1.0,
     'stanley_softening':         0.3,
-    'pivot_threshold':           30.0,
+    'pivot_threshold':           25.0,
     'pivot_approach_dist':       4.0,
     'obstacle_clearance_m':      0.5,
     'rover_width_m':             1.0,
@@ -70,9 +70,9 @@ DEFAULT_NAV: dict = {
     'max_timeout':               300.0,  # simulation hard stop (seconds)
     # Control algorithm — 'stanley' or 'mpc'
     'control_algorithm':         'mpc',
-    'mpc_horizon':               10,
-    'mpc_dt':                    0.2,
-    'mpc_w_cte':                 2.0,
+    'mpc_horizon':               5,
+    'mpc_dt':                    0.1,
+    'mpc_w_cte':                 5.0,
     'mpc_w_heading':             1.0,
     'mpc_w_steer':               0.1,
     'mpc_w_dsteer':              0.05,
@@ -82,7 +82,7 @@ DEFAULT_NAV: dict = {
 # Physical rover parameters — tune to match the real rover
 DEFAULT_PHYS: dict = {
     'wheelbase':  0.6,    # metres — distance between left and right wheels
-    'turn_scale': 0.3,    # turn rate fraction (0.1 = slow, 1.0 = full differential)
+    'turn_scale': 1.0,    # turn rate fraction (0.1 = slow, 1.0 = full differential) # matches MPC kinematic model
     'baseline_m': 1.0,    # metres — rear-to-front antenna separation
 }
 
@@ -112,6 +112,7 @@ class SimResult:
     obstacle_polygons:  list   # [[(lat,lon),...], ...] polygons used (expanded)
     rerouted_wps:       list   # [[lat,lon], ...] effective waypoints after rerouting
                                # (includes bypass points; same as original when no obstacles)
+    step_log:           list   = field(default_factory=list)  # debug info per step (verbose mode)
 
 
 # ── Math helpers ──────────────────────────────────────────────────────────────
@@ -418,6 +419,7 @@ class PathNavigator:
         self._path_s          = self._compute_arclens()
         self._algo            = nav.get('control_algorithm', 'stanley')
         self._mpc_prev_steers: list[float] = []
+        self._step_info: dict = {}
 
     # ── Arc-length ─────────────────────────────────────────────────────────
 
@@ -561,10 +563,22 @@ class PathNavigator:
         def to_xy(lat: float, lon: float) -> tuple[float, float]:
             return (lon - rlon) * m_lon, (lat - rlat) * m_lat
 
+        # Clip horizon at the next pivot waypoint so MPC never optimises
+        # across a sharp turn (mirrors navigator.py._mpc_steer).
+        pivot_thresh_nav = self._nav.get('pivot_threshold', 25.0)
+        s_clip = float('inf')
+        for i in range(self.path_idx, len(self._wps)):
+            if not self._wps[i].is_bypass and self._turn_angle_at(i) >= pivot_thresh_nav:
+                if i < len(self._path_s):
+                    s_clip = self._path_s[i]
+                break
+        self._step_info['s_clip'] = s_clip
+
         ref_x: list[float] = []
         ref_y: list[float] = []
         for ki in range(N + 1):
-            pt = self._point_at_s(s_nearest + v_mps * ki * dt)
+            s_ref = min(s_nearest + v_mps * ki * dt, s_clip)
+            pt = self._point_at_s(s_ref)
             rx, ry = to_xy(pt[0], pt[1])
             ref_x.append(rx); ref_y.append(ry)
 
@@ -632,6 +646,8 @@ class PathNavigator:
         pivot_thresh    = nav['pivot_threshold']
         pivot_app_dist  = nav['pivot_approach_dist']
 
+        self._step_info = {'t': t_mono, 'pivoting': self._pivoting, 'holding': self._holding}
+
         if self.path_idx >= len(self._wps):
             return PPM_CENTER, PPM_CENTER, 0, True
 
@@ -663,6 +679,15 @@ class PathNavigator:
         s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
         wp_s                = self._path_s[self.path_idx]
         dist_to_wp          = _haversine(rlat, rlon, wp.lat, wp.lon)
+
+        self._step_info.update({
+            'wp_idx': self.path_idx,
+            'dist_to_wp': dist_to_wp,
+            'turn_angle': turn_angle,
+            'needs_pivot': needs_pivot,
+            's_nearest': s_nearest,
+            's_clip': float('inf'),  # updated by _mpc_steer if called
+        })
 
         # Waypoint advance — bypass waypoints require physical proximity (arc-length
         # advance is disabled so short bypass arcs are not immediately skipped).
@@ -700,6 +725,8 @@ class PathNavigator:
         # Bypass waypoints: zero CTE — heading error to the bypass point is enough.
         cte            = 0.0 if is_bypass else self._cte_to_seg(flat, flon, best_seg)
 
+        self._step_info.update({'heading_err': heading_err, 'cte': cte})
+
         if abs(heading_err) > align_thresh:
             spin_dir              = math.copysign(1.0, heading_err)
             steer_ppm             = int(PPM_CENTER - spin_dir * max_steer * 500)
@@ -719,6 +746,11 @@ class PathNavigator:
                 math.atan2(k * cte, max(v_mps, softening)))
             stanley_ang = max(-90.0, min(90.0, stanley_ang))
             steer_frac  = max(-max_steer, min(max_steer, stanley_ang / 45.0))
+        self._step_info.update({
+            'steer_frac': steer_frac,
+            'v_mps': v_mps,
+            'mode': 'mpc' if (self._algo == 'mpc' and not is_bypass and not (needs_pivot and dist_to_wp < pivot_app_dist)) else 'stanley',
+        })
         steer_ppm = int(PPM_CENTER - steer_frac * 500)
 
         return throttle_ppm, steer_ppm, best_seg, False
@@ -736,7 +768,8 @@ def simulate(waypoints:       list[SimWaypoint],
              start_heading:   float,
              nav_params:      dict | None = None,
              phys_params:     dict | None = None,
-             obstacles:       list[list[list[float]]] | None = None) -> SimResult:
+             obstacles:       list[list[list[float]]] | None = None,
+             verbose:         bool = False) -> SimResult:
     """
     Run a software-in-the-loop simulation of the rover following *waypoints*.
 
@@ -792,6 +825,22 @@ def simulate(waypoints:       list[SimWaypoint],
     rover  = RoverState(start_lat, start_lon, start_heading)
     path_n = PathNavigator(effective_wps, start_lat, start_lon, nav)
 
+    if verbose:
+        print(f'\n{"─"*60}')
+        print(f'Mission analysis  ({len(effective_wps)} waypoints, algo={nav["control_algorithm"]})')
+        print(f'  pivot_threshold={nav["pivot_threshold"]}°  '
+              f'mpc_horizon={nav.get("mpc_horizon",10)}  '
+              f'mpc_dt={nav.get("mpc_dt",0.2)}  '
+              f'mpc_w_cte={nav.get("mpc_w_cte",2.0)}')
+        print(f'  {"WP":>3}  {"lat":>11}  {"lon":>12}  {"turn°":>6}  {"type":>8}  {"arc_s":>6}')
+        for i, wp in enumerate(effective_wps):
+            ta = path_n._turn_angle_at(i)
+            pv = '★PIVOT' if (not wp.is_bypass and ta >= nav['pivot_threshold']) else ('bypass' if wp.is_bypass else 'normal')
+            arc = path_n._path_s[i] if i < len(path_n._path_s) else 0.0
+            print(f'  {wp.seq:>3}  {wp.lat:>11.6f}  {wp.lon:>12.6f}  {ta:>6.1f}  {pv:>8}  {arc:>6.1f}m')
+        print(f'{"─"*60}')
+        print(f'  {"step":>5}  {"t":>5}  {"wp":>3}  {"dist":>6}  {"hdg_err":>8}  {"cte":>7}  {"steer":>6}  {"mode":>7}  {"s_clip":>8}')
+
     result_path: list[tuple[float, float]] = [_center_pos(rover, bm)]
     xte_log:     list[float]               = []
     wps_reached: list[int]                 = []
@@ -799,12 +848,29 @@ def simulate(waypoints:       list[SimWaypoint],
     prev_idx = 0
 
     max_steps = int(nav['max_timeout'] / dt)
+    step_log_data: list = []
 
     for step in range(max_steps):
         rlat, rlon = _center_pos(rover, bm)
         flat, flon = _front_pos(rover, bm)
         thr, steer, best_seg, done = path_n.step(rlat, rlon, flat, flon,
                                                   rover.heading_deg, t_mono)
+        info = dict(path_n._step_info)
+        info['step'] = step
+        step_log_data.append(info)
+
+        if verbose and step % max(1, int(nav['control_rate'])) == 0:
+            si = info
+            s_clip_str = f'{si.get("s_clip", float("inf")):.1f}m' if si.get('s_clip', float('inf')) < 1e6 else '    inf'
+            print(f'  {step:>5}  {t_mono:>5.1f}  '
+                  f'{si.get("wp_idx", 0):>3}  '
+                  f'{si.get("dist_to_wp", 0):>6.2f}  '
+                  f'{si.get("heading_err", 0):>+8.2f}  '
+                  f'{si.get("cte", 0):>+7.3f}  '
+                  f'{si.get("steer_frac", 0):>+6.3f}  '
+                  f'{si.get("mode", "?"):>7}  '
+                  f'{s_clip_str:>8}')
+
         # Track newly reached waypoints (only original, not synthetic bypass)
         while prev_idx < path_n.path_idx and prev_idx < len(effective_wps):
             wp = effective_wps[prev_idx]
@@ -830,6 +896,13 @@ def simulate(waypoints:       list[SimWaypoint],
     max_xte  = max(xte_arr, default=0.0)
     avg_xte  = sum(xte_arr) / len(xte_arr) if xte_arr else 0.0
 
+    if verbose:
+        print(f'\n{"─"*60}')
+        print(f'Complete: {path_n.path_idx >= len(effective_wps)}  '
+              f'{step+1} steps  {(step+1)/nav["control_rate"]:.1f}s simulated')
+        print(f'Reached : {len(wps_reached)}/{len(waypoints)} waypoints')
+        print(f'XTE rms : {rms_xte:.3f} m   max: {max_xte:.3f} m')
+
     return SimResult(
         path              = result_path,
         xte_log           = xte_log,
@@ -841,6 +914,7 @@ def simulate(waypoints:       list[SimWaypoint],
         complete          = path_n.path_idx >= len(effective_wps),
         obstacle_polygons = [list(poly) for poly in expanded_polygons],
         rerouted_wps      = [[wp.lat, wp.lon] for wp in effective_wps],
+        step_log          = step_log_data,
     )
 
 
@@ -878,6 +952,7 @@ if __name__ == '__main__':
     ap.add_argument('--turn-scale',  type=float, default=DEFAULT_PHYS['turn_scale'])
     ap.add_argument('--obstacles',   type=str,   default=None,
                     help='JSON file with obstacle polygons [[[lat,lon],...],...]')
+    ap.add_argument('--debug', action='store_true', help='Print per-step controller state')
     ap.add_argument('waypoints',     help='CSV file with lat,lon[,speed,hold_secs] columns')
     args = ap.parse_args()
 
@@ -892,7 +967,8 @@ if __name__ == '__main__':
                       nav_params={},
                       phys_params={'wheelbase': args.wheelbase,
                                    'turn_scale': args.turn_scale},
-                      obstacles=obstacles)
+                      obstacles=obstacles,
+                      verbose=args.debug)
 
     print(f'Complete : {result.complete}  ({result.total_steps} steps, '
           f'{result.total_steps / DEFAULT_NAV["control_rate"]:.1f} s simulated)')
