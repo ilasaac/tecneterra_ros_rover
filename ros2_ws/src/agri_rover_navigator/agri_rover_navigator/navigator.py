@@ -169,6 +169,7 @@ class NavigatorNode(Node):
         self._path_origin_lat: float | None          = None
         self._path_origin_lon: float | None          = None
         self._path_idx:        int                   = 0
+        self._log_tick:        int                   = 0   # for throttling periodic logs
 
         # Obstacle avoidance state
         # _path_original: clean copy of received mission waypoints (without bypass points).
@@ -346,6 +347,12 @@ class NavigatorNode(Node):
                 f'Obstacle fence: {len(self._obstacle_polygons)} polygon(s), '
                 f'clearance={self._clearance:.1f} m, '
                 f'path_original={len(self._path_original)} wps')
+            for pi, poly in enumerate(self._obstacle_polygons):
+                verts_str = '  '.join(f'{lat:.7f},{lon:.7f}' for lat, lon in poly)
+                self.get_logger().info(f'  poly[{pi}] raw ({len(poly)} verts): {verts_str}')
+                exp = self._expanded_polygons[pi]
+                exp_str = '  '.join(f'{lat:.7f},{lon:.7f}' for lat, lon in exp)
+                self.get_logger().info(f'  poly[{pi}] expanded: {exp_str}')
             if self._path_original:
                 self._reroute_path()
             else:
@@ -635,10 +642,19 @@ class NavigatorNode(Node):
             self.get_logger().info(
                 f'Path rerouted: {len(self._path_original)} → {len(self._path)} wps '
                 f'({n_bypass} bypass inserted)')
+            for idx in sorted(new_bypass_indices):
+                bp = new_wps[idx]
+                self.get_logger().info(
+                    f'  bypass[{idx}]: {bp.latitude:.7f},{bp.longitude:.7f}')
         else:
             self.get_logger().info(
                 f'Reroute complete: {len(self._path_original)} wps, '
                 f'no bypass needed (path does not cross any obstacle)')
+        # Log surrounding waypoints for context
+        for k, wp in enumerate(new_wps):
+            if k in new_bypass_indices or (k > 0 and k - 1 in new_bypass_indices) or (k < len(new_wps) - 1 and k + 1 in new_bypass_indices):
+                tag = 'BYPASS' if k in new_bypass_indices else 'orig'
+                self.get_logger().info(f'  path[{k}] {tag}: seq={wp.seq} {wp.latitude:.7f},{wp.longitude:.7f}')
 
     # ── Full-path geometry ────────────────────────────────────────────────────
 
@@ -923,6 +939,16 @@ class NavigatorNode(Node):
             target_spd = max(self._min_speed, target_spd * approach_t)
         else:
             la_lat, la_lon = self._point_at_s(s_nearest + self._lookahead)
+
+        # Periodic log (every 5 s) — helps verify rover is tracking rerouted path
+        self._log_tick += 1
+        if self._log_tick % 125 == 1:
+            self.get_logger().info(
+                f'NAV path_idx={self._path_idx}/{len(self._path)} '
+                f'bypass_idx={sorted(self._bypass_indices)} '
+                f'wp_target={"BYPASS" if is_bypass else "orig"} '
+                f'lookahead=({la_lat:.7f},{la_lon:.7f}) '
+                f'rover=({rlat:.7f},{rlon:.7f})')
 
         target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
         heading_err    = ((target_bearing - self._heading + 180) % 360) - 180
