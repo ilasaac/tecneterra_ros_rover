@@ -624,15 +624,32 @@ class NavigatorNode(Node):
             return bp
 
         orig = self._path_original
+
+        # Prepend a synthetic origin waypoint so the rover-start → orig[0]
+        # segment is also checked for obstacle intersections.
+        # It is stripped from new_wps at the end (identified by seq == -9999).
+        _ORIGIN_SEQ = -9999
+        if self._path_origin_lat is not None and orig:
+            origin_wp = MissionWaypoint()
+            origin_wp.seq               = _ORIGIN_SEQ
+            origin_wp.latitude          = self._path_origin_lat
+            origin_wp.longitude         = self._path_origin_lon
+            origin_wp.speed             = orig[0].speed
+            origin_wp.hold_secs         = 0.0
+            origin_wp.acceptance_radius = self._accept_r
+            all_wps = [origin_wp] + list(orig)
+        else:
+            all_wps = list(orig)
+
         i = 0
-        while i < len(orig):
+        while i < len(all_wps):
             if not new_wps:
-                new_wps.append(orig[i])
+                new_wps.append(all_wps[i])
                 i += 1
                 continue
 
             prev     = new_wps[-1]
-            wp       = orig[i]
+            wp       = all_wps[i]
             a_lat, a_lon = prev.latitude, prev.longitude
             b_lat, b_lon = wp.latitude, wp.longitude
 
@@ -667,14 +684,14 @@ class NavigatorNode(Node):
                 entry_pt = (a_lat + entry_t * (b_lat - a_lat),
                             a_lon + entry_t * (b_lon - a_lon))
 
-                # Scan ahead through original waypoints to find the exit crossing
+                # Scan ahead through all_wps to find the exit crossing
                 j = i + 1
                 found_exit = False
-                while j < len(orig):
-                    c_lat = orig[j - 1].latitude
-                    c_lon = orig[j - 1].longitude
-                    d_lat = orig[j].latitude
-                    d_lon = orig[j].longitude
+                while j < len(all_wps):
+                    c_lat = all_wps[j - 1].latitude
+                    c_lon = all_wps[j - 1].longitude
+                    d_lat = all_wps[j].latitude
+                    d_lon = all_wps[j].longitude
                     exit_hits = self._seg_intersect_polygon(c_lat, c_lon, d_lat, d_lon, poly)
                     if exit_hits:
                         exit_t, exit_edge = exit_hits[0]
@@ -688,8 +705,8 @@ class NavigatorNode(Node):
                         for bp_lat, bp_lon in bypass:
                             idx = len(new_wps)
                             new_bypass_indices.add(idx)
-                            new_wps.append(make_bypass_wp(bp_lat, bp_lon, orig[j]))
-                        new_wps.append(orig[j])
+                            new_wps.append(make_bypass_wp(bp_lat, bp_lon, all_wps[j]))
+                        new_wps.append(all_wps[j])
                         i = j + 1
                         found_exit = True
                         break
@@ -703,6 +720,12 @@ class NavigatorNode(Node):
             # No intersection — keep original waypoint
             new_wps.append(wp)
             i += 1
+
+        # Strip synthetic origin waypoint (it is not a real mission waypoint)
+        if new_wps and new_wps[0].seq == _ORIGIN_SEQ:
+            new_wps.pop(0)
+            # Shift bypass indices — the origin occupied index 0
+            new_bypass_indices = {idx - 1 for idx in new_bypass_indices if idx > 0}
 
         # Rebuild path arc-lengths from new_wps
         new_s: list[float] = []

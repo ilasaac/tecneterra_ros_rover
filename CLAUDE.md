@@ -41,7 +41,8 @@ ros_agri_rover/
     ├── rtk_forwarder.py             ← NTRIP/E610 RTCM3 → u-blox serial
     ├── start_rover1_sim.sh          ← single-command RV1 simulation launcher
     ├── start_rover2_sim.sh          ← single-command RV2 simulation launcher
-    ├── sim_navigator.py             ← software-in-the-loop simulation of navigator.py (full-path Stanley + pivot turns); importable by monitor.py or standalone CLI
+    ├── sim_navigator.py             ← software-in-the-loop simulation of navigator.py (full-path Stanley + MPC + pivot turns + obstacle avoidance); importable by monitor.py or standalone CLI; reads nav params from rover1_params.yaml at import time (falls back to hardcoded defaults)
+    ├── mission_planner.py           ← web-based mission route editor + SIL simulator (HTTP :8089); satellite map, waypoint drag, obstacle polygon drawing, simulate overlays path + pivot/bypass-pivot markers
     ├── monitor.py                   ← terminal MAVLink dashboard; rover IPs, SBUS/PPM, XTE stats; snoops GQC missions, runs SIL sim, serves Leaflet map on :8088 (HTTP) — features: auto-fit toggle, persistent zoom/center via localStorage, 5s auto-refresh
     └── mission_uploader.py          ← CSV waypoints → MAVLink mission upload
 ```
@@ -67,7 +68,7 @@ ros_agri_rover/
 | agri_rover_rp2040        | ament_python | rp2040_bridge      | USB serial ↔ ROS2: reads CH: lines, sends \<HB:\> \<J:\> |
 | agri_rover_gps           | ament_python | gps_driver         | Dual NMEA serial → NavSatFix + heading Float32 |
 | agri_rover_mavlink       | ament_python | mavlink_bridge     | ROS2 topics ↔ MAVLink UDP to GQC     |
-| agri_rover_navigator     | ament_python | navigator          | Full-path Stanley + pivot-turn autonomous navigator; publishes XTE |
+| agri_rover_navigator     | ament_python | navigator          | Full-path Stanley/MPC + pivot turns (incl. bypass corners) + obstacle pre-reroute; publishes XTE |
 | agri_rover_sensors       | ament_python | sensor_node        | Tank/temp/humidity/pressure (stub)    |
 | agri_rover_video         | ament_python | video_streamer     | GStreamer RTSP server                 |
 | agri_rover_simulator     | ament_python | simulator          | Dead-reckoning GPS simulator (runs on separate Jetson) |
@@ -572,7 +573,8 @@ All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
 | `simulator.py` | Simulator Jetson | Dead-reckoning physics → NMEA over UDP WiFi |
 | `nmea_wifi_rx.py` | Each rover Jetson | Receives UDP NMEA → PTY virtual serial ports for gps_driver |
 | `rtk_forwarder.py` | Each rover Jetson | NTRIP/E610 RTCM3 → u-blox serial (real hardware) |
-| `sim_navigator.py` | Any (no ROS2) | SIL simulation of full-path Stanley navigator; importable by monitor.py; standalone CLI with CSV waypoints. Writes obstacle reroute diagnostics to `tools/obstacle_debug.log` |
+| `sim_navigator.py` | Any (no ROS2) | SIL simulation of navigator.py — Stanley/MPC, pivot turns (incl. bypass corners), obstacle avoidance; reads params from `rover1_params.yaml` at import; standalone CLI or importable. Diagnostics → `tools/obstacle_debug.log` |
+| `mission_planner.py` | Dev machine | Web mission editor + SIL (HTTP :8089); satellite map, drag waypoints, draw obstacle polygons, Simulate shows path + orange pivot / purple bypass-pivot markers |
 | `monitor.py` | Dev machine / RPi (SSH) | Terminal dashboard + Leaflet map (HTTP :8088); snoops GQC mission uploads and auto-simulates via sim_navigator.py |
 | `mission_uploader.py` | Dev machine | CSV waypoints → MAVLink mission upload |
 
@@ -592,5 +594,5 @@ All scripts under `tools/` are pure Python 3 + pyserial. No ROS2 required.
 - `firmware/*/main.cpp`: SX1278 driver is complete but needs `pico_sdk_import.cmake` copied from `$PICO_SDK_PATH/external/`
 - `ppm_tx.pio`: slave uses SM0 (not SM1) — one less state machine needed vs master
 - Android GQC: RTSP dual video screen, settings dialog, STATUSTEXT log screen still TODO (see android/AgriRoverGQC/README.md)
-- Navigator obstacle avoidance: single-pass per segment — a segment intersecting multiple non-adjacent polygons is rerouted around the first one only; complex overlapping layouts may need manual adjustment. Polygons spanning waypoints (cross-segment case) are handled correctly via scan-ahead.
+- Navigator obstacle avoidance: single-pass per segment — a segment intersecting multiple non-adjacent polygons is rerouted around the first one only; complex overlapping layouts may need manual adjustment. Polygons spanning waypoints (cross-segment case) and the rover-start → wp[0] leg are both handled correctly.
 - DO_SET_SERVO in missions: applied at upload time, re-published continuously by navigator at 25 Hz. For precise per-waypoint timing during replay (servo fires when rover physically reaches GPS position), the navigator would need to sequence through mixed mission items (requires MissionWaypoint interface change or a new ServoEvent topic).

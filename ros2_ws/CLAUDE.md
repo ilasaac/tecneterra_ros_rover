@@ -209,10 +209,11 @@ Speed is held constant at the recorded waypoint speed. No steering-based slowdow
 **`_point_at_s(s_target)`** — interpolates (lat, lon) at any arc-length along the full path, spanning segment boundaries naturally.
 
 **Pivot turns:**
-- `_turn_angle_at(idx)` computes the absolute heading change between the incoming and outgoing segments at waypoint `idx`.
-- If `turn_angle >= pivot_threshold` and not the last waypoint: `needs_pivot = True`.
+- `_turn_angle_at(idx)` computes the absolute heading change between the incoming and outgoing segments at waypoint `idx`. Applied to **all** waypoints including bypass (obstacle-arc) waypoints.
+- If `turn_angle >= pivot_threshold` and not the last waypoint: `needs_pivot = True`. This applies equally to original mission waypoints and synthetic bypass-corner waypoints inserted by `_reroute_path()`.
 - **Approach phase** (when `needs_pivot` and `dist_to_wp < pivot_approach_dist`): lookahead target is set to the waypoint itself (not a projected point); speed scaled down to `min_speed * (dist / pivot_approach_dist)`.
-- **Pivot phase** (after reaching the waypoint): throttle=neutral, steer full in the direction of the outgoing heading until `|heading_error| < heading_deadband`. Then `_advance_path()`.
+- **Pivot phase** (after reaching the waypoint): throttle=neutral, proportional steer (`steer_frac = pivot_err / 45°`, clamped to `max_steer`) until `|heading_error| < heading_deadband`. Then `_advance_path()`.
+- MPC horizon is clipped at the next sharp turn whether that turn is at an original waypoint or a bypass corner.
 - Arc-length advance (`s_nearest > wp_s + accept`) is disabled for pivot waypoints — only proximity (`dist_to_wp < accept`) triggers arrival so the rover reaches the exact turn point.
 
 **Waypoint advance logic:**
@@ -250,9 +251,10 @@ Servo channels (PPM CH5-CH8):
   - **Case 2 (1 hit — polygon spans a waypoint):** entry detected, scan-ahead searches subsequent original segments until the exit crossing is found, then `_bypass_arc()` generates the cross-segment detour and all inside-polygon waypoints are skipped. This fixes the "rover drives through obstacle" bug when a polygon straddles a mission waypoint.
 - `_bypass_arc(entry_pt, exit_pt, entry_edge, exit_edge, polygon)` — shared helper that walks CCW and CW around the polygon boundary and returns the shorter arc. Called by both `_bypass_verts()` (single-segment) and the scan-ahead path (cross-segment).
 - `_reroute_path()` is called from both `_cb_mission()` (if obstacles are already loaded) and `_cb_mission_fence()` (if the mission is already loaded) — handles either arrival order.
-- During navigation, `_advance_path()` skips publishing `wp_active` for bypass-index waypoints (transparent to GQC), and `_control_loop()` skips pivot-turn logic for them.
+- `_reroute_path()` checks **all** path segments including rover-start → wp[0]: a synthetic origin waypoint is prepended before the loop and stripped from the result so the first leg is never skipped.
+- `_advance_path()` skips publishing `wp_active` for bypass-index waypoints (transparent to GQC). Bypass waypoints **do** participate in pivot-turn logic: if the turn angle at a bypass corner ≥ `pivot_threshold`, the rover stops and spins exactly as it would at a regular sharp waypoint.
 - `_reroute_path()` is a no-op while the rover is actively navigating (`_mode == AUTONOMOUS` and `_armed` and `_path_idx > 0`).
-- Parameter `obstacle_clearance_m` (default 1.0 m) in `navigator_params.yaml`.
+- Parameter `obstacle_clearance_m` (default 0.5 m) and `rover_width_m` (default 1.0 m) in `rover1/2_params.yaml`. Effective clearance = `rover_width_m / 2 + obstacle_clearance_m`.
 
 ## gps_driver — NMEA parsing
 
