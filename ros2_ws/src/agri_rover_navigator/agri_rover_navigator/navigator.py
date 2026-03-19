@@ -223,6 +223,14 @@ class NavigatorNode(Node):
         self._pivoting:         bool  = False
         self._pivot_target_hdg: float = 0.0
 
+        # Chunk-based mission: _path holds only the current chunk (up to the next
+        # pivot point inclusive).  Remaining chunks are queued here as
+        # (wps, origin_lat, origin_lon, bypass_indices, pivot_target_wp_or_None).
+        # pivot_target_wp: first waypoint of the next chunk — needed to compute
+        # the pivot heading when the pivot is the last wp in the current chunk.
+        self._pending_path_chunks: list = []
+        self._chunk_end_pivot_target: 'MissionWaypoint | None' = None
+
         self._dt = 1.0 / self.get_parameter('control_rate').value
 
         # MPC warm-start: previous horizon steer sequence (N steer_frac values)
@@ -311,12 +319,14 @@ class NavigatorNode(Node):
         self._path_s.clear()
         self._path_original.clear()
         self._bypass_indices.clear()
-        self._path_idx        = 0
-        self._path_origin_lat = None
-        self._path_origin_lon = None
-        self._holding         = False
-        self._pivoting        = False
-        self._mpc_prev_steers = []
+        self._path_idx               = 0
+        self._path_origin_lat        = None
+        self._path_origin_lon        = None
+        self._holding                = False
+        self._pivoting               = False
+        self._mpc_prev_steers        = []
+        self._pending_path_chunks    = []
+        self._chunk_end_pivot_target = None
         clr_msg = String(); clr_msg.data = '[]'
         self.rerouted_pub.publish(clr_msg)
         self._publish_halt()
@@ -332,8 +342,10 @@ class NavigatorNode(Node):
             self._bypass_indices.clear()
             self._path_idx        = 0
             self._holding         = False
-            self._pivoting        = False
-            self._mpc_prev_steers = []
+            self._pivoting               = False
+            self._mpc_prev_steers        = []
+            self._pending_path_chunks    = []
+            self._chunk_end_pivot_target = None
             # Record rover centre as path origin (start of virtual segment → wp[0]).
             if self._fix is not None:
                 self._path_origin_lat, self._path_origin_lon = self._center_pos()
@@ -776,6 +788,129 @@ class NavigatorNode(Node):
                 tag = 'BYPASS' if k in new_bypass_indices else 'orig'
                 self.get_logger().info(f'  path[{k}] {tag}: seq={wp.seq} {wp.latitude:.7f},{wp.longitude:.7f}')
 
+        # Split the complete rerouted path into sub-mission chunks at pivot turns.
+        # _path is replaced with the first chunk; the rest queue in _pending_path_chunks.
+        self._split_path_into_chunks()
+
+    def _split_path_into_chunks(self):
+        """Split self._path at pivot turns into sequential sub-missions.
+
+        After the split, self._path contains only the first chunk.  Each
+        subsequent chunk is stored in self._pending_path_chunks as
+        (wps, origin_lat, origin_lon, bypass_indices_set, pivot_target_wp_or_None).
+
+        The pivot waypoint is the LAST element of its chunk.  After the rover
+        reaches it and completes the spin, _advance_path() increments _path_idx
+        to len(_path), which triggers _load_next_path_chunk() to load the next
+        chunk with the pivot point as the new origin.
+        """
+        full_path     = self._path
+        full_bypass   = self._bypass_indices
+        origin_lat    = self._path_origin_lat
+        origin_lon    = self._path_origin_lon
+
+        if not full_path:
+            return
+
+        # Build chunks: scan for pivot waypoints in the full path.
+        chunks: list[tuple[list, set, float, float]] = []   # (wps, bypass, orig_lat, orig_lon)
+        current_wps:    list = []
+        current_bypass: set  = set()
+        chunk_origin_lat = origin_lat
+        chunk_origin_lon = origin_lon
+
+        n = len(full_path)
+        for i, wp in enumerate(full_path):
+            local_idx = len(current_wps)
+            current_wps.append(wp)
+            if i in full_bypass:
+                current_bypass.add(local_idx)
+
+            # Compute turn angle at wp[i] if not the last waypoint
+            if i < n - 1:
+                if i == 0 and origin_lat is not None:
+                    in_brg = bearing_to(origin_lat, origin_lon,
+                                        full_path[0].latitude, full_path[0].longitude)
+                elif i == 0:
+                    in_brg = bearing_to(full_path[0].latitude, full_path[0].longitude,
+                                        full_path[1].latitude, full_path[1].longitude)
+                else:
+                    in_brg = bearing_to(full_path[i - 1].latitude, full_path[i - 1].longitude,
+                                        full_path[i].latitude,     full_path[i].longitude)
+                out_brg = bearing_to(full_path[i].latitude,     full_path[i].longitude,
+                                     full_path[i + 1].latitude, full_path[i + 1].longitude)
+                ta = abs(((out_brg - in_brg + 180) % 360) - 180)
+                if ta >= self._pivot_threshold:
+                    # Close current chunk at this pivot wp; next chunk origin = this wp
+                    chunks.append((list(current_wps), set(current_bypass),
+                                   chunk_origin_lat, chunk_origin_lon))
+                    chunk_origin_lat = wp.latitude
+                    chunk_origin_lon = wp.longitude
+                    current_wps    = []
+                    current_bypass = set()
+
+        if current_wps:
+            chunks.append((current_wps, current_bypass, chunk_origin_lat, chunk_origin_lon))
+
+        if not chunks:
+            return
+
+        # Build pending queue from chunks[1:]
+        self._pending_path_chunks = []
+        for i, (wps, byp, olat, olon) in enumerate(chunks):
+            pivot_target = chunks[i + 1][0][0] if i + 1 < len(chunks) else None
+            if i > 0:
+                self._pending_path_chunks.append((wps, olat, olon, byp, pivot_target))
+
+        # Activate first chunk
+        first_wps, first_byp, first_olat, first_olon = chunks[0][:4]
+        self._chunk_end_pivot_target = chunks[1][0][0] if len(chunks) > 1 else None
+        self._path            = first_wps
+        self._path_origin_lat = first_olat
+        self._path_origin_lon = first_olon
+        self._bypass_indices  = first_byp
+        # Rebuild arc-lengths for the first chunk
+        self._path_s = self._rebuild_path_s(first_wps, first_olat, first_olon)
+        self._path_idx = 0
+
+        self.get_logger().info(
+            f'Mission split into {len(chunks)} sub-missions at pivot turns; '
+            f'chunk[0] has {len(first_wps)} wps')
+
+    def _rebuild_path_s(self, wps, origin_lat, origin_lon) -> list:
+        """Rebuild cumulative arc-lengths for a chunk."""
+        s = []
+        for k, wp in enumerate(wps):
+            if k == 0:
+                d = (haversine(origin_lat, origin_lon, wp.latitude, wp.longitude)
+                     if origin_lat is not None else 0.0)
+            else:
+                prev = wps[k - 1]
+                d    = s[-1] + haversine(prev.latitude, prev.longitude,
+                                         wp.latitude, wp.longitude)
+            s.append(d)
+        return s
+
+    def _load_next_path_chunk(self) -> bool:
+        """Load the next pending chunk into _path.  Returns True if available."""
+        if not self._pending_path_chunks:
+            return False
+        wps, olat, olon, byp, pivot_target = self._pending_path_chunks.pop(0)
+        self._path                  = wps
+        self._path_origin_lat       = olat
+        self._path_origin_lon       = olon
+        self._bypass_indices        = byp
+        self._chunk_end_pivot_target = pivot_target
+        self._path_s                = self._rebuild_path_s(wps, olat, olon)
+        self._path_idx              = 0
+        self._mpc_prev_steers       = []
+        self._pivoting              = False
+        self._holding               = False
+        self.get_logger().info(
+            f'Sub-mission loaded: {len(wps)} wps, '
+            f'{len(self._pending_path_chunks)} chunks remaining')
+        return True
+
     # ── Full-path geometry ────────────────────────────────────────────────────
 
     def _turn_angle_at(self, idx: int) -> float:
@@ -1093,8 +1228,13 @@ class NavigatorNode(Node):
     def _control_loop(self):
         if self._mode != 'AUTONOMOUS' or not self._armed or self._paused:
             return
-        if not self._path or self._path_idx >= len(self._path):
+        if not self._path:
             return
+        if self._path_idx >= len(self._path):
+            if self._load_next_path_chunk():
+                pass   # fall through to control this tick with new chunk
+            else:
+                return   # all chunks complete
         if self._fix is None or (time.time() - self._fix_time) > self._gps_timeout:
             self.get_logger().warn('GPS stale — halting')
             self._publish_halt()
@@ -1133,10 +1273,29 @@ class NavigatorNode(Node):
         rlat, rlon  = self._center_pos()
         flat, flon  = self._front_pos()
 
-        is_bypass   = self._path_idx in self._bypass_indices
-        turn_angle  = self._turn_angle_at(self._path_idx)
-        needs_pivot = (turn_angle >= self._pivot_threshold
-                       and self._path_idx < len(self._path) - 1)
+        is_bypass        = self._path_idx in self._bypass_indices
+        is_last_in_chunk = (self._path_idx == len(self._path) - 1)
+        chunk_pivot_nxt  = self._chunk_end_pivot_target   # MissionWaypoint | None
+
+        # Pivot detection — for the last wp in a chunk _turn_angle_at() returns 0
+        # (no outgoing segment in _path).  Look at the next chunk's first wp instead.
+        if is_last_in_chunk and chunk_pivot_nxt is not None:
+            if len(self._path) > 1:
+                in_brg = bearing_to(self._path[-2].latitude, self._path[-2].longitude,
+                                    wp.latitude, wp.longitude)
+            elif self._path_origin_lat is not None:
+                in_brg = bearing_to(self._path_origin_lat, self._path_origin_lon,
+                                    wp.latitude, wp.longitude)
+            else:
+                in_brg = 0.0
+            out_brg    = bearing_to(wp.latitude, wp.longitude,
+                                    chunk_pivot_nxt.latitude, chunk_pivot_nxt.longitude)
+            turn_angle = abs(((out_brg - in_brg + 180) % 360) - 180)
+            needs_pivot = turn_angle >= self._pivot_threshold
+        else:
+            turn_angle  = self._turn_angle_at(self._path_idx)
+            needs_pivot = (turn_angle >= self._pivot_threshold
+                           and self._path_idx < len(self._path) - 1)
 
         # ── Full-path nearest-point projection ───────────────────────────────
         s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
@@ -1157,13 +1316,16 @@ class NavigatorNode(Node):
                 self._hold_end = time.monotonic() + wp.hold_secs
                 self._publish_halt()
             elif needs_pivot:
-                nxt = self._path[self._path_idx + 1]
-                # Bearing from rover's ACTUAL position to next WP, not from the
+                # Bearing from rover's ACTUAL position to the next WP (not from the
                 # waypoint itself — the rover may have triggered "reached" up to
-                # accept_r metres away, so the segment bearing from wp would point
-                # in the wrong direction from where the rover actually is.
-                self._pivot_target_hdg = bearing_to(
-                    rlat, rlon, nxt.latitude, nxt.longitude)
+                # accept_r metres short, so the bearing from wp would be wrong).
+                # At a chunk boundary use the first wp of the next chunk.
+                if is_last_in_chunk and chunk_pivot_nxt is not None:
+                    nxt_lat, nxt_lon = chunk_pivot_nxt.latitude, chunk_pivot_nxt.longitude
+                else:
+                    nxt = self._path[self._path_idx + 1]
+                    nxt_lat, nxt_lon = nxt.latitude, nxt.longitude
+                self._pivot_target_hdg = bearing_to(rlat, rlon, nxt_lat, nxt_lon)
                 self._pivoting        = True
                 self._mpc_prev_steers = []   # warm-start stale after stop-and-spin
                 self.get_logger().info(
