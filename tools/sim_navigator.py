@@ -857,7 +857,7 @@ def simulate(waypoints:       list[SimWaypoint],
         print(f'{"─"*60}')
         print(f'  {"step":>5}  {"t":>5}  {"wp":>3}  {"dist":>6}  {"hdg_err":>8}  {"cte":>7}  {"steer":>6}  {"mode":>7}  {"s_clip":>8}')
 
-    result_path: list[tuple[float, float]] = [(rover.lat, rover.lon)]
+    result_path: list[tuple[float, float]] = [_center_pos(rover, bm)]
     xte_log:     list[float]               = []
     wps_reached: list[int]                 = []
     t_mono = 0.0
@@ -869,6 +869,9 @@ def simulate(waypoints:       list[SimWaypoint],
     for step in range(max_steps):
         rlat, rlon = _center_pos(rover, bm)
         flat, flon = _front_pos(rover, bm)
+
+        was_pivoting = path_n._pivoting
+
         thr, steer, best_seg, done = path_n.step(rlat, rlon, flat, flon,
                                                   rover.heading_deg, t_mono)
         info = dict(path_n._step_info)
@@ -897,13 +900,27 @@ def simulate(waypoints:       list[SimWaypoint],
         if done:
             break
 
-        rover.update(thr, steer, nav['max_speed'], phys['wheelbase'],
-                     dt, phys['turn_scale'])
+        if was_pivoting or path_n._pivoting:
+            # 2-track skid-steer pivots around its geometric centre (midpoint
+            # between front and rear antenna = _center_pos).  Keep that point
+            # fixed while heading changes: after update recompute the rear GPS
+            # position so that centre stays at (rlat, rlon).
+            pivot_c_lat, pivot_c_lon = rlat, rlon
+            cos_lat = math.cos(math.radians(rover.lat)) or 1e-9
+            rover.update(thr, steer, nav['max_speed'], phys['wheelbase'],
+                         dt, phys['turn_scale'])
+            half = bm / 2.0
+            rover.lat = pivot_c_lat - (half * math.cos(rover.heading_rad)) / 111_320.0
+            rover.lon = pivot_c_lon - (half * math.sin(rover.heading_rad)) / (111_320.0 * cos_lat)
+        else:
+            rover.update(thr, steer, nav['max_speed'], phys['wheelbase'],
+                         dt, phys['turn_scale'])
+
         t_mono += dt
 
         rlat_new, rlon_new = _center_pos(rover, bm)
         flat_new, flon_new = _front_pos(rover, bm)
-        result_path.append((rover.lat, rover.lon))   # rear GPS — stays fixed during spin
+        result_path.append((rlat_new, rlon_new))   # centre — fixed during pivot
         cte = path_n._cte_to_seg(flat_new, flon_new, best_seg)
         xte_log.append(abs(cte))
 
