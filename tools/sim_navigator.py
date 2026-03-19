@@ -560,12 +560,18 @@ class PathNavigator:
         if needs_pivot and dist_to_wp < pivot_app_dist:
             la_lat, la_lon = wp.lat, wp.lon
             target_spd = max(min_spd, target_spd * dist_to_wp / pivot_app_dist)
+        elif is_bypass:
+            # Bypass waypoints: steer directly to the waypoint.
+            # _nearest_on_path can snap to later original-route segments, giving a
+            # wrong lookahead that causes the rover to ignore the detour.
+            la_lat, la_lon = wp.lat, wp.lon
         else:
             la_lat, la_lon = self._point_at_s(s_nearest + lookahead)
 
         target_bearing = _bearing_to(rlat, rlon, la_lat, la_lon)
         heading_err    = ((target_bearing - heading + 180) % 360) - 180
-        cte            = self._cte_to_seg(flat, flon, best_seg)
+        # Bypass waypoints: zero CTE — heading error to the bypass point is enough.
+        cte            = 0.0 if is_bypass else self._cte_to_seg(flat, flon, best_seg)
 
         if abs(heading_err) > align_thresh:
             spin_dir  = math.copysign(1.0, heading_err)

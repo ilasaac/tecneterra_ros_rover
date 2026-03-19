@@ -937,6 +937,14 @@ class NavigatorNode(Node):
             # Scale speed linearly from target_spd down to min_speed
             approach_t = dist_to_wp / self._pivot_approach_dist   # 1.0 → 0.0
             target_spd = max(self._min_speed, target_spd * approach_t)
+        elif is_bypass:
+            # Bypass waypoints: steer directly to the waypoint.
+            # _nearest_on_path can snap to later original-route segments (they are
+            # geometrically closer while the rover is still on the straight original
+            # line), giving a wrong lookahead that makes the rover ignore the detour.
+            # Direct-to-waypoint steering forces the rover to physically follow each
+            # bypass point.  CTE is zeroed — heading error alone is sufficient.
+            la_lat, la_lon = wp.latitude, wp.longitude
         else:
             la_lat, la_lon = self._point_at_s(s_nearest + self._lookahead)
 
@@ -954,7 +962,10 @@ class NavigatorNode(Node):
         heading_err    = ((target_bearing - self._heading + 180) % 360) - 180
 
         # ── Stanley CTE: front antenna projected onto best_seg ───────────────
-        cte = self._cte_to_seg(flat, flon, best_seg)
+        # Bypass waypoints: zero CTE — heading error to the bypass point is enough.
+        # Using best_seg (from _nearest_on_path) for CTE while is_bypass would pick
+        # a wrong segment and add spurious correction opposing the detour.
+        cte = 0.0 if is_bypass else self._cte_to_seg(flat, flon, best_seg)
 
         # XTE telemetry
         xte_msg      = Float32()
