@@ -13,7 +13,9 @@ Importable by monitor.py for automatic pre-mission simulation, or run standalone
   # With obstacle polygons (JSON file: [[lat,lon],...] per polygon):
   python tools/sim_navigator.py ... --obstacles missions/obstacles.json
 
-The navigator parameters default to the same values as navigator_params.yaml.
+Navigator parameters are loaded at import time from
+ros2_ws/src/agri_rover_bringup/config/rover1_params.yaml (the same YAML used by
+the real rover), falling back to hardcoded defaults if the file is unavailable.
 Physical parameters (wheelbase, turn_scale) can be overridden via DEFAULT_PHYS or
 the --wheelbase / --turn-scale CLI args.
 """
@@ -27,6 +29,13 @@ import math
 import os
 import sys
 from dataclasses import dataclass, field
+
+try:
+    import yaml as _yaml
+    _YAML_OK = True
+except ImportError:
+    _yaml = None
+    _YAML_OK = False
 
 try:
     from scipy.optimize import minimize as _scipy_minimize
@@ -78,6 +87,40 @@ DEFAULT_NAV: dict = {
     'mpc_w_dsteer':              0.05,
     'wheelbase_m':               0.6,
 }
+
+
+def _load_rover_params(rover: int = 1) -> dict:
+    """Load navigator parameters from rover{N}_params.yaml and return a dict
+    of keys that exist in DEFAULT_NAV.  Returns {} on any failure so callers
+    can safely update(DEFAULT_NAV) with the result."""
+    if not _YAML_OK:
+        print('[sim_navigator] Warning: PyYAML not installed — using hardcoded DEFAULT_NAV', flush=True)
+        return {}
+    cfg_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        '..', 'ros2_ws', 'src', 'agri_rover_bringup', 'config',
+        f'rover{rover}_params.yaml',
+    )
+    cfg_path = os.path.normpath(cfg_path)
+    if not os.path.isfile(cfg_path):
+        print(f'[sim_navigator] Warning: {cfg_path} not found — using hardcoded DEFAULT_NAV', flush=True)
+        return {}
+    try:
+        with open(cfg_path) as fh:
+            raw = _yaml.safe_load(fh)
+        nav_params = raw.get(f'/rv{rover}/navigator', {}).get('ros__parameters', {})
+        # Only copy keys that DEFAULT_NAV knows about (exclude sim-only keys like max_timeout)
+        overrides = {k: nav_params[k] for k in DEFAULT_NAV if k in nav_params}
+        print(f'[sim_navigator] Loaded {len(overrides)} navigator params from {os.path.basename(cfg_path)}', flush=True)
+        return overrides
+    except Exception as exc:
+        print(f'[sim_navigator] Warning: could not read {cfg_path}: {exc}', flush=True)
+        return {}
+
+
+# Apply YAML overrides at import time so mission_planner.py picks them up automatically
+DEFAULT_NAV.update(_load_rover_params())
+
 
 # Physical rover parameters — tune to match the real rover
 DEFAULT_PHYS: dict = {
