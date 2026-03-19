@@ -124,7 +124,8 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(Float32,      'heading',      self._cb_heading,  10)
         self.create_subscription(RCInput,      'cmd_override', self._cb_cmd_mon,  10)
         self.create_subscription(Int32,        'wp_active',    self._cb_wp,       10)
-        self.create_subscription(Float32,      'xte',          self._cb_xte,      10)
+        self.create_subscription(Float32,      'xte',           self._cb_xte,            10)
+        self.create_subscription(String,       'rerouted_path', self._cb_rerouted_path,  10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
         self.cmd_pub           = self.create_publisher(RCInput,          'cmd_override',   10)
@@ -176,6 +177,34 @@ class MavlinkBridgeNode(Node):
 
     def _cb_xte(self, msg: Float32):
         self._xte = msg.data
+
+    def _cb_rerouted_path(self, msg: String):
+        """
+        Forward the navigator's rerouted path to GQC as MAVLink TUNNEL messages.
+        Payload format: [chunk_idx, total_chunks, ...utf8 json bytes...]
+        payload_type = 0x5250 ('RP' — Rerouted Path), max 128 bytes per packet.
+        """
+        try:
+            json_bytes = msg.data.encode('utf-8')
+            # Each chunk: 2 header bytes (idx, total) + up to 126 data bytes
+            chunk_size = 126
+            if not json_bytes:
+                json_bytes = b'[]'
+            chunks = [json_bytes[i:i + chunk_size]
+                      for i in range(0, len(json_bytes), chunk_size)]
+            n = len(chunks)
+            for i, chunk in enumerate(chunks):
+                payload_bytes = bytes([i, n]) + chunk
+                padded = list(payload_bytes) + [0] * (128 - len(payload_bytes))
+                tunnel = self._mav.mav.tunnel_encode(
+                    target_system=0,
+                    target_component=0,
+                    payload_type=0x5250,
+                    payload_length=len(payload_bytes),
+                    payload=padded[:128])
+                self._send(tunnel)
+        except Exception as e:
+            self.get_logger().warn(f'rerouted_path tunnel send: {e}')
 
     # ── MAVLink send helpers ──────────────────────────────────────────────────
 

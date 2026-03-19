@@ -46,6 +46,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val roverMissionOverlays      = HashMap<Int, MutableList<Any>>()
     private val roverNextWaypointIndex    = HashMap<Int, Int>()   // last MISSION_ITEM_REACHED seq per rover
 
+    // Per-rover rerouted path received from navigator via TUNNEL (after obstacle avoidance)
+    // Triple: (lat, lon, isBypass)
+    private val roverReroutedPaths   = HashMap<Int, List<Triple<Double, Double, Boolean>>>()
+    private val reroutedPathOverlays = HashMap<Int, MutableList<Any>>()
+
     // UI Elements
     private lateinit var map: GoogleMap
     private lateinit var touchOverlay: View
@@ -239,6 +244,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         // Link mismatch: RC switch state ≠ slave reported state
         onLinkMismatch = { reason ->
             runOnUiThread { handleLinkMismatch(reason) }
+        },
+
+        // Rerouted path from navigator — draw as dashed orange/cyan overlay
+        onReroutedPath = { sysId, path ->
+            runOnUiThread {
+                roverReroutedPaths[sysId] = path
+                redrawReroutedPath(sysId)
+            }
         },
     )
 
@@ -465,6 +478,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         pendingHoldSecs = 0f
         roverMissions.remove(selectedRoverId)
         roverMissionVisible.remove(selectedRoverId)
+        // Clear rerouted path overlay
+        roverReroutedPaths.remove(selectedRoverId)
+        reroutedPathOverlays[selectedRoverId]?.forEach {
+            when (it) { is Marker -> it.remove(); is Polyline -> it.remove() }
+        }
+        reroutedPathOverlays.remove(selectedRoverId)
         // Reset obstacle drawing state
         isDrawingObstacle = false
         currentObstacleDraft.clear()
@@ -718,6 +737,59 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val pending = (max(0, walkedIdx - 1) until points.size).map { points[it] }
                 overlays.add(map.addPolyline(
                     PolylineOptions().addAll(pending).width(8f).color(pendingColor)))
+            }
+        }
+    }
+
+    // ─── Rerouted path drawing ────────────────────────────────────────────────
+
+    /**
+     * Draw the rerouted path for [roverId] as a dashed overlay.
+     * Color: orange (#FF9800) for RV1, cyan (#00BCD4) for RV2.
+     * Bypass segments are drawn with the rover color; original segments in gray.
+     * Called whenever a new rerouted path arrives via TUNNEL.
+     */
+    private fun redrawReroutedPath(roverId: Int) {
+        if (!::map.isInitialized) return
+
+        // Clear previous overlays for this rover
+        reroutedPathOverlays[roverId]?.forEach {
+            when (it) {
+                is Marker   -> it.remove()
+                is Polyline -> it.remove()
+            }
+        }
+        reroutedPathOverlays[roverId] = mutableListOf()
+
+        val path = roverReroutedPaths[roverId] ?: return
+        if (path.isEmpty()) return
+
+        val overlays = reroutedPathOverlays[roverId]!!
+        val roverColor = if (roverId == 1) Color.parseColor("#FF9800")
+                         else              Color.parseColor("#00BCD4")
+        val pattern = listOf<com.google.android.gms.maps.model.PatternItem>(
+            com.google.android.gms.maps.model.Dash(24f),
+            com.google.android.gms.maps.model.Gap(12f)
+        )
+
+        // Walk the path and emit a new polyline segment each time isBypass toggles
+        // so bypass segments get the rover color and original segments get gray.
+        var segStart = 0
+        var segBypass = path[0].third
+        for (i in 1..path.size) {
+            val flip = i == path.size || path[i].third != segBypass
+            if (flip) {
+                val pts = path.slice(segStart until i)
+                    .map { LatLng(it.first, it.second) }
+                val color = if (segBypass) roverColor
+                            else           Color.argb(200, 160, 160, 160)
+                overlays.add(map.addPolyline(
+                    PolylineOptions().addAll(pts).width(5f).color(color).pattern(pattern)
+                ))
+                if (i < path.size) {
+                    segStart  = i - 1   // overlap by 1 pt so segments connect
+                    segBypass = path[i].third
+                }
             }
         }
     }

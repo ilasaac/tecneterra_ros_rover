@@ -61,6 +61,12 @@ class RoverPositionManager(
     private val onRcChannels:       (Int, IntArray) -> Unit,
     /** Called when RC switch state (from master) disagrees with slave reported mode. */
     private val onLinkMismatch:     (String) -> Unit,
+    /**
+     * Called when the rover's rerouted path is received.
+     * path: list of (lat, lon, isBypass) triples for each waypoint in order.
+     * An empty list means the path was cleared.
+     */
+    private val onReroutedPath:     (Int, List<Triple<Double, Double, Boolean>>) -> Unit,
 ) {
     private val PORT        = 14550
     private val MASTER_SYSID = 1
@@ -102,6 +108,10 @@ class RoverPositionManager(
 
     // Missions being uploaded, keyed by target system ID
     private val pendingMissions = HashMap<Int, List<MissionItemInt>>()
+
+    // TUNNEL rerouted-path reassembly: sysId → map of chunkIdx → byte content
+    private data class TunnelAssembly(val total: Int, val chunks: HashMap<Int, ByteArray>)
+    private val tunnelBuf = HashMap<Int, TunnelAssembly>()
 
     // ─── Public API ──────────────────────────────────────────────────────────
 
@@ -579,6 +589,49 @@ class RoverPositionManager(
                 scope.launch(Dispatchers.Main) { onRcChannels(senderId, channels) }
                 // Re-check mismatch whenever master's actual RC state changes
                 if (senderId == MASTER_SYSID) checkLinkMismatch()
+            }
+
+            // TUNNEL (#385) payload_type=0x5250 — rerouted path chunks from navigator
+            is Tunnel -> {
+                if (payload.payloadType() != 0x5250) return
+                val raw       = payload.payload()          // ByteArray[128]
+                val pLen      = payload.payloadLength()    // bytes actually used
+                if (pLen < 2) return
+                val chunkIdx  = raw[0].toInt() and 0xFF
+                val total     = raw[1].toInt() and 0xFF
+                if (total == 0) return
+                val data      = raw.slice(2 until pLen).toByteArray()
+
+                // Store chunk; when all arrived, assemble and parse
+                val asm = tunnelBuf.getOrPut(senderId) { TunnelAssembly(total, HashMap()) }
+                // If this is a new transmission (different total), reset
+                val assembly = if (asm.total != total) {
+                    val fresh = TunnelAssembly(total, HashMap())
+                    tunnelBuf[senderId] = fresh
+                    fresh
+                } else asm
+                assembly.chunks[chunkIdx] = data
+
+                if (assembly.chunks.size == total) {
+                    // All chunks received — concatenate in order
+                    val json = (0 until total)
+                        .mapNotNull { assembly.chunks[it] }
+                        .fold(ByteArray(0)) { acc, b -> acc + b }
+                        .toString(Charsets.UTF_8)
+                    tunnelBuf.remove(senderId)
+
+                    try {
+                        val arr  = org.json.JSONArray(json)
+                        val path = mutableListOf<Triple<Double, Double, Boolean>>()
+                        for (i in 0 until arr.length()) {
+                            val pt = arr.getJSONArray(i)
+                            path.add(Triple(pt.getDouble(0), pt.getDouble(1), pt.getInt(2) != 0))
+                        }
+                        scope.launch(Dispatchers.Main) { onReroutedPath(senderId, path) }
+                    } catch (e: Exception) {
+                        Log.w("RoverMgr", "TUNNEL JSON parse error: ${e.message}")
+                    }
+                }
             }
         }
     }

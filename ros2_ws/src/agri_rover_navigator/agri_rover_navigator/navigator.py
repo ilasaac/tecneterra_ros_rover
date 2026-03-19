@@ -243,9 +243,10 @@ class NavigatorNode(Node):
         self.create_subscription(String,          'mission_fence', self._cb_mission_fence, 10)
 
         # ── Publishers ───────────────────────────────────────────────────────
-        self.cmd_pub = self.create_publisher(RCInput,  'cmd_override', 10)
-        self.wp_pub  = self.create_publisher(Int32,    'wp_active',    10)
-        self.xte_pub = self.create_publisher(Float32,  'xte',          10)
+        self.cmd_pub          = self.create_publisher(RCInput,  'cmd_override',    10)
+        self.wp_pub           = self.create_publisher(Int32,    'wp_active',       10)
+        self.xte_pub          = self.create_publisher(Float32,  'xte',             10)
+        self.rerouted_pub     = self.create_publisher(String,   'rerouted_path',   10)
 
         # ── Services ─────────────────────────────────────────────────────────
         self.create_service(Trigger, 'pause_mission',  self._svc_pause)
@@ -316,6 +317,8 @@ class NavigatorNode(Node):
         self._holding         = False
         self._pivoting        = False
         self._mpc_prev_steers = []
+        clr_msg = String(); clr_msg.data = '[]'
+        self.rerouted_pub.publish(clr_msg)
         self._publish_halt()
         self.get_logger().info('Mission cleared — path reset')
 
@@ -720,6 +723,16 @@ class NavigatorNode(Node):
         self._path_idx      = 0
         self._holding       = False
         self._pivoting      = False
+
+        # Publish rerouted path so GQC can display it as a separate overlay.
+        # Format: JSON array of [lat, lon, is_bypass] per waypoint.
+        path_data = [
+            [round(wp.latitude, 7), round(wp.longitude, 7),
+             1 if k in new_bypass_indices else 0]
+            for k, wp in enumerate(new_wps)
+        ]
+        rp_msg = String(); rp_msg.data = json.dumps(path_data, separators=(',', ':'))
+        self.rerouted_pub.publish(rp_msg)
 
         n_bypass = len(new_bypass_indices)
         if n_bypass > 0:
