@@ -10,17 +10,24 @@ Then open:  http://localhost:8089
   - Drag markers to reposition
   - Import / Export CSV (same format as mission_uploader.py)
   - Press Simulate to run sim_navigator SIL and see the path on the map
+  - Save / Load named missions as JSON (includes obstacles)
+  - Upload current mission directly to rover via MAVLink
+  - Import any mission that GQC uploads to the rover (passive snooper on :14550)
 """
 
 from __future__ import annotations
 
 import csv
+import glob as _glob
 import io
 import json
 import math
 import os
+import socket as _socket
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading as _threading
+import time as _time
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sim_navigator import (  # noqa: E402
@@ -30,6 +37,167 @@ from sim_navigator import (  # noqa: E402
 DEFAULT_LAT  = 20.727715
 DEFAULT_LON  = -103.566782
 DEFAULT_PORT = 8089
+
+# ── Mission file storage ───────────────────────────────────────────────────────
+MISSIONS_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions'))
+os.makedirs(MISSIONS_DIR, exist_ok=True)
+
+def _save_mission_file(name: str, waypoints: list, obstacles: list):
+    path = os.path.join(MISSIONS_DIR, f'{name}.json')
+    with open(path, 'w') as f:
+        json.dump({'waypoints': waypoints, 'obstacles': obstacles}, f, indent=2)
+    return path
+
+def _load_mission_file(name: str) -> dict:
+    path = os.path.join(MISSIONS_DIR, f'{name}.json')
+    with open(path) as f:
+        return json.load(f)
+
+def _list_mission_files() -> list[dict]:
+    files = sorted(_glob.glob(os.path.join(MISSIONS_DIR, '*.json')),
+                   key=os.path.getmtime, reverse=True)
+    result = []
+    for p in files:
+        name = os.path.splitext(os.path.basename(p))[0]
+        try:
+            d = json.loads(open(p).read())
+            wp_count  = len(d.get('waypoints', []))
+            obs_count = len(d.get('obstacles', []))
+        except Exception:
+            wp_count = obs_count = 0
+        result.append({'name': name, 'wp_count': wp_count, 'obs_count': obs_count,
+                       'mtime': int(os.path.getmtime(p))})
+    return result
+
+# ── MAVLink passive snooper ────────────────────────────────────────────────────
+_snooped:      dict             = {}   # last captured mission {waypoints, obstacles, rover}
+_snooped_lock: _threading.Lock = _threading.Lock()
+
+def _parse_fence_buf(fence_buf: list) -> list:
+    """[(lat, lon, n), ...] → [[[lat,lon],...], ...] grouped by vertex count."""
+    polys, i = [], 0
+    while i < len(fence_buf):
+        lat, lon, n = fence_buf[i]
+        if n <= 0 or i + n > len(fence_buf):
+            i += 1; continue
+        polys.append([[fence_buf[i + j][0], fence_buf[i + j][1]] for j in range(n)])
+        i += n
+    return polys
+
+def _start_snooper():
+    """Background thread: passively capture missions re-broadcast by mavlink_bridge."""
+    def _run():
+        try:
+            os.environ.setdefault('MAVLINK20', '1')
+            from pymavlink.dialects.v20 import ardupilotmega as _mav_def
+        except ImportError:
+            print('[snoop] pymavlink not installed — network import disabled', flush=True)
+            return
+        try:
+            sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+            sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            sock.settimeout(1.0)
+            sock.bind(('', 14550))
+        except OSError as e:
+            print(f'[snoop] Cannot bind :14550 ({e}) — network import disabled', flush=True)
+            return
+        print('[snoop] Listening on :14550 for mission broadcasts', flush=True)
+        parsers: dict = {}
+        buf:     dict = {}   # sysid → {count, nav, fence}
+        while True:
+            try:
+                data, _ = sock.recvfrom(2048)
+            except _socket.timeout:
+                continue
+            except Exception:
+                break
+            if len(data) < 8:
+                continue
+            sysid = data[5]   # MAVLink v2 sysid byte
+            if sysid not in parsers:
+                p = _mav_def.MAVLink(None)
+                p.robust_parsing = True
+                parsers[sysid] = p
+            try:
+                msgs = parsers[sysid].parse_buffer(data)
+            except Exception:
+                continue
+            for msg in (msgs or []):
+                t = msg.get_type()
+                if t == 'MISSION_COUNT':
+                    buf[sysid] = {'count': msg.count, 'nav': {}, 'fence': []}
+                elif t == 'MISSION_ITEM_INT' and sysid in buf:
+                    b = buf[sysid]
+                    if msg.command == 5003:
+                        b['fence'].append((msg.x / 1e7, msg.y / 1e7, int(msg.param1)))
+                    elif msg.command == 16:
+                        b['nav'][msg.seq] = {
+                            'lat': msg.x / 1e7, 'lon': msg.y / 1e7,
+                            'speed': float(msg.param4) if msg.param4 else 0.0,
+                            'hold_secs': 0.0,
+                        }
+                    if b['count'] > 0 and msg.seq >= b['count'] - 1:
+                        wps = [b['nav'][k] for k in sorted(b['nav'])]
+                        obs = _parse_fence_buf(b['fence'])
+                        with _snooped_lock:
+                            _snooped.clear()
+                            _snooped.update({'waypoints': wps, 'obstacles': obs,
+                                             'rover': sysid, 'ts': _time.time()})
+                        print(f'[snoop] RV{sysid}: {len(wps)} wps, '
+                              f'{len(obs)} obstacles captured', flush=True)
+    t = _threading.Thread(target=_run, daemon=True, name='mavlink-snooper')
+    t.start()
+
+# ── MAVLink upload to rover ────────────────────────────────────────────────────
+def _mavlink_upload(waypoints: list, obstacles: list,
+                    rover_ip: str, rover_port: int, rover_sysid: int) -> dict:
+    """Upload mission to rover using GQC streaming protocol (no wait for REQUEST_INT)."""
+    os.environ.setdefault('MAVLINK20', '1')
+    try:
+        from pymavlink.dialects.v20 import ardupilotmega as _mav_def
+    except ImportError:
+        return {'ok': False, 'message': 'pymavlink not installed'}
+    # Build item list: fence vertices first, then nav waypoints
+    items = []
+    for poly in (obstacles or []):
+        n = len(poly)
+        for v in poly:
+            items.append({'cmd': 5003, 'p1': float(n), 'p2': 0.0, 'p3': 0.0, 'p4': 0.0,
+                          'lat': float(v[0]), 'lon': float(v[1])})
+    for wp in waypoints:
+        items.append({'cmd': 16, 'p1': 0.0,
+                      'p2': float(wp.get('acceptance_radius') or DEFAULT_NAV['default_acceptance_radius']),
+                      'p3': 0.0, 'p4': float(wp.get('speed') or 0.0),
+                      'lat': float(wp['lat']), 'lon': float(wp['lon'])})
+    if not items:
+        return {'ok': False, 'message': 'No items to upload'}
+    try:
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        mav  = _mav_def.MAVLink(None)
+        mav.srcSystem    = 255   # GCS sysid
+        mav.srcComponent = 0
+        def _send(pkt):
+            sock.sendto(pkt.pack(mav), (rover_ip, rover_port))
+        _send(mav.mission_count_encode(rover_sysid, 0, len(items),
+                                       mavtype=0))
+        _time.sleep(0.15)   # GQC streaming delay
+        for seq, item in enumerate(items):
+            _send(mav.mission_item_int_encode(
+                rover_sysid, 0, seq,
+                6,             # MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
+                item['cmd'],
+                0, 1,          # current=0, autocontinue=1
+                item['p1'], item['p2'], item['p3'], item['p4'],
+                int(item['lat'] * 1e7), int(item['lon'] * 1e7), 0,
+            ))
+            _time.sleep(0.02)
+        sock.close()
+        n_wps = len(waypoints)
+        n_obs = len(obstacles or [])
+        return {'ok': True, 'message': f'Uploaded {n_wps} waypoints + {n_obs} obstacles to RV{rover_sysid}'}
+    except Exception as e:
+        return {'ok': False, 'message': str(e)}
 
 # ── HTML page (single-file app) ───────────────────────────────────────────────
 _HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -80,6 +248,32 @@ tr:hover td{background:#1e1e3a}
     <label>Start lat</label><input id="s-lat" size="11" value="START_LAT">
     <label>lon</label><input id="s-lon" size="12" value="START_LON">
     <label>hdg&deg;</label><input id="s-hdg" size="4" value="0">
+  </div>
+  <div class="section" style="background:#0d1a2e">
+    <div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
+      <label style="color:#7ab">&#128190;</label>
+      <input id="m-name" size="13" placeholder="mission name" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;flex:1">
+      <button class="btn-blue" style="padding:3px 7px;font-size:11px" onclick="saveMission()">Save</button>
+    </div>
+    <div style="display:flex;gap:3px;align-items:center">
+      <select id="m-select" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px;border-radius:2px;font-size:11px">
+        <option value="">— saved missions —</option>
+      </select>
+      <button class="btn-blue" style="padding:3px 7px;font-size:11px" onclick="loadMission()">Load</button>
+    </div>
+  </div>
+  <div class="section" style="background:#1a0d2e">
+    <div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
+      <label style="color:#b7a">&#128225;</label>
+      <button id="btn-rv1" class="btn-blue btn-active" style="padding:3px 8px;font-size:11px" onclick="selectRover(1)">RV1</button>
+      <button id="btn-rv2" class="btn-blue" style="padding:3px 8px;font-size:11px" onclick="selectRover(2)">RV2</button>
+      <input id="r-ip" size="14" placeholder="192.168.100.19" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;flex:1">
+    </div>
+    <div style="display:flex;gap:3px;align-items:center">
+      <button class="btn-green" style="padding:3px 9px;font-size:11px" onclick="uploadRover()">&#9650; Upload</button>
+      <button id="btn-net" class="btn-orange" style="padding:3px 9px;font-size:11px" onclick="importSnooped()">&#8595; Net</button>
+      <span id="snoop-status" style="font-size:10px;color:#888;margin-left:4px">no network mission</span>
+    </div>
   </div>
   <div id="wp-list">
     <table>
@@ -384,6 +578,108 @@ function clearAll() {
   document.getElementById('stats').style.display='none';
   status('Cleared.');
 }
+
+// ── Mission file save / load ──────────────────────────────────────
+async function saveMission() {
+  const name = document.getElementById('m-name').value.trim();
+  if (!name) { status('Enter a mission name first.', '#e74c3c'); return; }
+  await fetch('/save_mission', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, waypoints, obstacles})
+  });
+  status(`Saved "${name}".`);
+  refreshMissionList();
+}
+
+async function loadMission() {
+  const sel = document.getElementById('m-select');
+  const name = sel.value;
+  if (!name) { status('Select a mission first.', '#e74c3c'); return; }
+  const resp = await fetch(`/load_mission?name=${encodeURIComponent(name)}`);
+  const d = await resp.json();
+  waypoints = d.waypoints || [];
+  obstacles = [];
+  clearObstacles();
+  (d.obstacles || []).forEach((poly, i) => { obstacles.push(poly); renderObstacle(poly, i); });
+  refresh();
+  if (waypoints.length) map.setView([waypoints[0].lat, waypoints[0].lon], 18);
+  status(`Loaded "${name}" — ${waypoints.length} wps, ${obstacles.length} obstacles.`);
+}
+
+async function refreshMissionList() {
+  const resp = await fetch('/missions');
+  const list = await resp.json();
+  const sel = document.getElementById('m-select');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— saved missions —</option>' +
+    list.map(m => `<option value="${m.name}"${m.name===cur?' selected':''}>${m.name} (${m.wp_count}wp${m.obs_count?' '+m.obs_count+'obs':''})</option>`).join('');
+}
+refreshMissionList();
+
+// ── Rover upload / network import ────────────────────────────────
+let selectedRover = 1;
+const roverIPs = {1:'192.168.100.19', 2:'192.168.100.20'};
+
+function selectRover(n) {
+  selectedRover = n;
+  document.getElementById('btn-rv1').classList.toggle('btn-active', n===1);
+  document.getElementById('btn-rv2').classList.toggle('btn-active', n===2);
+  document.getElementById('r-ip').value = roverIPs[n] || '';
+}
+document.getElementById('r-ip').value = roverIPs[1];
+
+async function uploadRover() {
+  if (waypoints.length < 1) { status('No waypoints to upload.', '#e74c3c'); return; }
+  const rover_ip = document.getElementById('r-ip').value.trim();
+  if (!rover_ip) { status('Enter rover IP.', '#e74c3c'); return; }
+  status(`Uploading to RV${selectedRover}...`, '#f39c12');
+  // Auto-finalize obstacle if drawing
+  if (obsMode) obsFinish();
+  const resp = await fetch('/upload_rover', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port:14550, rover_sysid:selectedRover})
+  });
+  const d = await resp.json();
+  status(d.message, d.ok ? '#27ae60' : '#e74c3c');
+}
+
+// Poll for snooped network mission every 3 s
+async function pollSnooped() {
+  try {
+    const resp = await fetch('/snooped_mission');
+    const d = await resp.json();
+    const el = document.getElementById('snoop-status');
+    const btn = document.getElementById('btn-net');
+    if (d.waypoints && d.waypoints.length > 0) {
+      const age = d.ts ? Math.round((Date.now()/1000 - d.ts)) : '?';
+      el.textContent = `RV${d.rover}: ${d.waypoints.length}wp ${d.obstacles?.length||0}obs (${age}s ago)`;
+      el.style.color = '#f39c12';
+      btn.style.background = '#a05010';
+    } else {
+      el.textContent = 'no network mission';
+      el.style.color = '#888';
+      btn.style.background = '';
+    }
+  } catch(e) {}
+}
+setInterval(pollSnooped, 3000);
+pollSnooped();
+
+async function importSnooped() {
+  const resp = await fetch('/snooped_mission');
+  const d = await resp.json();
+  if (!d.waypoints || d.waypoints.length === 0) {
+    status('No network mission captured yet — arm GQC and upload a mission.', '#e74c3c');
+    return;
+  }
+  waypoints = d.waypoints;
+  obstacles = [];
+  clearObstacles();
+  (d.obstacles || []).forEach((poly, i) => { obstacles.push(poly); renderObstacle(poly, i); });
+  refresh();
+  if (waypoints.length) map.setView([waypoints[0].lat, waypoints[0].lon], 18);
+  status(`Imported from RV${d.rover}: ${waypoints.length} wps, ${obstacles.length} obstacles.`);
+}
 </script>
 </body>
 </html>
@@ -410,6 +706,22 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-cache, no-store')
             self.end_headers()
             self.wfile.write(body)
+
+        elif self.path == '/missions':
+            self._json(_list_mission_files())
+
+        elif self.path.startswith('/load_mission?name='):
+            name = self.path.split('=', 1)[1]
+            try:
+                self._json(_load_mission_file(name))
+            except FileNotFoundError:
+                self.send_error(404, f'Mission not found: {name}')
+
+        elif self.path == '/snooped_mission':
+            with _snooped_lock:
+                data = dict(_snooped)
+            self._json(data)
+
         else:
             self.send_error(404)
 
@@ -439,6 +751,15 @@ class _Handler(BaseHTTPRequestHandler):
             obstacles  = data.get('obstacles') or []
 
             print(f'[simulate] wps={len(wps)}  obstacles={len(obstacles)}', flush=True)
+            # Auto-save current mission so it can be reloaded after restart
+            try:
+                _save_mission_file('_autosave',
+                                   [{'lat': w.lat, 'lon': w.lon,
+                                     'speed': w.speed, 'hold_secs': w.hold_secs}
+                                    for w in wps],
+                                   obstacles)
+            except Exception:
+                pass
 
             result = simulate(wps, start_lat, start_lon, start_hdg,
                               nav_params=nav_p, phys_params=phys_p,
@@ -470,6 +791,29 @@ class _Handler(BaseHTTPRequestHandler):
                 'obstacle_polygons': result.obstacle_polygons,
                 'pivot_wps':         pivot_wps,
             })
+
+        elif self.path == '/save_mission':
+            data = json.loads(raw)
+            name = data.get('name', '').strip().replace('/', '_').replace('\\', '_')
+            if not name:
+                self._json({'error': 'name required'}); return
+            path = _save_mission_file(name, data.get('waypoints', []),
+                                      data.get('obstacles', []))
+            print(f'[save] {path}', flush=True)
+            self._json({'ok': True, 'name': name})
+
+        elif self.path == '/upload_rover':
+            data      = json.loads(raw)
+            rover_ip  = data.get('rover_ip', '192.168.100.19')
+            rover_port = int(data.get('rover_port', 14550))
+            rover_sysid = int(data.get('rover_sysid', 1))
+            wps = data.get('waypoints', [])
+            obs = data.get('obstacles', [])
+            print(f'[upload] → RV{rover_sysid} @ {rover_ip}:{rover_port}  '
+                  f'wps={len(wps)} obs={len(obs)}', flush=True)
+            result = _mavlink_upload(wps, obs, rover_ip, rover_port, rover_sysid)
+            print(f'[upload] {result["message"]}', flush=True)
+            self._json(result)
 
         elif self.path == '/export_csv':
             data = json.loads(raw)
@@ -538,13 +882,15 @@ if __name__ == '__main__':
     except Exception:
         local_ip = 'localhost'
 
-    server = HTTPServer(('', args.port), _Handler)
+    server = ThreadingHTTPServer(('', args.port), _Handler)
     server.default_lat = args.lat
     server.default_lon = args.lon
 
     url = f'http://{local_ip}:{args.port}'
     print(f'Mission Planner ->  {url}')
     print('Ctrl+C to stop')
+
+    _start_snooper()
 
     import threading, webbrowser
     threading.Timer(0.5, lambda: webbrowser.open(url)).start()
