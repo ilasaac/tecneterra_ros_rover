@@ -461,7 +461,7 @@ from the rover (post firmware PPM remap — CH5 = SBUS CH11, CH6 = SBUS CH12, CH
 ### Rover HUD cards
 
 Two persistent cards at the bottom of the screen (one per rover). Each card contains:
-- **SBUS** and **RF** link dots: green = link healthy, red (`#F44336`) = link lost. Updated via `onLinkStatus` callback from `NAMED_VALUE_FLOAT` `SBUS_OK`/`RF_OK` transmitted by mavlink_bridge at 10 Hz. Initialized **green** (optimistic) — RP2040 only sends change events, so a link that is already healthy at startup never sends an OK event.
+- **SBUS** and **RF** link dots: green = link healthy, red (`#F44336`) = link lost. Updated via `onLinkStatus` callback from `NAMED_VALUE_FLOAT` `SBUS_OK`/`RF_OK` transmitted by mavlink_bridge at 10 Hz. Initialized **red** (unknown/offline) — turns green once a healthy status packet is received.
 - **HB** heartbeat dot: blinks on each received HEARTBEAT.
 - **RTK** badge: shows GPS fix type (RTK, DGPS, GPS, NO FIX).
 - **STATUS badge**: `NA` (grey) / `MSL` (blue) / `ARM` (orange). Transmitted via `NAMED_VALUE_FLOAT 'STATUS'` (0=NA, 1=MSL, 2=ARM). `NA` = no mission loaded; `MSL` = mission loaded, disarmed; `ARM` = armed.
