@@ -338,12 +338,14 @@ class AddrBook:
 
 # ── Status display ────────────────────────────────────────────────────────────
 
-ANSI_CLR  = '\033[2J\033[H'
 ANSI_BOLD = '\033[1m'
 ANSI_RST  = '\033[0m'
 ANSI_GRN  = '\033[32m'
 ANSI_YLW  = '\033[33m'
 ANSI_RED  = '\033[31m'
+ANSI_SAVE = '\033[s'   # save cursor position
+ANSI_REST = '\033[u'   # restore cursor position
+ANSI_TOP  = '\033[H'   # move to top-left (no clear)
 
 
 def _ppm_row(label: str, ch: list) -> str:
@@ -395,8 +397,12 @@ def _status_str(rv1: RoverState, rv2: RoverState,
         '',
         '  RTK cmd : fix1 N | fix2 N | fix N   (0=NO_FIX 1=GPS 2=DGPS 4=RTK_FIX 5=RTK_FLT)',
         '  Ctrl-C to stop',
+        '',
     ]
-    return ANSI_CLR + '\n'.join(lines) + '\n'
+    # Save cursor → jump to top → overwrite each line in place (erase to EOL)
+    # → restore cursor to where the user is typing.  No full-screen clear = no flicker.
+    body = '\n'.join(l + '\033[K' for l in lines)
+    return ANSI_SAVE + ANSI_TOP + body + ANSI_REST
 
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -517,8 +523,13 @@ def main():
 
     threading.Thread(target=_stdin_reader, args=(rtk, stop), daemon=True).start()
 
-    print('\nRunning — Ctrl-C to stop')
-    print('RTK cmd : fix1 N | fix2 N | fix N   (0=NO_FIX 1=GPS 2=DGPS 4=RTK_FIX 5=RTK_FLT)\n')
+    # Print enough blank lines so the status block fits above the prompt line.
+    # The status is ~18 lines; scrolling past it once ensures the cursor starts
+    # below it so save/restore keeps input at the bottom of the visible area.
+    print('\n' * 20)
+    print('Running — Ctrl-C to stop')
+    print('RTK cmd : fix1 N | fix2 N | fix N   (0=NO_FIX 1=GPS 2=DGPS 4=RTK_FIX 5=RTK_FLT)')
+    print()
     time.sleep(0.5)
 
     t_next = time.monotonic()
