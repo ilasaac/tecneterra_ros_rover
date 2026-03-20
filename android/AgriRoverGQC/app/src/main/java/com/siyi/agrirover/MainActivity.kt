@@ -16,6 +16,7 @@ import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
 import com.google.android.gms.maps.SupportMapFragment
 import com.google.android.gms.maps.model.*
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import java.io.File
 import kotlin.math.*
@@ -55,7 +56,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var map: GoogleMap
     private lateinit var touchOverlay: View
     private lateinit var btnModeMenu: Button
-    private lateinit var plannerToolbar: LinearLayout
     private lateinit var autoToolbar: LinearLayout
 
     // Per-rover HUD panels
@@ -71,22 +71,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var txtRv2Temp:  TextView
     private lateinit var txtRv2Tank:  TextView
     private lateinit var txtRv2Rtk:   TextView
-    private lateinit var txtRcChannels: TextView   // RC PPM strip
-    private lateinit var btnSave:        FloatingActionButton
-    private lateinit var btnLoad:        FloatingActionButton
+    private lateinit var txtRcChannels:  TextView   // RC PPM strip
+    private lateinit var btnPlannerMenu: ImageButton
+    private lateinit var btnRec:         MaterialButton
     private lateinit var btnLayers:      FloatingActionButton
     private lateinit var btnCenter:      FloatingActionButton
     private lateinit var btnEStop:       Button
-    private lateinit var btnRec:         Button
 
-    // Planner / Auto Buttons
-    private lateinit var btnUpload:        Button
-    private lateinit var btnStart:         Button
-    private lateinit var btnStop:          Button
-    private lateinit var btnClear:         Button
-    private lateinit var btnClearPlanner:  Button
-    private lateinit var btnToggleR1:      Button
-    private lateinit var btnToggleR2:      Button
+    // Auto Buttons
+    private lateinit var btnStart:    Button
+    private lateinit var btnStop:     Button
+    private lateinit var btnClear:    Button
+    private lateinit var btnToggleR1: Button
+    private lateinit var btnToggleR2: Button
 
     // Data
     private val routePoints      = ArrayList<LatLng>()
@@ -112,7 +109,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val obstaclePolygons     = mutableListOf<MutableList<LatLng>>()
     private val obstacleOverlays     = mutableListOf<Polygon>()
     private var draftPolyline: Polyline? = null
-    private lateinit var btnObs: Button
     // Stationary hold tracking: last position where a waypoint was saved, and
     // accumulated stationary time. When rover moves again, the hold time is
     // written into the last recorded waypoint so the navigator waits there.
@@ -271,7 +267,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         touchOverlay          = findViewById(R.id.touchOverlay)
         btnModeMenu           = findViewById(R.id.btnModeMenu)
-        plannerToolbar        = findViewById(R.id.plannerToolbar)
         autoToolbar           = findViewById(R.id.autoToolbar)
         dotRv1Hb              = findViewById(R.id.dotRv1Hb)
         dotRv2Hb              = findViewById(R.id.dotRv2Hb)
@@ -286,18 +281,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         txtRv2Tank            = findViewById(R.id.txtRv2Tank)
         txtRv2Rtk             = findViewById(R.id.txtRv2Rtk)
         txtRcChannels         = findViewById(R.id.txtRcChannels)
-        btnSave               = findViewById(R.id.btnSave)
-        btnLoad               = findViewById(R.id.btnLoad)
+        btnPlannerMenu        = findViewById(R.id.btnPlannerMenu)
+        btnRec                = findViewById(R.id.btnRec)
         btnLayers             = findViewById(R.id.btnLayers)
         btnCenter             = findViewById(R.id.btnCenter)
         btnEStop              = findViewById(R.id.btnEStop)
-        btnRec                = findViewById(R.id.btnRec)
-        btnUpload             = findViewById(R.id.btnUpload)
-        btnObs                = findViewById(R.id.btnObs)
         btnStart              = findViewById(R.id.btnStart)
         btnStop               = findViewById(R.id.btnStop)
         btnClear              = findViewById(R.id.btnClear)
-        btnClearPlanner       = findViewById(R.id.btnClearPlanner)
         btnToggleR1           = findViewById(R.id.btnToggleR1)
         btnToggleR2           = findViewById(R.id.btnToggleR2)
 
@@ -343,17 +334,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun setupListeners() {
         btnModeMenu.setOnClickListener { showModeMenu(it) }
 
-        // Planner Actions
-        btnSave.setOnClickListener      { showSaveDialog() }
-        btnLoad.setOnClickListener      { showLoadDialog() }
+        // Planner menu (Upload Mission / Save / Load / Clear)
+        btnPlannerMenu.setOnClickListener { showPlannerMenu(it) }
 
         // REC — toggles timed position recording with aux-channel servo capture
         btnRec.setOnClickListener {
             if (isRecording) stopRecording() else startRecording()
         }
-
-        // OBS — toggles obstacle polygon drawing mode
-        btnObs.setOnClickListener { toggleObstacleDrawing() }
 
         // Map Controls
         btnLayers.setOnClickListener { toggleMapLayer() }
@@ -370,45 +357,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnEStop.setOnClickListener {
             roverManager.sendCriticalCommand(0, 400, 0f, 0f)
             Toast.makeText(this, "EMERGENCY STOP — ALL DISARMED", Toast.LENGTH_LONG).show()
-        }
-
-        // PLANNER: UPLOAD
-        btnUpload.setOnClickListener {
-            if (isRecording) stopRecording()
-            if (routePoints.isEmpty()) {
-                Toast.makeText(this, "No waypoints to upload", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            roverMissions[selectedRoverId]          = ArrayList(routePoints)
-            roverMissionVisible[selectedRoverId]    = true
-            roverNextWaypointIndex[selectedRoverId] = 0
-            redrawMap()
-            redrawRoverMissions()
-
-            val servoCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
-            val actions: List<MissionAction> = if (servoCount > 0) recordedMission
-                else routePoints.map { MissionAction.Waypoint(it.latitude, it.longitude) }
-
-            if (obstaclePolygons.isNotEmpty()) {
-                val obsLatLon = obstaclePolygons.map { poly ->
-                    poly.map { Pair(it.latitude, it.longitude) }
-                }
-                roverManager.uploadMissionWithObstacles(selectedRoverId, actions, obsLatLon)
-                Toast.makeText(this,
-                    "Uploading ${routePoints.size} WPs + ${obstaclePolygons.size} obstacle(s) to Rover $selectedRoverId…",
-                    Toast.LENGTH_SHORT).show()
-            } else if (servoCount > 0) {
-                roverManager.uploadRecordedMission(selectedRoverId, recordedMission)
-                Toast.makeText(this,
-                    "Uploading ${routePoints.size} WPs + $servoCount servo cmds to Rover $selectedRoverId…",
-                    Toast.LENGTH_SHORT).show()
-            } else {
-                roverManager.uploadMission(selectedRoverId,
-                    routePoints.map { Pair(it.latitude, it.longitude) })
-                Toast.makeText(this,
-                    "Uploading ${routePoints.size} WPs to Rover $selectedRoverId…",
-                    Toast.LENGTH_SHORT).show()
-            }
         }
 
         // START — arm then set AUTO mode
@@ -429,8 +377,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             Toast.makeText(this, "Rover $selectedRoverId: MANUAL", Toast.LENGTH_SHORT).show()
         }
 
-        btnClear.setOnClickListener        { clearMission() }
-        btnClearPlanner.setOnClickListener { clearMission() }
+        btnClear.setOnClickListener { clearMission() }
 
         btnToggleR1.setOnClickListener { toggleRoverMission(1, btnToggleR1) }
         btnToggleR2.setOnClickListener { toggleRoverMission(2, btnToggleR2) }
@@ -456,7 +403,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = pwm))
         }
         btnRec.text = "STOP"
-        btnRec.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#607D8B"))
+        btnRec.strokeWidth = (3 * resources.displayMetrics.density + 0.5f).toInt()
+        btnRec.strokeColor = ColorStateList.valueOf(Color.parseColor("#FFD600"))
         recordHandler.post(recordRunnable)
         Toast.makeText(this, "Recording…", Toast.LENGTH_SHORT).show()
     }
@@ -465,7 +413,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         isRecording = false
         recordHandler.removeCallbacks(recordRunnable)
         btnRec.text = "REC"
-        btnRec.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#F44336"))
+        btnRec.strokeWidth = 0
         val wpCount  = recordedMission.filterIsInstance<MissionAction.Waypoint>().size
         val srvCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
         Toast.makeText(this,
@@ -502,8 +450,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         obstaclePolygons.clear()
         obstacleOverlays.forEach { it.remove() }
         obstacleOverlays.clear()
-        btnObs.text = "OBS"
-        btnObs.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#FF9800"))
         redrawMap()
         redrawRoverMissions()
         roverManager.uploadMission(selectedRoverId, emptyList())
@@ -833,36 +779,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    // ─── Obstacle drawing ─────────────────────────────────────────────────────
-
-    /** Toggle obstacle drawing mode. First press enters drawing; second press finalises. */
-    private fun toggleObstacleDrawing() {
-        if (!isDrawingObstacle) {
-            isDrawingObstacle = true
-            currentObstacleDraft.clear()
-            btnObs.text = "✓ DONE"
-            btnObs.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#E53935"))
-            Toast.makeText(this, "Tap map to add obstacle vertices, press DONE to close",
-                Toast.LENGTH_SHORT).show()
-        } else {
-            if (currentObstacleDraft.size >= 3) {
-                obstaclePolygons.add(ArrayList(currentObstacleDraft))
-                currentObstacleDraft.clear()
-                draftPolyline?.remove()
-                draftPolyline = null
-                redrawObstacleOverlays()
-                Toast.makeText(this,
-                    "Obstacle added (${obstaclePolygons.size} total)",
-                    Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "Need at least 3 vertices", Toast.LENGTH_SHORT).show()
-            }
-            isDrawingObstacle = false
-            btnObs.text = "OBS"
-            btnObs.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#FF9800"))
-        }
-    }
-
     /** Redraw the in-progress obstacle draft as a closed polyline. */
     private fun redrawObstacleDraft() {
         if (!::map.isInitialized) return
@@ -925,6 +841,62 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         popup.show()
     }
 
+    private fun showPlannerMenu(view: View) {
+        val popup = PopupMenu(this, view)
+        popup.menu.add("Upload Mission")
+        popup.menu.add("Save")
+        popup.menu.add("Load")
+        popup.menu.add("Clear")
+        popup.setOnMenuItemClickListener { item ->
+            when (item.title) {
+                "Upload Mission" -> doUploadMission()
+                "Save"           -> showSaveDialog()
+                "Load"           -> showLoadDialog()
+                "Clear"          -> clearMission()
+            }
+            true
+        }
+        popup.show()
+    }
+
+    private fun doUploadMission() {
+        if (isRecording) stopRecording()
+        if (routePoints.isEmpty()) {
+            Toast.makeText(this, "No waypoints to upload", Toast.LENGTH_SHORT).show()
+            return
+        }
+        roverMissions[selectedRoverId]          = ArrayList(routePoints)
+        roverMissionVisible[selectedRoverId]    = true
+        roverNextWaypointIndex[selectedRoverId] = 0
+        redrawMap()
+        redrawRoverMissions()
+
+        val servoCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
+        val actions: List<MissionAction> = if (servoCount > 0) recordedMission
+            else routePoints.map { MissionAction.Waypoint(it.latitude, it.longitude) }
+
+        if (obstaclePolygons.isNotEmpty()) {
+            val obsLatLon = obstaclePolygons.map { poly ->
+                poly.map { Pair(it.latitude, it.longitude) }
+            }
+            roverManager.uploadMissionWithObstacles(selectedRoverId, actions, obsLatLon)
+            Toast.makeText(this,
+                "Uploading ${routePoints.size} WPs + ${obstaclePolygons.size} obstacle(s) to Rover $selectedRoverId…",
+                Toast.LENGTH_SHORT).show()
+        } else if (servoCount > 0) {
+            roverManager.uploadRecordedMission(selectedRoverId, recordedMission)
+            Toast.makeText(this,
+                "Uploading ${routePoints.size} WPs + $servoCount servo cmds to Rover $selectedRoverId…",
+                Toast.LENGTH_SHORT).show()
+        } else {
+            roverManager.uploadMission(selectedRoverId,
+                routePoints.map { Pair(it.latitude, it.longitude) })
+            Toast.makeText(this,
+                "Uploading ${routePoints.size} WPs to Rover $selectedRoverId…",
+                Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun setMode(mode: AppMode) {
         // Discard any in-progress obstacle draft when leaving PLANNER mode
         if (mode != AppMode.PLANNER && isDrawingObstacle) {
@@ -932,17 +904,24 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             currentObstacleDraft.clear()
             draftPolyline?.remove()
             draftPolyline = null
-            btnObs.text = "OBS"
-            btnObs.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#FF9800"))
         }
         currentMode = mode
-        touchOverlay.visibility           = View.GONE
-        plannerToolbar.visibility         = View.GONE
-        autoToolbar.visibility            = View.GONE
+        touchOverlay.visibility      = View.GONE
+        autoToolbar.visibility       = View.GONE
+        btnPlannerMenu.visibility    = View.GONE
+        btnRec.visibility            = View.GONE
         when (mode) {
             AppMode.MANUAL  -> { btnModeMenu.text = "MODE: MANUAL" }
-            AppMode.PLANNER -> { btnModeMenu.text = "MODE: PLANNER"; plannerToolbar.visibility = View.VISIBLE }
-            AppMode.AUTO    -> { btnModeMenu.text = "MODE: AUTO";    autoToolbar.visibility = View.VISIBLE; redrawRoverMissions() }
+            AppMode.PLANNER -> {
+                btnModeMenu.text      = "MODE: PLANNER"
+                btnPlannerMenu.visibility = View.VISIBLE
+                btnRec.visibility         = View.VISIBLE
+            }
+            AppMode.AUTO    -> {
+                btnModeMenu.text = "MODE: AUTO"
+                autoToolbar.visibility = View.VISIBLE
+                redrawRoverMissions()
+            }
         }
     }
 

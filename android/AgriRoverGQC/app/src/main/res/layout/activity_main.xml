@@ -45,6 +45,32 @@
             android:paddingStart="12dp"
             android:paddingEnd="12dp" />
 
+        <ImageButton
+            android:id="@+id/btnPlannerMenu"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:src="@android:drawable/ic_menu_more"
+            android:background="@android:color/transparent"
+            android:tint="#AAFFFFFF"
+            android:visibility="gone"
+            android:layout_marginStart="4dp"
+            android:contentDescription="Planner menu" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnRec"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="REC"
+            android:backgroundTint="#C62828"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:visibility="gone"
+            android:layout_marginStart="4dp"
+            app:strokeWidth="0dp"
+            app:strokeColor="#FFD600" />
+
         <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1"/>
 
         <Button
@@ -106,70 +132,6 @@
             android:layout_height="wrap_content"
             android:src="@android:drawable/ic_menu_mylocation"
             app:backgroundTint="#FFF" />
-    </LinearLayout>
-
-    <!-- ── Planner toolbar — sits above the rover HUD ─────────────────── -->
-    <LinearLayout
-        android:id="@+id/plannerToolbar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#CC0D1117"
-        android:gravity="center"
-        android:padding="8dp"
-        android:visibility="gone"
-        app:layout_constraintBottom_toTopOf="@id/roverHud">
-
-        <com.google.android.material.floatingactionbutton.FloatingActionButton
-            android:id="@+id/btnSave"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:src="@android:drawable/ic_menu_save"
-            app:backgroundTint="#37474F"
-            android:layout_margin="5dp"/>
-
-        <com.google.android.material.floatingactionbutton.FloatingActionButton
-            android:id="@+id/btnLoad"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:src="@android:drawable/ic_menu_upload"
-            app:backgroundTint="#37474F"
-            android:layout_margin="5dp"/>
-
-        <Button
-            android:id="@+id/btnRec"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="REC"
-            android:backgroundTint="#C62828"
-            android:textColor="#FFFFFF"
-            android:layout_margin="5dp"/>
-
-        <Button
-            android:id="@+id/btnObs"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="OBS"
-            android:backgroundTint="#E65100"
-            android:textColor="#FFFFFF"
-            android:layout_margin="5dp"/>
-
-        <Button
-            android:id="@+id/btnUpload"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="UPLOAD"
-            android:backgroundTint="#00695C"
-            android:textColor="#FFFFFF"
-            android:layout_margin="5dp"/>
-
-        <Button
-            android:id="@+id/btnClearPlanner"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="CLEAR"
-            android:backgroundTint="#37474F"
-            android:textColor="#FFFFFF"
-            android:layout_margin="5dp"/>
     </LinearLayout>
 
     <!-- ── Auto toolbar — sits above the rover HUD ────────────────────── -->
