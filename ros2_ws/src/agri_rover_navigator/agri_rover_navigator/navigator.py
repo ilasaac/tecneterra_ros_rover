@@ -1092,10 +1092,15 @@ class NavigatorNode(Node):
         self._path_idx += 1
 
         if self._path_idx >= len(self._path):
-            self.get_logger().info('Mission complete')
-            m = Int32(); m.data = -1
-            self.wp_pub.publish(m)
-            self._publish_halt()
+            if self._pending_path_chunks:
+                # More chunks queued — _control_loop will load the next one; don't signal done
+                self.get_logger().info(
+                    f'Chunk complete — {len(self._pending_path_chunks)} chunk(s) remaining')
+            else:
+                self.get_logger().info('Mission complete')
+                m = Int32(); m.data = -1
+                self.wp_pub.publish(m)
+                self._publish_halt()
         else:
             nxt = self._path[self._path_idx]
             if self._path_idx - 1 not in self._bypass_indices:
