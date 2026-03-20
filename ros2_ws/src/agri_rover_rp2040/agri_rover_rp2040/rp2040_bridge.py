@@ -69,7 +69,11 @@ class Rp2040BridgeNode(Node):
         self._ser  = None
         self._lock = threading.Lock()
         self._hb_seq = 0
-        self._rf_link_ok = False
+        # Initialise both link flags optimistic (True). The RP2040 only sends
+        # [SBUS_OK/LOST] and [RF_LINK_OK/LOST] on change, so if the link is
+        # already healthy at bridge start we would never receive an OK event.
+        self._sbus_ok    = True
+        self._rf_link_ok = True
 
         # ── Timers ───────────────────────────────────────────────────────────
         self.create_timer(hb_interval, self._send_heartbeat)
@@ -126,6 +130,12 @@ class Rp2040BridgeNode(Node):
 
         if raw.startswith('CH:'):
             self._parse_ch_line(raw)
+        elif raw == '[SBUS_OK]':
+            self._sbus_ok = True
+            self.get_logger().info('SBUS OK')
+        elif raw == '[SBUS_LOST]':
+            self._sbus_ok = False
+            self.get_logger().warn('SBUS LOST')
         elif raw == '[RF_LINK_OK]':
             self._rf_link_ok = True
             self.get_logger().info('RF link OK')
@@ -148,7 +158,7 @@ class Rp2040BridgeNode(Node):
             msg          = RCInput()
             msg.channels = channels[:CHANNELS]
             msg.mode        = mode_str.strip()
-            msg.sbus_ok     = True   # TODO: track [SBUS_OK/LOST] flag separately
+            msg.sbus_ok     = self._sbus_ok
             msg.rf_link_ok  = self._rf_link_ok
             msg.stamp    = self.get_clock().now().to_msg()
             self.rc_pub.publish(msg)
