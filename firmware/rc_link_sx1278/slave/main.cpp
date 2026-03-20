@@ -48,9 +48,11 @@
 #define PPM_HIGH_COUNT  (PPM_HIGH_US - 2U)
 #define PPM_BUF_LEN     (PPM_CHANNELS * 2 + 2)   // = 20
 
-#define RF_TIMEOUT_MS   500
-#define HB_TIMEOUT_MS   300
-#define CMD_TIMEOUT_MS  500
+#define RF_TIMEOUT_MS      500
+#define HB_TIMEOUT_MS      300
+#define CMD_TIMEOUT_MS     500
+// How often to check SX1278 health while RF is lost (power-cycle recovery)
+#define SX_WATCHDOG_MS    2000
 
 // Channel gating thresholds (same as master)
 #define CH_ROVER_SEL     8
@@ -268,9 +270,10 @@ int main(void) {
 
     printf("[BOOT] RC link slave ready\n");
 
-    bool     prev_rf_ok     = false;
-    int      last_frame     = 0;
-    uint64_t t_last_status  = 0;
+    bool     prev_rf_ok      = false;
+    int      last_frame      = 0;
+    uint64_t t_last_status   = 0;
+    uint64_t t_last_sx_check = 0;
 
     while (true) {
 
@@ -307,7 +310,27 @@ int main(void) {
             apply_mode(compute_mode());
         }
 
-        // 5. Periodic status to Jetson at 10 Hz
+        // 5. SX1278 watchdog: while RF is lost, check if chip was power-cycled.
+        //    A power cycle resets RegOpMode to 0x09 (FSK standby). If it is no
+        //    longer 0x85 (LoRa RX continuous), re-initialise and restart RX.
+        //    Only runs when rf_ok is false to avoid disturbing a working chip.
+        {
+            uint64_t now_wd = time_us_64();
+            if (!rf_ok && (now_wd - t_last_sx_check) >= (uint64_t)SX_WATCHDOG_MS * 1000) {
+                t_last_sx_check = now_wd;
+                uint8_t opmode = sx_read_reg(SX_REG_OP_MODE);
+                if (opmode != (SX_LORA_MODE | SX_MODE_RX_CONT)) {
+                    printf("[SX1278_REINIT] opmode=0x%02x — reinitialising\n", opmode);
+                    if (sx1278_init()) {
+                        sx1278_start_rx();
+                    } else {
+                        printf("[SX1278_ERROR] reinit failed\n");
+                    }
+                }
+            }
+        }
+
+        // 6. Periodic status to Jetson at 10 Hz
         uint64_t now = time_us_64();
         if ((now - t_last_status) >= (uint64_t)STATUS_INTERVAL_MS * 1000) {
             t_last_status = now;
