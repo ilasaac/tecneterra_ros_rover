@@ -595,6 +595,9 @@ class RoverPositionManager(
                     "RTK"     -> scope.launch(Dispatchers.Main) {
                         onGpsStatus(senderId, value.toInt())
                     }
+                    "WP_ACT"  -> scope.launch(Dispatchers.Main) {
+                        onMissionProgress(senderId, value.toInt())
+                    }
                 }
             }
 

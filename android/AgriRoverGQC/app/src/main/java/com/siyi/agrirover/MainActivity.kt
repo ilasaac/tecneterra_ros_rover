@@ -69,11 +69,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var txtRv1Tank:  TextView
     private lateinit var txtRv1Rtk:    TextView
     private lateinit var txtRv1Status: TextView
+    private lateinit var txtRv1Wp:    TextView
     private lateinit var txtRv2Bat:   TextView
     private lateinit var txtRv2Temp:  TextView
     private lateinit var txtRv2Tank:  TextView
     private lateinit var txtRv2Rtk:    TextView
     private lateinit var txtRv2Status: TextView
+    private lateinit var txtRv2Wp:    TextView
     private lateinit var txtRcChannels:  TextView   // RC PPM strip
     private lateinit var btnPlannerMenu: ImageButton
     private lateinit var btnRec:         MaterialButton
@@ -187,6 +189,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         onMissionProgress = { sysId, seq ->
             runOnUiThread {
                 roverNextWaypointIndex[sysId] = seq
+                val total = roverMissions[sysId]?.size ?: 0
+                val wpView = if (sysId == 1) txtRv1Wp else txtRv2Wp
+                wpView.text = if (total > 0) "WP: ${seq + 1}/$total" else "WP: --"
                 redrawRoverMissions()
                 if (sysId == selectedRoverId) {
                     nextWaypointIndex = seq
@@ -291,11 +296,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         txtRv1Tank            = findViewById(R.id.txtRv1Tank)
         txtRv1Rtk             = findViewById(R.id.txtRv1Rtk)
         txtRv1Status          = findViewById(R.id.txtRv1Status)
+        txtRv1Wp              = findViewById(R.id.txtRv1Wp)
         txtRv2Bat             = findViewById(R.id.txtRv2Bat)
         txtRv2Temp            = findViewById(R.id.txtRv2Temp)
         txtRv2Tank            = findViewById(R.id.txtRv2Tank)
         txtRv2Rtk             = findViewById(R.id.txtRv2Rtk)
         txtRv2Status          = findViewById(R.id.txtRv2Status)
+        txtRv2Wp              = findViewById(R.id.txtRv2Wp)
         txtRcChannels         = findViewById(R.id.txtRcChannels)
         btnPlannerMenu        = findViewById(R.id.btnPlannerMenu)
         btnRec                = findViewById(R.id.btnRec)
@@ -811,14 +818,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 overlays.add(map.addPolyline(
                     PolylineOptions().addAll(pending).width(8f).color(pendingColor)))
             }
-            // Waypoint dots
-            val walkedColor = Color.argb(200, 160, 160, 160)
+            // Waypoint dots — skip already-passed waypoints (rover decides via WP_ACT)
             points.forEachIndexed { i, pt ->
-                val dotColor = when {
-                    i == 0         -> Color.parseColor("#FFD600")
-                    i < walkedIdx  -> walkedColor
-                    else           -> pendingColor
-                }
+                if (i > 0 && i < walkedIdx) return@forEachIndexed  // erased by rover
+                val dotColor = if (i == 0) Color.parseColor("#FFD600") else pendingColor
                 val sizeDp   = if (i == 0) 12 else 7
                 map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
                     .icon(createDotBitmap(dotColor, sizeDp)).flat(true))
