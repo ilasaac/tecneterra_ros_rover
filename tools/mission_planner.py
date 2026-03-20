@@ -340,6 +340,10 @@ tr:hover td{background:#1e1e3a}
     <option value="map">Map centre</option>
     <option value="start">Start lat/lon</option>
   </select>
+  <div style="margin-top:6px;display:flex;align-items:center;gap:5px">
+    <input type="checkbox" id="gen-anchor" checked style="width:auto">
+    <label style="margin:0;color:#eee">Anchor WP[0] to start pos</label>
+  </div>
   <div class="grow">
     <button class="btn-red" style="flex:1;padding:4px" onclick="applyGenerate(false)">&#9654; Replace</button>
     <button class="btn-blue" style="flex:1;padding:4px" onclick="applyGenerate(true)">&#43; Append</button>
@@ -815,6 +819,17 @@ function applyGenerate(append) {
       const r     = armSp * theta / (2 * Math.PI);
       const [lat, lon] = offsetLatLon(cLat, cLon, r * Math.cos(theta - Math.PI/2), r * Math.sin(theta - Math.PI/2));
       newWps.push({lat, lon, speed: spd, hold_secs: 0});
+    }
+  }
+
+  // Translate so WP[0] lands exactly at start pos (rover position)
+  if (document.getElementById('gen-anchor').checked && newWps.length > 0) {
+    const startLat = parseFloat(document.getElementById('s-lat').value);
+    const startLon = parseFloat(document.getElementById('s-lon').value);
+    if (!isNaN(startLat) && !isNaN(startLon)) {
+      const dLat = startLat - newWps[0].lat;
+      const dLon = startLon - newWps[0].lon;
+      newWps.forEach(wp => { wp.lat += dLat; wp.lon += dLon; });
     }
   }
 
