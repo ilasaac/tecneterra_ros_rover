@@ -235,7 +235,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     updateRcStrip(sysId)
                     if (isRecording) checkAuxChannelChanges(channels)
                 }
-                updateLinkIndicators(sysId)
+                // Link indicators updated via onLinkStatus (SBUS_OK / RF_OK named floats)
             }
         },
 
@@ -261,6 +261,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 roverNavStatus[sysId] = status
                 updateNavStatus(sysId, status)
             }
+        },
+
+        onLinkStatus = { sysId, type, ok ->
+            runOnUiThread { updateLinkIndicator(sysId, type, ok) }
         },
     )
 
@@ -535,13 +539,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         view.setTextColor(Color.parseColor(colorHex))
     }
 
-    private fun updateLinkIndicators(sysId: Int) {
-        val channels = roverPpmChannels[sysId]
-        val valid = channels != null && (channels.getOrNull(2) ?: 65535) != 65535
-        val color = if (valid) Color.parseColor("#4CAF50") else Color.parseColor("#888888")
-        when (sysId) {
-            1 -> dotRv1Sbus.setTextColor(color)  // RV1: SBUS link from HM30
-            2 -> dotRv2Rf.setTextColor(color)    // RV2: RF (LoRa) link from master RP2040
+    private fun updateLinkIndicator(sysId: Int, type: String, ok: Boolean) {
+        val color = if (ok) Color.parseColor("#4CAF50") else Color.parseColor("#F44336")
+        when {
+            sysId == 1 && type == "SBUS" -> dotRv1Sbus.setTextColor(color)
+            sysId == 2 && type == "RF"   -> dotRv2Rf.setTextColor(color)
         }
     }
 

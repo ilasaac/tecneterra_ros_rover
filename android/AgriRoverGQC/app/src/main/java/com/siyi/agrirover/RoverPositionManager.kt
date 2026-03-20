@@ -74,6 +74,8 @@ class RoverPositionManager(
     private val onGpsStatus:        (Int, Int) -> Unit,
     /** Called when NAMED_VALUE_FLOAT "STATUS" is received. status: "NA" | "MSL" | "ARM" */
     private val onNavStatus:        (Int, String) -> Unit,
+    /** Called when SBUS_OK or RF_OK named float is received. type="SBUS"|"RF", ok=true/false */
+    private val onLinkStatus:       (Int, String, Boolean) -> Unit,
 ) {
     private val PORT        = 14550
     private val MASTER_SYSID = 1
@@ -576,13 +578,19 @@ class RoverPositionManager(
                     "HUMID"  -> scope.launch(Dispatchers.Main) {
                         onSensorUpdate(senderId, -1f, -1f, -1f, value)
                     }
-                    "STATUS" -> {
+                    "STATUS"  -> {
                         val s = when {
                             value >= 2f -> "ARM"
                             value >= 1f -> "MSL"
                             else        -> "NA"
                         }
                         scope.launch(Dispatchers.Main) { onNavStatus(senderId, s) }
+                    }
+                    "SBUS_OK" -> scope.launch(Dispatchers.Main) {
+                        onLinkStatus(senderId, "SBUS", value >= 1f)
+                    }
+                    "RF_OK"   -> scope.launch(Dispatchers.Main) {
+                        onLinkStatus(senderId, "RF", value >= 1f)
                     }
                 }
             }

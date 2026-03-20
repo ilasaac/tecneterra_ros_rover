@@ -318,6 +318,8 @@ class MavlinkBridgeNode(Node):
             ('WP_TOT',   float(self._mission_count)),
             ('XTE',      self._xte),
             ('STATUS',   nav_status),
+            ('SBUS_OK',  1.0 if self._rc.sbus_ok   else 0.0),
+            ('RF_OK',    1.0 if self._rc.rf_link_ok else 0.0),
         ]
         for name, value in pairs:
             self._send(self._mav.mav.named_value_float_encode(
