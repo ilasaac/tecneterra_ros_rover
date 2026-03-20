@@ -399,6 +399,12 @@ Implemented at `android/AgriRoverGQC/`. Stack: Kotlin, Google Maps SDK, java-mav
 
 Rover IPs are auto-discovered from first incoming packet of each sysid — no manual IP configuration needed.
 
+**Callbacks (constructor parameters):**
+- `onNavStatus: (Int, String) -> Unit` — called when rover STATUS named float arrives; string = `"ARM"` / `"MSL"` / `"NA"`
+- `onLinkStatus: (Int, String, Boolean) -> Unit` — called when `SBUS_OK` or `RF_OK` named float arrives; string = `"SBUS"` or `"RF"`, bool = link healthy
+
+Both callbacks are dispatched on the Main thread via `scope.launch(Dispatchers.Main)`.
+
 ### MAVLink ports (both rovers)
 Both rovers bind :14550 (same port, different Jetsons on the network).
 GQC identifies rovers by **sysid** in HEARTBEAT, not by port.
@@ -407,24 +413,27 @@ GQC always sends to broadcast 192.168.100.255:14550 for discovery; unicasts to k
 
 ### Modes
 
-| Mode | Bottom bar | Behaviour |
-|------|------------|-----------|
-| MANUAL | (none) | Physical RC sticks → HM30 → SBUS → RP2040. App shows map + status only. |
-| PLANNER | Add-point FABs, ADD, REC, CLEAR, UPLOAD | Finger-draw or record route on satellite map → upload mission |
-| AUTO | R1/R2 toggle, START, PAUSE, CLEAR | ARM + set AUTO mode; mission progress shown on map |
+| Mode | UI elements | Behaviour |
+|------|-------------|-----------|
+| PLANNER | ⋮ menu: ADD, CLEAR, UPLOAD; REC FAB; OBS FAB | Finger-draw or record route → upload mission. **Default at launch.** |
+| AUTO | R1/R2 toggle, ▶ START, ⏸ PAUSE, CLEAR inline in topBar | ARM + set AUTO mode; mission progress shown on map |
 
-Physical RC control is always active regardless of app mode. The app does NOT send RC override in MANUAL mode (virtual D-pad was removed).
+`MANUAL` is **not offered in the mode menu** — it is kept only as a rover-reported state string displayed in the HUD. Physical RC control is always active regardless of app mode. The app does NOT send RC override (virtual D-pad was removed).
+
+App launches directly in PLANNER mode.
 
 ### Mission recording (PLANNER mode)
 
-Two recording methods in PLANNER toolbar:
+**ADD button** (via ⋮ overflow menu) — tap once to insert the selected rover's current GPS position as a single waypoint.
 
-**ADD button** — tap once to insert the selected rover's current GPS position as a single waypoint.
-
-**REC button** — continuous recording:
-- Samples rover GPS position every 500 ms → appends `MissionAction.Waypoint`
-- Monitors PPM CH5-CH8 (auxiliary switches) from incoming `RC_CHANNELS`; any channel change > 100 µs → appends `MissionAction.ServoCmd(servo, pwm)` immediately
-- Button label toggles `⏺ REC` ↔ `⏹ STOP`
+**REC button** — 56 dp circular `MaterialButton` in the right-side FAB column, below the map-center FAB.
+- Always **red** (`#B71C1C`) with a small **yellow LED** (`ic_led_circle.xml` oval, `app:icon`, 14 dp) centred inside.
+- **Idle state:** LED tint `#444444` (dark grey, "off"); no border (`strokeWidth=0`).
+- **Recording state:** LED tint `#FFD600` (yellow, "on"); white 3 dp border (`strokeWidth=3dp`).
+- No text. Visible only in PLANNER mode.
+- Continuous recording:
+  - Samples rover GPS position every 500 ms → appends `MissionAction.Waypoint`
+  - Monitors PPM CH5-CH8 from incoming `RC_CHANNELS`; any channel change > 100 µs → appends `MissionAction.ServoCmd(servo, pwm)` immediately
 
 **OBS button** — draws obstacle exclusion polygons:
 - Press OBS → enters drawing mode (button turns red, label changes to `✓ DONE`)
@@ -449,12 +458,25 @@ Servo numbers 5–8 correspond to PPM CH5–CH8 (auxiliary motors, e.g. sprayer 
 Servo state is recorded relative to the **PPM channel values** as reported in `RC_CHANNELS`
 from the rover (post firmware PPM remap — CH5 = SBUS CH11, CH6 = SBUS CH12, CH7 = ~SBUS CH7, CH8 = ~SBUS CH8).
 
+### Rover HUD cards
+
+Two persistent cards at the bottom of the screen (one per rover). Each card contains:
+- **SBUS** and **RF** link dots: green = link healthy, red (`#F44336`) = link lost. Updated via `onLinkStatus` callback from `NAMED_VALUE_FLOAT` `SBUS_OK`/`RF_OK` transmitted by mavlink_bridge at 10 Hz. Initialized **green** (optimistic) — RP2040 only sends change events, so a link that is already healthy at startup never sends an OK event.
+- **HB** heartbeat dot: blinks on each received HEARTBEAT.
+- **RTK** badge: shows GPS fix type (RTK, DGPS, GPS, NO FIX).
+- **STATUS badge**: `NA` (grey) / `MSL` (blue) / `ARM` (orange). Transmitted via `NAMED_VALUE_FLOAT 'STATUS'` (0=NA, 1=MSL, 2=ARM). `NA` = no mission loaded; `MSL` = mission loaded, disarmed; `ARM` = armed.
+- Battery, temperature, tank level.
+
 ### Screen always-on
 `window.addFlags(FLAG_KEEP_SCREEN_ON)` is set in `onCreate` — screen never dims while app is running.
 
 ### Safety
 - E-STOP button broadcasts DISARM (cmd 400, p1=0) to all rovers via `sendCriticalCommand` (3× UDP retry).
 - `checkLinkMismatch()` detects RC switch ≠ slave HEARTBEAT mismatch after 2 s and auto-disarms via `sendCriticalCommand`.
+- **ARM safety gate (START button):** before sending ARM + AUTO:
+  1. Mission must be loaded (`roverMissions[id]` non-empty).
+  2. Rover STATUS must not be `"NA"` — shows Toast if no mission on rover.
+  3. Rover must be within **0.5 m** of the first waypoint — shows AlertDialog if too far. Distance measured with Haversine formula (`distanceMeters()`).
 
 ### Map
 - Default view: Jalisco field (`20.727715, -103.566782`, zoom 18)
@@ -462,6 +484,7 @@ from the rover (post firmware PPM remap — CH5 = SBUS CH11, CH6 = SBUS CH12, CH
 - Per-rover markers: red=RV1, blue=RV2. Centre dot: green=disarmed, orange=armed, yellow=AUTO.
 - White ring around selected rover marker.
 - Mission route shown as two-color polylines: green = walked segment, red = pending segment. Updated from `onMissionProgress` callback via `roverNextWaypointIndex`.
+- **Waypoint dots**: small filled circles drawn at each waypoint. Start waypoint: yellow (`#FFD600`), 12 dp. All others: same colour as the line segment (green if walked, red if pending), 7 dp. Implemented via `createDotBitmap(color, sizeDp)` using Canvas-drawn circle → `BitmapDescriptorFactory.fromBitmap()`. Stored in `routeOverlays` / `roverMissionOverlays` lists for cleanup.
 
 ---
 

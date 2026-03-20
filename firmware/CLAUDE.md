@@ -171,6 +171,13 @@ cmake --build build -j4
   }
   ```
 
+- **SX1278 power-cycle watchdog (slave only, applied in `slave/main.cpp`):**
+  When the SX1278 module is power-cycled while the RP2040 is running (e.g. external 3.3 V rail glitch), `RegOpMode` resets to `0x09` (FSK standby). The slave firmware never detects this and stops receiving — `rf_ok` stays `false` forever and the RF link never recovers without a manual RP2040 reset.
+
+  **Fix:** while `rf_ok == false`, every `SX_WATCHDOG_MS` (2000 ms) read `RegOpMode` via `sx_read_reg()`. If the value is not `SX_LORA_MODE | SX_MODE_RX_CONT` (0x85), call `sx1278_init()` then `sx1278_start_rx()`. Log `[SX1278_REINIT] opmode=0x%02x` on recovery. Watchdog only runs when RF is lost — it does not disturb a working chip.
+
+  State variable: `uint64_t t_last_sx_check = 0` in main loop scope.
+
 - **CH9 rover-select / mode logic (3-position switch):**
 
   | CH9 value      | Master              | Slave                    |

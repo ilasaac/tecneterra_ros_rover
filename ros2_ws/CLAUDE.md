@@ -74,10 +74,14 @@ Lock `self._lock` around all `ser.write()` calls (called from both timer and sub
 
 Status messages from RP2040 (not CH: lines) are parsed separately:
 ```python
+elif raw == '[SBUS_OK]':       self._sbus_ok    = True
+elif raw == '[SBUS_LOST]':     self._sbus_ok    = False
 elif raw == '[RF_LINK_OK]':    self._rf_link_ok = True
 elif raw == '[RF_LINK_LOST]':  self._rf_link_ok = False
 ```
-`rf_link_ok` is stamped onto every published `RCInput` message. `sbus_ok` tracking works the same way via `[SBUS_OK]`/`[SBUS_LOST]`.
+`sbus_ok` and `rf_link_ok` are stamped onto every published `RCInput` message.
+
+**Important:** both `self._sbus_ok` and `self._rf_link_ok` are initialized **`True`** (optimistic). The RP2040 only sends `[SBUS_OK]`/`[RF_LINK_OK]` on state *change* — if the link is already healthy at boot, no event is sent. Initializing pessimistic (`False`) would show the HUD indicators red until the first link-loss/recovery cycle.
 
 ## mavlink_bridge — key patterns
 
@@ -139,7 +143,10 @@ Subscriptions and state:
 - `self._heading_deg = None` until first heading message; sent as `hdg` (cdeg) in `GLOBAL_POSITION_INT`
 - `GLOBAL_POSITION_INT.hdg = int(heading_deg * 100) % 36000`  (65535 = unknown, used until first fix)
 - `self._xte` updated from `xte` topic; included in `NAMED_VALUE_FLOAT` broadcast as `'XTE'`
-- `NAMED_VALUE_FLOAT` names sent: `TANK`, `TEMP`, `HUMID`, `PRESSURE`, `CMD_T`, `CMD_S`, `WP_ACT`, `WP_TOT`, `XTE`
+- `NAMED_VALUE_FLOAT` names sent: `TANK`, `TEMP`, `HUMID`, `PRESSURE`, `CMD_T`, `CMD_S`, `WP_ACT`, `WP_TOT`, `XTE`, `STATUS`, `SBUS_OK`, `RF_OK`
+  - `STATUS`: `2.0`=armed, `1.0`=mission loaded (disarmed), `0.0`=no mission
+  - `SBUS_OK`: `1.0`=SBUS link healthy, `0.0`=lost (master RP2040 only)
+  - `RF_OK`: `1.0`=RF/LoRa link healthy, `0.0`=lost (slave RP2040 only)
 
 HEARTBEAT `base_mode` flags:
 - `MAV_MODE_FLAG_SAFETY_ARMED` (128) set when `self._armed`
