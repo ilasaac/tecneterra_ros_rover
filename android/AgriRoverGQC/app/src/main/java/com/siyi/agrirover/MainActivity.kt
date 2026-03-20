@@ -40,6 +40,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val roverModes      = HashMap<Int, AppMode>()
     private val roverArmed      = HashMap<Int, Boolean>()
     private val roverNavStatus  = HashMap<Int, String>()   // "NA" | "MSL" | "ARM"
+    private val roverGpsFix    = HashMap<Int, Int>()       // GPS_RAW_INT fixType (0–6); 6=RTK_FIX
     private val roverPpmChannels = HashMap<Int, IntArray>()   // latest RC_CHANNELS per rover
 
     // Per-rover uploaded missions
@@ -229,6 +230,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     if (newId != selectedRoverId) {
                         selectedRoverId = newId
                         updateRcStrip(newId)
+                        updateRecButtonState()
                     }
                 }
                 if (sysId == selectedRoverId) {
@@ -253,7 +255,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         },
 
         onGpsStatus = { sysId, fixType ->
-            runOnUiThread { updateRtkLabel(sysId, fixType) }
+            runOnUiThread {
+                updateRtkLabel(sysId, fixType)
+                handleRtkChange(sysId, fixType)
+            }
         },
 
         onNavStatus = { sysId, status ->
@@ -347,6 +352,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         // REC — toggles timed position recording with aux-channel servo capture
         btnRec.setOnClickListener {
+            if (roverGpsFix[selectedRoverId] != 6) {
+                Toast.makeText(this, "RTK not fixed — cannot record", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             if (isRecording) stopRecording() else startRecording()
         }
 
@@ -385,6 +394,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     .setMessage("Move the rover manually to the starting position")
                     .setPositiveButton("OK", null)
                     .show()
+                return@setOnClickListener
+            }
+            if (roverGpsFix[selectedRoverId] != 6) {
+                Toast.makeText(this, "RTK not fixed — cannot start autonomous", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             roverManager.sendCommand(selectedRoverId, 400, 1f, 0f)  // ARM
@@ -526,6 +539,50 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val view = if (sysId == 1) txtRv1Rtk else txtRv2Rtk
         view.text = text
         view.setTextColor(Color.parseColor(colorHex))
+    }
+
+    /**
+     * Called on every GPS_RAW_INT update.
+     * fixType: 0=NO_GPS  1=NO_FIX  2=2D  3=3D  4=DGPS  5=RTK_FLOAT  6=RTK_FIXED
+     *
+     * Enforces RTK-required safety:
+     *   • REC button: grayed out (alpha 0.4) when fix < 6; full opacity when fixed.
+     *     Click handler will still show a Toast if pressed while grayed.
+     *   • If recording is active and fix drops below 6: stop recording immediately.
+     *   • If rover is armed (autonomous) and fix drops below 6: disarm + alert dialog.
+     *
+     * Acts only on the transition fixed→not-fixed (wasFixed && !isFixed) to avoid
+     * firing the dialog on every GPS update.
+     */
+    private fun handleRtkChange(sysId: Int, fixType: Int) {
+        val wasFixed = roverGpsFix[sysId] == 6
+        roverGpsFix[sysId] = fixType
+        val isFixed = fixType == 6
+
+        if (sysId == selectedRoverId) updateRecButtonState()
+
+        if (wasFixed && !isFixed) {
+            // Recording: stop immediately when RTK is lost
+            if (isRecording && sysId == selectedRoverId) {
+                stopRecording()
+                Toast.makeText(this, "Recording stopped — RTK fix lost", Toast.LENGTH_LONG).show()
+            }
+            // Autonomous: disarm if rover was armed
+            if (roverArmed[sysId] == true) {
+                roverManager.sendCriticalCommand(sysId, 400, 0f, 0f)
+                AlertDialog.Builder(this)
+                    .setTitle("⚠ RTK Lost — Rover $sysId Stopped")
+                    .setMessage("RTK fix lost while rover was active.\nRover $sysId has been disarmed.")
+                    .setCancelable(false)
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }
+    }
+
+    /** Gray out the REC button when the selected rover has no RTK fix. */
+    private fun updateRecButtonState() {
+        btnRec.alpha = if (roverGpsFix[selectedRoverId] == 6) 1.0f else 0.4f
     }
 
     private fun updateNavStatus(sysId: Int, status: String) {
