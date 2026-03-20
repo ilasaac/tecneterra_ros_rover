@@ -341,7 +341,7 @@ def parse_args():
     # Physics
     p.add_argument('--max-speed',   default=1.5,  type=float, metavar='M/S')
     p.add_argument('--wheelbase',   default=0.50, type=float, metavar='M')
-    p.add_argument('--turn-scale',  default=1.0,  type=float, metavar='0-1',
+    p.add_argument('--turn-scale',  default=0.2,  type=float, metavar='0-1',
                    help='Turn rate scale (1.0=full differential — default, matches MPC model)')
     p.add_argument('--baseline',    default=0.30, type=float, metavar='M',
                    help='Antenna separation in metres')

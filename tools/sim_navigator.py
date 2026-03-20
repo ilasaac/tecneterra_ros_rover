@@ -125,7 +125,7 @@ DEFAULT_NAV.update(_load_rover_params())
 # Physical rover parameters — tune to match the real rover
 DEFAULT_PHYS: dict = {
     'wheelbase':  0.6,    # metres — distance between left and right wheels
-    'turn_scale': 1.0,    # turn rate fraction (0.1 = slow, 1.0 = full differential) # matches MPC kinematic model
+    'turn_scale': 0.2,    # turn rate fraction: real rover = 180° in 4s at full steer
     'baseline_m': 1.0,    # metres — rear-to-front antenna separation
 }
 
