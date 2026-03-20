@@ -349,6 +349,7 @@ class MavlinkBridgeNode(Node):
             ('STATUS',   nav_status),
             ('SBUS_OK',  1.0 if self._rc.sbus_ok   else 0.0),
             ('RF_OK',    1.0 if self._rc.rf_link_ok else 0.0),
+            ('RTK',      float(self._RTK_FIX_TYPE.get(self._rtk_status, 0))),
         ]
         for name, value in pairs:
             self._send(self._mav.mav.named_value_float_encode(

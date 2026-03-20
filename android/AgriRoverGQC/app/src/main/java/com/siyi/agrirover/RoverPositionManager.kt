@@ -592,6 +592,9 @@ class RoverPositionManager(
                     "RF_OK"   -> scope.launch(Dispatchers.Main) {
                         onLinkStatus(senderId, "RF", value >= 1f)
                     }
+                    "RTK"     -> scope.launch(Dispatchers.Main) {
+                        onGpsStatus(senderId, value.toInt())
+                    }
                 }
             }
 

@@ -402,8 +402,9 @@ Rover IPs are auto-discovered from first incoming packet of each sysid — no ma
 **Callbacks (constructor parameters):**
 - `onNavStatus: (Int, String) -> Unit` — called when rover STATUS named float arrives; string = `"ARM"` / `"MSL"` / `"NA"`
 - `onLinkStatus: (Int, String, Boolean) -> Unit` — called when `SBUS_OK` or `RF_OK` named float arrives; string = `"SBUS"` or `"RF"`, bool = link healthy
+- `onGpsStatus: (Int, Int) -> Unit` — called when `RTK` named float arrives; int = MAVLink GPS_FIX_TYPE (6=RTK_FIX, 5=RTK_FLT, 4=DGPS, 3=3D, 0=NO_GPS)
 
-Both callbacks are dispatched on the Main thread via `scope.launch(Dispatchers.Main)`.
+All callbacks are dispatched on the Main thread via `scope.launch(Dispatchers.Main)`.
 
 ### MAVLink ports (both rovers)
 Both rovers bind :14550 (same port, different Jetsons on the network).
@@ -463,7 +464,7 @@ from the rover (post firmware PPM remap — CH5 = SBUS CH11, CH6 = SBUS CH12, CH
 Two persistent cards at the bottom of the screen (one per rover). Each card contains:
 - **SBUS** and **RF** link dots: green = link healthy, red (`#F44336`) = link lost. Updated via `onLinkStatus` callback from `NAMED_VALUE_FLOAT` `SBUS_OK`/`RF_OK` transmitted by mavlink_bridge at 10 Hz. Initialized **red** (unknown/offline) — turns green once a healthy status packet is received.
 - **HB** heartbeat dot: blinks on each received HEARTBEAT.
-- **RTK** badge: shows GPS fix type (RTK, DGPS, GPS, NO FIX).
+- **RTK** badge: shows GPS fix type (RTK FIX, RTK FLT, DGPS, 3D FIX, NO GPS). Updated via `onGpsStatus` callback from `NAMED_VALUE_FLOAT 'RTK'` transmitted by mavlink_bridge at 1 Hz. Note: `GpsRawInt` is also sent but not used — java-mavlink 1.1.9 fails to parse it because pymavlink truncates zero extension fields per MAVLink v2 spec, leaving a 30-byte base payload that java-mavlink rejects.
 - **STATUS badge**: `NA` (grey) / `MSL` (blue) / `ARM` (orange). Transmitted via `NAMED_VALUE_FLOAT 'STATUS'` (0=NA, 1=MSL, 2=ARM). `NA` = no mission loaded; `MSL` = mission loaded, disarmed; `ARM` = armed.
 - Battery, temperature, tank level.
 
