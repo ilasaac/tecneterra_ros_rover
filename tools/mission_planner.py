@@ -31,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sim_navigator import (  # noqa: E402
-    DEFAULT_NAV, DEFAULT_PHYS, PathNavigator, SimWaypoint, simulate,
+    DEFAULT_NAV, DEFAULT_PHYS, SimWaypoint, simulate, compute_pivot_wps,
 )
 
 DEFAULT_LAT  = 20.727715
@@ -949,18 +949,11 @@ class _Handler(BaseHTTPRequestHandler):
                               nav_params=nav_p, phys_params=phys_p,
                               obstacles=obstacles if obstacles else None)
 
-            # Compute pivot waypoints for the frontend
-            path_n = PathNavigator(
+            # Compute pivot waypoints for the frontend (all chunks, not just first)
+            pivot_wps = compute_pivot_wps(
                 _rerouted_as_wps(result.rerouted_wps, wps),
-                start_lat, start_lon, nav_p)
-            pivot_wps = []
-            for i in range(len(path_n._wps)):
-                ta = path_n._turn_angle_at(i)
-                if ta >= nav_p.get('pivot_threshold', 25.0):
-                    pivot_wps.append({'lat': path_n._wps[i].lat,
-                                      'lon': path_n._wps[i].lon,
-                                      'turn_angle': round(ta, 1),
-                                      'is_bypass': path_n._wps[i].is_bypass})
+                start_lat, start_lon,
+                nav_p.get('pivot_threshold', 25.0))
 
             self._json({
                 'complete':          result.complete,

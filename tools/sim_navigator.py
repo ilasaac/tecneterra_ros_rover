@@ -947,6 +947,43 @@ class PathNavigator:
             self.total_advanced += 1
 
 
+# ── Public helpers ────────────────────────────────────────────────────────────
+
+def compute_pivot_wps(waypoints: list[SimWaypoint],
+                      origin_lat: float, origin_lon: float,
+                      pivot_threshold: float) -> list[dict]:
+    """Return all pivot waypoints across the full flat waypoint list.
+
+    PathNavigator.__init__ splits waypoints into chunks and pops the first
+    chunk, so _turn_angle_at() only sees chunk-local waypoints.  This function
+    scans the complete list and correctly identifies every pivot, including
+    those in later chunks.
+    """
+    result = []
+    n = len(waypoints)
+    for i in range(n - 1):
+        out_brg = _bearing_to(waypoints[i].lat,     waypoints[i].lon,
+                              waypoints[i + 1].lat, waypoints[i + 1].lon)
+        if i == 0:
+            if _haversine(origin_lat, origin_lon,
+                          waypoints[0].lat, waypoints[0].lon) < 0.01:
+                continue   # zero-length incoming segment — no meaningful turn
+            in_brg = _bearing_to(origin_lat, origin_lon,
+                                 waypoints[0].lat, waypoints[0].lon)
+        else:
+            in_brg = _bearing_to(waypoints[i - 1].lat, waypoints[i - 1].lon,
+                                 waypoints[i].lat,     waypoints[i].lon)
+        ta = abs(((out_brg - in_brg + 180) % 360) - 180)
+        if ta >= pivot_threshold:
+            result.append({
+                'lat':        waypoints[i].lat,
+                'lon':        waypoints[i].lon,
+                'turn_angle': round(ta, 1),
+                'is_bypass':  waypoints[i].is_bypass,
+            })
+    return result
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def simulate(waypoints:       list[SimWaypoint],
@@ -1094,7 +1131,12 @@ def simulate(waypoints:       list[SimWaypoint],
 
         rlat_new, rlon_new = _center_pos(rover, bm)
         flat_new, flon_new = _front_pos(rover, bm)
-        result_path.append((rlat_new, rlon_new))   # centre — fixed during pivot
+        # Deduplicate path: pivot spins accumulate dozens of nearly-identical points
+        # (rover centre is fixed during spin) → visual smear on the map.  Only append
+        # when the rover actually moved more than 2 cm from the last recorded point.
+        if not result_path or _haversine(rlat_new, rlon_new,
+                                         result_path[-1][0], result_path[-1][1]) > 0.02:
+            result_path.append((rlat_new, rlon_new))
         cte = path_n._cte_to_seg(flat_new, flon_new, best_seg)
         xte_log.append(abs(cte))
 
