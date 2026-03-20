@@ -666,8 +666,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     PolylineOptions().addAll(pending).width(8f).color(Color.parseColor("#F44336"))))
             }
             routePoints.forEachIndexed { i, pt ->
-                val dotColor = if (i < nextWaypointIndex) Color.parseColor("#4CAF50")
-                               else                       Color.parseColor("#F44336")
+                val dotColor = when {
+                    i == 0              -> Color.parseColor("#FFD600")
+                    i < nextWaypointIndex -> Color.parseColor("#4CAF50")
+                    else                -> Color.parseColor("#F44336")
+                }
                 val sizeDp   = if (i == 0) 12 else 7
                 map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
                     .icon(createDotBitmap(dotColor, sizeDp)).flat(true))
@@ -711,7 +714,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             // Waypoint dots
             val walkedColor = Color.argb(200, 160, 160, 160)
             points.forEachIndexed { i, pt ->
-                val dotColor = if (i < walkedIdx) walkedColor else pendingColor
+                val dotColor = when {
+                    i == 0         -> Color.parseColor("#FFD600")
+                    i < walkedIdx  -> walkedColor
+                    else           -> pendingColor
+                }
                 val sizeDp   = if (i == 0) 12 else 7
                 map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
                     .icon(createDotBitmap(dotColor, sizeDp)).flat(true))
