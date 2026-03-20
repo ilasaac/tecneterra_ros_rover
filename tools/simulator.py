@@ -72,14 +72,23 @@ def _fmt_lon(lon: float):
     return f'{d:03d}{m:010.7f}', hem
 
 
-def make_gga(lat: float, lon: float, alt: float = 45.0) -> bytes:
-    """$GNGGA — RTK fixed (quality 4), 12 sats, 0.5 HDOP."""
+def make_gga(lat: float, lon: float, alt: float = 45.0, quality: int = 4) -> bytes:
+    """$GNGGA with configurable fix quality.
+
+    quality field (GGA):
+      0 = invalid / no fix
+      1 = GPS fix        → gps_driver: GPS    → MAVLink fixType 3
+      2 = DGPS           → gps_driver: DGPS   → MAVLink fixType 4
+      4 = RTK fixed      → gps_driver: RTK    → MAVLink fixType 6  (default)
+      5 = RTK float      → gps_driver: RTK    → MAVLink fixType 5
+    """
     t = time.gmtime()
     utc = f'{t.tm_hour:02d}{t.tm_min:02d}{t.tm_sec:02d}.00'
     lat_s, lat_h = _fmt_lat(lat)
     lon_s, lon_h = _fmt_lon(lon)
+    sats = 12 if quality >= 4 else (8 if quality >= 2 else (6 if quality >= 1 else 0))
     body = (f'GNGGA,{utc},{lat_s},{lat_h},{lon_s},{lon_h},'
-            f'4,12,0.5,{alt:.1f},M,0.0,M,0.5,0001')
+            f'{quality},{sats},0.5,{alt:.1f},M,0.0,M,0.5,0001')
     return f'${body}*{_checksum(body)}\r\n'.encode('ascii')
 
 
@@ -185,6 +194,76 @@ class PpmReader:
                 pass
 
 
+# ── RTK fix quality control ──────────────────────────────────────────────────
+
+_QUALITY_NAMES = {0: 'NO_FIX', 1: 'GPS', 2: 'DGPS', 4: 'RTK_FIX', 5: 'RTK_FLT'}
+_VALID_QUALITIES = (0, 1, 2, 4, 5)
+
+
+class RtkState:
+    """Thread-safe per-rover GGA quality value.
+
+    Accepts commands from the stdin reader thread at any time.
+    Commands (type and press Enter):
+      fix1 N    — set RV1 quality
+      fix2 N    — set RV2 quality
+      fix  N    — set both rovers
+    Valid N values: 0=NO_FIX  1=GPS  2=DGPS  4=RTK_FIX  5=RTK_FLT
+    """
+
+    def __init__(self, q1: int = 4, q2: int = 4):
+        self._q    = {1: q1, 2: q2}
+        self._lock = threading.Lock()
+
+    def get(self, sysid: int) -> int:
+        with self._lock:
+            return self._q.get(sysid, 4)
+
+    def set(self, sysid: int, quality: int):
+        if quality not in _VALID_QUALITIES:
+            print(f'[RTK] invalid quality {quality} — valid: {list(_VALID_QUALITIES)}')
+            return
+        with self._lock:
+            self._q[sysid] = quality
+        name = _QUALITY_NAMES.get(quality, str(quality))
+        print(f'[RTK] RV{sysid} → {name} ({quality})')
+
+    def label(self, sysid: int) -> str:
+        q = self.get(sysid)
+        return _QUALITY_NAMES.get(q, str(q))
+
+
+def _stdin_reader(rtk: RtkState, stop: threading.Event):
+    """Background thread: read fix-override commands from stdin.
+
+    Runs until the main loop sets stop or EOF is reached.
+    Prints its own feedback; main status display will refresh within 1 s.
+    """
+    help_msg = ('  fix1 N | fix2 N | fix N'
+                '  (N: 0=NO_FIX 1=GPS 2=DGPS 4=RTK_FIX 5=RTK_FLT)')
+    for line in sys.stdin:
+        if stop.is_set():
+            break
+        parts = line.strip().split()
+        if not parts:
+            continue
+        cmd = parts[0].lower()
+        try:
+            q = int(parts[1])
+        except (IndexError, ValueError):
+            print(f'[RTK] usage: {help_msg}')
+            continue
+        if cmd == 'fix':
+            rtk.set(1, q)
+            rtk.set(2, q)
+        elif cmd == 'fix1':
+            rtk.set(1, q)
+        elif cmd == 'fix2':
+            rtk.set(2, q)
+        else:
+            print(f'[RTK] unknown command. usage: {help_msg}')
+
+
 # ── UDP output ────────────────────────────────────────────────────────────────
 
 def udp_send(sock: socket.socket, data: bytes, addr: tuple, label: str):
@@ -272,9 +351,17 @@ def _ppm_row(label: str, ch: list) -> str:
     return f'  {label:<5} {vals}'
 
 
+def _rtk_col(quality: int) -> str:
+    if quality == 4:   return ANSI_GRN    # RTK_FIX
+    if quality == 5:   return ANSI_YLW   # RTK_FLT
+    if quality >= 1:   return ANSI_YLW   # GPS / DGPS
+    return ANSI_RED                       # NO_FIX
+
+
 def _status_str(rv1: RoverState, rv2: RoverState,
                 rv1_ch: list, rv2_ch: list,
-                ppm_age: float, tick: int, args, dry_run: bool, addrs: AddrBook) -> str:
+                ppm_age: float, tick: int, args, dry_run: bool, addrs: AddrBook,
+                rtk: RtkState) -> str:
     def ppm_col(age):
         if age < 0.5:  return ANSI_GRN
         if age < 2.0:  return ANSI_YLW
@@ -284,22 +371,29 @@ def _status_str(rv1: RoverState, rv2: RoverState,
     ppm_str = f'{ppm_col(ppm_age)}{ppm_age*1000:.0f} ms{ANSI_RST}'
     rv1_ip  = addrs.get_ip(1) or '?'
     rv2_ip  = addrs.get_ip(2) or '?'
+
+    def rtk_str(sysid):
+        q = rtk.get(sysid)
+        name = _QUALITY_NAMES.get(q, str(q))
+        return f'{_rtk_col(q)}{name}{ANSI_RST}'
+
     lines = [
         f'{ANSI_BOLD}AgriRover GPS Simulator{ANSI_RST}  [{mode}]  tick={tick}  rate={args.rate:.0f} Hz',
         f'  PPM age : {ppm_str}  (>2 s → rovers frozen)',
         f'  Targets : RV1 {rv1_ip}:{args.pri_port}/{args.sec_port}'
         f'  RV2 {rv2_ip}:{args.pri_port}/{args.sec_port}',
         '',
-        f'  {"Rover":<6} {"Lat":>14} {"Lon":>14} {"Heading":>10} {"Speed":>10}',
-        f'  {"─"*6} {"─"*14} {"─"*14} {"─"*10} {"─"*10}',
-        f'  {"RV1":<6} {rv1.lat:>14.7f} {rv1.lon:>14.7f} {rv1.heading_deg:>9.1f}° {rv1.speed_mps:>9.2f} m/s',
-        f'  {"RV2":<6} {rv2.lat:>14.7f} {rv2.lon:>14.7f} {rv2.heading_deg:>9.1f}° {rv2.speed_mps:>9.2f} m/s',
+        f'  {"Rover":<6} {"Lat":>14} {"Lon":>14} {"Heading":>10} {"Speed":>10} {"RTK":>9}',
+        f'  {"─"*6} {"─"*14} {"─"*14} {"─"*10} {"─"*10} {"─"*9}',
+        f'  {"RV1":<6} {rv1.lat:>14.7f} {rv1.lon:>14.7f} {rv1.heading_deg:>9.1f}° {rv1.speed_mps:>9.2f} m/s  {rtk_str(1)}',
+        f'  {"RV2":<6} {rv2.lat:>14.7f} {rv2.lon:>14.7f} {rv2.heading_deg:>9.1f}° {rv2.speed_mps:>9.2f} m/s  {rtk_str(2)}',
         '',
         f'  {"":5} {"Ch1":>4}  {"Ch2":>4}  {"Ch3":>4}  {"Ch4":>4}  {"Ch5":>4}  {"Ch6":>4}  {"Ch7":>4}  {"Ch8":>4}',
         f'  {"":5} {"thr":>4}  {"str":>4}  {"SWA":>4}  {"SWB":>4}  {"sv5":>4}  {"sv6":>4}  {"sv7":>4}  {"sv8":>4}',
         _ppm_row('RV1', rv1_ch),
         _ppm_row('RV2', rv2_ch),
         '',
+        '  RTK cmd : fix1 N | fix2 N | fix N   (0=NO_FIX 1=GPS 2=DGPS 4=RTK_FIX 5=RTK_FLT)',
         '  Ctrl-C to stop',
     ]
     return ANSI_CLR + '\n'.join(lines) + '\n'
@@ -351,6 +445,11 @@ def parse_args():
     p.add_argument('--str-ch',    default=1,    type=int)
     p.add_argument('--dry-run',   action='store_true',
                    help='Print sample NMEA; do not send UDP')
+    # RTK quality override
+    p.add_argument('--rv1-rtk',  default=4, type=int, metavar='Q',
+                   help='Initial GGA quality for RV1 (0=NO_FIX 1=GPS 2=DGPS 4=RTK_FIX 5=RTK_FLT)')
+    p.add_argument('--rv2-rtk',  default=4, type=int, metavar='Q',
+                   help='Initial GGA quality for RV2')
     return p.parse_args()
 
 
@@ -392,6 +491,7 @@ def main():
 
     rv1 = RoverState(args.rv1_lat, args.rv1_lon, args.rv1_hdg)
     rv2 = RoverState(args.rv2_lat, args.rv2_lon, args.rv2_hdg)
+    rtk = RtkState(args.rv1_rtk, args.rv2_rtk)
     dt  = 1.0 / args.rate
 
     # ── Dry-run ───────────────────────────────────────────────────────────────
@@ -415,7 +515,10 @@ def main():
     signal.signal(signal.SIGINT,  lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
 
-    print('\nRunning — Ctrl-C to stop\n')
+    threading.Thread(target=_stdin_reader, args=(rtk, stop), daemon=True).start()
+
+    print('\nRunning — Ctrl-C to stop')
+    print('RTK cmd : fix1 N | fix2 N | fix N   (0=NO_FIX 1=GPS 2=DGPS 4=RTK_FIX 5=RTK_FLT)\n')
     time.sleep(0.5)
 
     t_next = time.monotonic()
@@ -442,11 +545,13 @@ def main():
         s2_lat, s2_lon = rv2.secondary_pos(args.baseline)
 
         # Primary packets: GGA + VTG concatenated in one UDP datagram
-        rv1_pri_pkt = make_gga(rv1.lat, rv1.lon, args.alt) + make_vtg(rv1.heading_deg, rv1.speed_mps)
-        rv2_pri_pkt = make_gga(rv2.lat, rv2.lon, args.alt) + make_vtg(rv2.heading_deg, rv2.speed_mps)
-        # Secondary packets: GGA only
-        rv1_sec_pkt = make_gga(s1_lat, s1_lon, args.alt)
-        rv2_sec_pkt = make_gga(s2_lat, s2_lon, args.alt)
+        q1 = rtk.get(1)
+        q2 = rtk.get(2)
+        rv1_pri_pkt = make_gga(rv1.lat, rv1.lon, args.alt, q1) + make_vtg(rv1.heading_deg, rv1.speed_mps)
+        rv2_pri_pkt = make_gga(rv2.lat, rv2.lon, args.alt, q2) + make_vtg(rv2.heading_deg, rv2.speed_mps)
+        # Secondary packets: GGA only (same quality as primary)
+        rv1_sec_pkt = make_gga(s1_lat, s1_lon, args.alt, q1)
+        rv2_sec_pkt = make_gga(s2_lat, s2_lon, args.alt, q2)
 
         # Resolve current IPs (updated live by AddrBook listener)
         rv1_ip = addrs.get_ip(1)
@@ -460,7 +565,7 @@ def main():
 
         if tick % max(1, round(args.rate)) == 0:
             sys.stdout.write(_status_str(rv1, rv2, rv1_ch, rv2_ch,
-                                         ppm_age, tick, args, args.dry_run, addrs))
+                                         ppm_age, tick, args, args.dry_run, addrs, rtk))
             sys.stdout.flush()
 
     print('\n\nSimulator stopped.')
