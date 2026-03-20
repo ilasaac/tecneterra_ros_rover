@@ -56,7 +56,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var map: GoogleMap
     private lateinit var touchOverlay: View
     private lateinit var btnModeMenu: Button
-    private lateinit var autoToolbar: LinearLayout
 
     // Per-rover HUD panels
     private lateinit var dotRv1Hb:    TextView
@@ -79,11 +78,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var btnEStop:       Button
 
     // Auto Buttons
-    private lateinit var btnStart:    Button
-    private lateinit var btnStop:     Button
-    private lateinit var btnClear:    Button
-    private lateinit var btnToggleR1: Button
-    private lateinit var btnToggleR2: Button
+    private lateinit var btnStart: Button
+    private lateinit var btnStop:  Button
 
     // Data
     private val routePoints      = ArrayList<LatLng>()
@@ -267,7 +263,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         touchOverlay          = findViewById(R.id.touchOverlay)
         btnModeMenu           = findViewById(R.id.btnModeMenu)
-        autoToolbar           = findViewById(R.id.autoToolbar)
         dotRv1Hb              = findViewById(R.id.dotRv1Hb)
         dotRv2Hb              = findViewById(R.id.dotRv2Hb)
         dotRv1Sbus            = findViewById(R.id.dotRv1Sbus)
@@ -288,9 +283,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnEStop              = findViewById(R.id.btnEStop)
         btnStart              = findViewById(R.id.btnStart)
         btnStop               = findViewById(R.id.btnStop)
-        btnClear              = findViewById(R.id.btnClear)
-        btnToggleR1           = findViewById(R.id.btnToggleR1)
-        btnToggleR2           = findViewById(R.id.btnToggleR2)
 
         loadStations()
 
@@ -377,10 +369,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             Toast.makeText(this, "Rover $selectedRoverId: MANUAL", Toast.LENGTH_SHORT).show()
         }
 
-        btnClear.setOnClickListener { clearMission() }
-
-        btnToggleR1.setOnClickListener { toggleRoverMission(1, btnToggleR1) }
-        btnToggleR2.setOnClickListener { toggleRoverMission(2, btnToggleR2) }
     }
 
 
@@ -680,17 +668,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    private fun toggleRoverMission(roverId: Int, button: Button) {
-        // Select rover for ARM / SET_MODE / UPLOAD commands
-        selectedRoverId = roverId
-        updateRcStrip(roverId)
-        // Visual: selected button bright, other dimmed
-        btnToggleR1.alpha = if (roverId == 1) 1.0f else 0.4f
-        btnToggleR2.alpha = if (roverId == 2) 1.0f else 0.4f
-        roverMissionVisible[roverId] = true
-        redrawRoverMissions()
-        Toast.makeText(this, "Rover $roverId selected", Toast.LENGTH_SHORT).show()
-    }
 
     private fun redrawRoverMissions() {
         if (!::map.isInitialized) return
@@ -906,20 +883,22 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             draftPolyline = null
         }
         currentMode = mode
-        touchOverlay.visibility      = View.GONE
-        autoToolbar.visibility       = View.GONE
-        btnPlannerMenu.visibility    = View.GONE
-        btnRec.visibility            = View.GONE
+        touchOverlay.visibility   = View.GONE
+        btnPlannerMenu.visibility = View.GONE
+        btnRec.visibility         = View.GONE
+        btnStart.visibility       = View.GONE
+        btnStop.visibility        = View.GONE
         when (mode) {
             AppMode.MANUAL  -> { btnModeMenu.text = "MODE: MANUAL" }
             AppMode.PLANNER -> {
-                btnModeMenu.text      = "MODE: PLANNER"
+                btnModeMenu.text          = "MODE: PLANNER"
                 btnPlannerMenu.visibility = View.VISIBLE
                 btnRec.visibility         = View.VISIBLE
             }
             AppMode.AUTO    -> {
-                btnModeMenu.text = "MODE: AUTO"
-                autoToolbar.visibility = View.VISIBLE
+                btnModeMenu.text    = "MODE: AUTO"
+                btnStart.visibility = View.VISIBLE
+                btnStop.visibility  = View.VISIBLE
                 redrawRoverMissions()
             }
         }
