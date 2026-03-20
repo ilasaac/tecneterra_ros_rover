@@ -109,6 +109,7 @@ class MavlinkBridgeNode(Node):
         # _mission_src: (srcSys, srcComp) from MISSION_COUNT; None when no upload active.
         # _mission_expect_seq: next seq we're waiting for; None when no upload active.
         # _mission_last_req_t: monotonic time of last MISSION_REQUEST_INT sent.
+        self._rtk_status  = 'NO_FIX'   # latest string from gps_driver rtk_status topic
         self._last_rerouted_json  = '[]'
         self._reroute_retries     = 0
         self._reroute_timer       = None
@@ -129,6 +130,7 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(Int32,        'wp_active',    self._cb_wp,       10)
         self.create_subscription(Float32,      'xte',           self._cb_xte,            10)
         self.create_subscription(String,       'rerouted_path', self._cb_rerouted_path,  10)
+        self.create_subscription(String,       'rtk_status',    self._cb_rtk_status,     10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
         self.cmd_pub           = self.create_publisher(RCInput,          'cmd_override',   10)
@@ -157,10 +159,11 @@ class MavlinkBridgeNode(Node):
 
     # ── Subscription callbacks ────────────────────────────────────────────────
 
-    def _cb_fix(self, msg: NavSatFix):      self._fix = msg
-    def _cb_rc(self, msg: RCInput):         self._rc = msg
-    def _cb_sensors(self, msg: SensorData): self._sensors = msg
-    def _cb_status(self, msg: RoverStatus): self._status = msg
+    def _cb_fix(self, msg: NavSatFix):           self._fix = msg
+    def _cb_rc(self, msg: RCInput):              self._rc = msg
+    def _cb_sensors(self, msg: SensorData):      self._sensors = msg
+    def _cb_status(self, msg: RoverStatus):      self._status = msg
+    def _cb_rtk_status(self, msg: String):       self._rtk_status = msg.data
 
     def _cb_mode(self, msg: String):
         self._mode = msg.data
@@ -272,6 +275,15 @@ class MavlinkBridgeNode(Node):
             system_status=sys_status,
         ))
 
+    # Maps gps_driver rtk_status strings → MAVLink GPS_RAW_INT fix_type (0–6)
+    _RTK_FIX_TYPE = {
+        'RTK_FIX': 6,
+        'RTK_FLT': 5,
+        'DGPS':    4,
+        'GPS':     3,
+        'NO_FIX':  1,
+    }
+
     def _send_gps(self):
         if self._fix.latitude == 0.0:
             return
@@ -286,6 +298,23 @@ class MavlinkBridgeNode(Node):
             0,       # relative alt mm
             0, 0, 0, # vx, vy, vz cm/s
             hdg,
+        ))
+        # GPS_RAW_INT (#24) — fix quality for GQC RTK indicator.
+        # fix_type comes from gps_driver's rtk_status topic, which parses the
+        # GGA quality field directly from the u-blox module NMEA output (or
+        # simulator NMEA — same path through gps_driver either way).
+        fix_type = self._RTK_FIX_TYPE.get(self._rtk_status, 0)
+        self._send(self._mav.mav.gps_raw_int_encode(
+            self._uptime_ms() * 1000,  # time_usec
+            fix_type,
+            int(self._fix.latitude  * 1e7),
+            int(self._fix.longitude * 1e7),
+            0,        # alt mm
+            0xFFFF,   # eph (unknown)
+            0xFFFF,   # epv (unknown)
+            0xFFFF,   # vel (unknown)
+            0xFFFF,   # cog (unknown)
+            255,      # satellites_visible (unknown)
         ))
 
     def _send_rc(self):
