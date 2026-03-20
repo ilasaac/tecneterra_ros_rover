@@ -180,6 +180,16 @@ class MavlinkBridgeNode(Node):
 
     def _cb_wp(self, msg: Int32):
         self._wp_active = msg.data
+        if msg.data == -1:
+            # Mission complete — auto-disarm and reset mission state → STATUS → NA
+            self._armed         = False
+            self._mission_count = 0
+            self._mission_buf   = []
+            a = Bool(); a.data = False
+            self.armed_pub.publish(a)
+            m = String(); m.data = 'MANUAL'
+            self.mode_pub.publish(m)
+            self.get_logger().info('Mission complete — auto-disarmed')
 
     def _cb_xte(self, msg: Float32):
         self._xte = msg.data
