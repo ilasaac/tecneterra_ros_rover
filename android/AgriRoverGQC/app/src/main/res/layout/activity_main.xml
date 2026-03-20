@@ -150,15 +150,24 @@
             app:backgroundTint="#FFF"
             android:layout_marginBottom="16dp" />
 
-        <com.google.android.material.floatingactionbutton.FloatingActionButton
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/btnRec"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:src="@drawable/ic_led_circle"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:text=""
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:backgroundTint="#B71C1C"
             android:contentDescription="Record"
-            app:backgroundTint="#37474F"
-            app:tint="#444444"
-            android:visibility="gone" />
+            android:visibility="gone"
+            app:icon="@drawable/ic_led_circle"
+            app:iconSize="14dp"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconTint="#444444"
+            app:cornerRadius="28dp"
+            app:strokeWidth="0dp"
+            app:strokeColor="#FFFFFF" />
     </LinearLayout>
 
     <!-- ── Dual rover HUD — pinned to bottom of screen ────────────────── -->

@@ -16,6 +16,7 @@ import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
 import com.google.android.gms.maps.SupportMapFragment
 import com.google.android.gms.maps.model.*
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import java.io.File
 import kotlin.math.*
@@ -74,7 +75,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var txtRv2Status: TextView
     private lateinit var txtRcChannels:  TextView   // RC PPM strip
     private lateinit var btnPlannerMenu: ImageButton
-    private lateinit var btnRec:         FloatingActionButton
+    private lateinit var btnRec:         MaterialButton
     private lateinit var btnLayers:      FloatingActionButton
     private lateinit var btnCenter:      FloatingActionButton
     private lateinit var btnEStop:       Button
@@ -419,7 +420,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             lastAuxPwm[i] = pwm
             recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = pwm))
         }
-        btnRec.imageTintList = ColorStateList.valueOf(Color.parseColor("#FFD600"))
+        btnRec.iconTint = ColorStateList.valueOf(Color.parseColor("#FFD600"))
+        btnRec.strokeWidth = (3 * resources.displayMetrics.density + 0.5f).toInt()
+        btnRec.strokeColor = ColorStateList.valueOf(Color.WHITE)
         recordHandler.post(recordRunnable)
         Toast.makeText(this, "Recording…", Toast.LENGTH_SHORT).show()
     }
@@ -427,7 +430,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun stopRecording() {
         isRecording = false
         recordHandler.removeCallbacks(recordRunnable)
-        btnRec.imageTintList = ColorStateList.valueOf(Color.parseColor("#444444"))
+        btnRec.iconTint = ColorStateList.valueOf(Color.parseColor("#444444"))
+        btnRec.strokeWidth = 0
         val wpCount  = recordedMission.filterIsInstance<MissionAction.Waypoint>().size
         val srvCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
         Toast.makeText(this,
