@@ -230,6 +230,10 @@ tr:hover td{background:#1e1e3a}
 #stats{padding:8px;font-size:12px;line-height:1.7;border-top:2px solid #0f3460;display:none}
 #stats .lbl{color:#888}
 #status-bar{padding:4px 8px;font-size:11px;color:#27ae60;background:#0d0d1a;border-bottom:1px solid #222;min-height:22px}
+#gen-panel{display:none;position:fixed;left:318px;top:45px;z-index:2000;background:#1a1a2e;border:1px solid #0f3460;border-radius:4px;padding:10px;width:240px;font-size:11px;color:#ddd;box-shadow:0 4px 14px rgba(0,0,0,.8)}
+#gen-panel label{display:block;color:#aaa;margin-top:5px;margin-bottom:1px}
+#gen-panel input,#gen-panel select{width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:2px 4px;border-radius:2px;font-size:11px}
+#gen-panel .grow{display:flex;gap:4px;margin-top:8px}
 </style>
 </head>
 <body>
@@ -241,7 +245,15 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-orange" onclick="exportCSV()">&#8595; CSV</button>
     <button class="btn-blue" onclick="document.getElementById('file-import').click()">&#8593; Import</button>
     <button class="btn-red" onclick="clearAll()">&#10005; Clear</button>
+    <button class="btn-orange" onclick="toggleGenPanel()">&#9881; Gen</button>
     <input type="file" id="file-import" accept=".csv" style="display:none" onchange="importCSV(event)">
+  </div>
+  <div style="padding:3px 6px;background:#0d0d1a;border-bottom:1px solid #333;display:flex;align-items:center;gap:4px">
+    <span style="color:#888;font-size:10px">All spd:</span>
+    <input id="bulk-speed" type="number" value="1.0" min="0" max="1.5" step="0.1"
+           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px">
+    <span style="color:#888;font-size:10px">m/s</span>
+    <button onclick="applyBulkSpeed()" style="padding:2px 7px;font-size:11px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer">&#10003;</button>
   </div>
   <div id="status-bar">Click "+ Add WP" then click the map to place waypoints.</div>
   <div class="section">
@@ -282,6 +294,56 @@ tr:hover td{background:#1e1e3a}
     </table>
   </div>
   <div id="stats"></div>
+</div>
+<!-- ── Mission generator panel ──────────────────────────────────────── -->
+<div id="gen-panel">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+    <b style="color:#fff;font-size:12px">&#9881; Generate Mission</b>
+    <button onclick="toggleGenPanel()" style="background:none;border:none;color:#aaa;font-size:15px;cursor:pointer;padding:0 3px">&#10005;</button>
+  </div>
+  <label>Pattern</label>
+  <select id="gen-pattern" onchange="updateGenFields()">
+    <option value="grid">Grid — serpentine rows (180° U-turns)</option>
+    <option value="zigzag">Zigzag — sharp diagonal turns</option>
+    <option value="scatter">Scatter — random points</option>
+    <option value="spiral">Spiral — outward arc</option>
+  </select>
+
+  <div id="gen-grid-fields">
+    <label>Rows</label><input id="gen-rows" type="number" value="4" min="2" max="20">
+    <label>Points per row</label><input id="gen-cols" type="number" value="5" min="2" max="20">
+    <label>Row spacing (m)</label><input id="gen-row-sp" type="number" value="5" min="1">
+    <label>Col spacing (m)</label><input id="gen-col-sp" type="number" value="5" min="1">
+    <label>Heading &deg; (row direction)</label><input id="gen-hdg" type="number" value="0" min="0" max="359">
+  </div>
+  <div id="gen-zigzag-fields" style="display:none">
+    <label>Legs</label><input id="gen-legs" type="number" value="6" min="2" max="30">
+    <label>Leg length (m)</label><input id="gen-leg-len" type="number" value="10" min="2">
+    <label>Lateral step per leg (m)</label><input id="gen-leg-off" type="number" value="5" min="1">
+    <label>Heading &deg;</label><input id="gen-zhdg" type="number" value="0" min="0" max="359">
+  </div>
+  <div id="gen-scatter-fields" style="display:none">
+    <label>Points</label><input id="gen-npts" type="number" value="10" min="3" max="50">
+    <label>Radius (m)</label><input id="gen-radius" type="number" value="20" min="3">
+    <label>Seed (0 = random)</label><input id="gen-seed" type="number" value="0" min="0">
+  </div>
+  <div id="gen-spiral-fields" style="display:none">
+    <label>Turns</label><input id="gen-turns" type="number" value="3" min="1" max="10" step="0.5">
+    <label>Arm spacing (m)</label><input id="gen-arm-sp" type="number" value="5" min="1">
+    <label>Points per turn</label><input id="gen-pts-turn" type="number" value="10" min="4" max="32">
+  </div>
+
+  <label style="margin-top:7px">Speed (m/s, 0 = navigator default)</label>
+  <input id="gen-speed" type="number" value="1.0" min="0" max="1.5" step="0.1">
+  <label>Center on</label>
+  <select id="gen-center">
+    <option value="map">Map centre</option>
+    <option value="start">Start lat/lon</option>
+  </select>
+  <div class="grow">
+    <button class="btn-red" style="flex:1;padding:4px" onclick="applyGenerate(false)">&#9654; Replace</button>
+    <button class="btn-blue" style="flex:1;padding:4px" onclick="applyGenerate(true)">&#43; Append</button>
+  </div>
 </div>
 <div id="map"></div>
 
@@ -664,6 +726,113 @@ async function pollSnooped() {
 }
 setInterval(pollSnooped, 3000);
 pollSnooped();
+
+// ── Mission generator ─────────────────────────────────────────────
+function toggleGenPanel() {
+  const p = document.getElementById('gen-panel');
+  p.style.display = p.style.display === 'block' ? 'none' : 'block';
+}
+
+function updateGenFields() {
+  const pat = document.getElementById('gen-pattern').value;
+  ['grid','zigzag','scatter','spiral'].forEach(t =>
+    document.getElementById(`gen-${t}-fields`).style.display = t === pat ? 'block' : 'none');
+}
+
+function offsetLatLon(lat0, lon0, dNorth, dEast) {
+  return [lat0 + dNorth / 111320,
+          lon0 + dEast  / (111320 * Math.cos(lat0 * Math.PI / 180))];
+}
+
+function applyGenerate(append) {
+  const pat   = document.getElementById('gen-pattern').value;
+  const spd   = parseFloat(document.getElementById('gen-speed').value) || 0;
+  const cMode = document.getElementById('gen-center').value;
+  let cLat, cLon;
+  if (cMode === 'start') {
+    cLat = parseFloat(document.getElementById('s-lat').value);
+    cLon = parseFloat(document.getElementById('s-lon').value);
+  } else { const c = map.getCenter(); cLat = c.lat; cLon = c.lng; }
+
+  let newWps = [];
+
+  if (pat === 'grid') {
+    const rows  = parseInt(document.getElementById('gen-rows').value)   || 4;
+    const cols  = parseInt(document.getElementById('gen-cols').value)   || 5;
+    const rowSp = parseFloat(document.getElementById('gen-row-sp').value) || 5;
+    const colSp = parseFloat(document.getElementById('gen-col-sp').value) || 5;
+    const hdg   = (parseFloat(document.getElementById('gen-hdg').value) || 0) * Math.PI / 180;
+    const tA = colSp * (cols - 1), tP = rowSp * (rows - 1);
+    for (let r = 0; r < rows; r++) {
+      const pts = [];
+      for (let c = 0; c < cols; c++) {
+        const a = c * colSp - tA / 2, p = r * rowSp - tP / 2;
+        const [lat, lon] = offsetLatLon(cLat, cLon,
+          a * Math.cos(hdg) - p * Math.sin(hdg),
+          a * Math.sin(hdg) + p * Math.cos(hdg));
+        pts.push({lat, lon, speed: spd, hold_secs: 0});
+      }
+      if (r % 2 === 1) pts.reverse();
+      newWps.push(...pts);
+    }
+
+  } else if (pat === 'zigzag') {
+    const legs   = parseInt(document.getElementById('gen-legs').value)    || 6;
+    const legLen = parseFloat(document.getElementById('gen-leg-len').value) || 10;
+    const legOff = parseFloat(document.getElementById('gen-leg-off').value) || 5;
+    const hdg    = (parseFloat(document.getElementById('gen-zhdg').value) || 0) * Math.PI / 180;
+    const tP = legOff * (legs - 1);
+    for (let i = 0; i < legs; i++) {
+      const perp  = i * legOff - tP / 2;
+      const along = (i % 2 === 0) ? -legLen / 2 : legLen / 2;
+      const [lat, lon] = offsetLatLon(cLat, cLon,
+        along * Math.cos(hdg) - perp * Math.sin(hdg),
+        along * Math.sin(hdg) + perp * Math.cos(hdg));
+      newWps.push({lat, lon, speed: spd, hold_secs: 0});
+    }
+
+  } else if (pat === 'scatter') {
+    const nPts   = parseInt(document.getElementById('gen-npts').value)   || 10;
+    const radius = parseFloat(document.getElementById('gen-radius').value) || 20;
+    let   s      = parseInt(document.getElementById('gen-seed').value) || Date.now();
+    // Mulberry32 seeded PRNG
+    const rnd = () => { s |= 0; s = s + 0x6D2B79F5 | 0;
+      let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+    for (let i = 0; i < nPts; i++) {
+      const r = radius * Math.sqrt(rnd()), ang = rnd() * 2 * Math.PI;
+      const [lat, lon] = offsetLatLon(cLat, cLon, r * Math.cos(ang), r * Math.sin(ang));
+      newWps.push({lat, lon, speed: spd, hold_secs: 0});
+    }
+
+  } else if (pat === 'spiral') {
+    const turns   = parseFloat(document.getElementById('gen-turns').value)    || 3;
+    const armSp   = parseFloat(document.getElementById('gen-arm-sp').value)   || 5;
+    const ptsTurn = parseInt(document.getElementById('gen-pts-turn').value)   || 10;
+    const total   = Math.round(turns * ptsTurn);
+    for (let i = 0; i < total; i++) {
+      const theta = (i / ptsTurn) * 2 * Math.PI;
+      const r     = armSp * theta / (2 * Math.PI);
+      const [lat, lon] = offsetLatLon(cLat, cLon, r * Math.cos(theta - Math.PI/2), r * Math.sin(theta - Math.PI/2));
+      newWps.push({lat, lon, speed: spd, hold_secs: 0});
+    }
+  }
+
+  if (!append) { waypoints = []; clearSimOverlay(); }
+  waypoints.push(...newWps);
+  refresh();
+  if (waypoints.length) map.fitBounds(waypoints.map(w => [w.lat, w.lon]), {padding:[50,50]});
+  toggleGenPanel();
+  status(`Generated ${newWps.length} waypoints (${pat}).`);
+}
+
+// ── Bulk speed ────────────────────────────────────────────────────
+function applyBulkSpeed() {
+  const spd = parseFloat(document.getElementById('bulk-speed').value) || 0;
+  waypoints.forEach(wp => wp.speed = spd);
+  refresh();
+  status(`Speed set to ${spd} m/s on all ${waypoints.length} waypoints.`);
+}
 
 async function importSnooped() {
   const resp = await fetch('/snooped_mission');

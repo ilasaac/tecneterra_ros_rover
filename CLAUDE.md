@@ -42,7 +42,7 @@ ros_agri_rover/
     ├── start_rover1_sim.sh          ← single-command RV1 simulation launcher
     ├── start_rover2_sim.sh          ← single-command RV2 simulation launcher
     ├── sim_navigator.py             ← software-in-the-loop simulation of navigator.py (full-path Stanley + MPC + pivot turns + obstacle avoidance); importable by monitor.py or standalone CLI; reads nav params from rover1_params.yaml at import time (falls back to hardcoded defaults)
-    ├── mission_planner.py           ← web-based mission route editor + SIL simulator (HTTP :8089); satellite map, waypoint drag, obstacle polygon drawing, simulate overlays path + pivot/bypass-pivot markers
+    ├── mission_planner.py           ← web-based mission route editor + SIL simulator (HTTP :8089); satellite map, waypoint drag, obstacle polygon drawing, simulate overlays path + pivot/bypass-pivot markers; ⚙ Gen button generates test missions (Grid/Zigzag/Scatter/Spiral patterns); bulk speed control
     ├── monitor.py                   ← terminal MAVLink dashboard; rover IPs, SBUS/PPM, XTE stats; snoops GQC missions, runs SIL sim, serves Leaflet map on :8088 (HTTP) — features: auto-fit toggle, persistent zoom/center via localStorage, 5s auto-refresh
     └── mission_uploader.py          ← CSV waypoints → MAVLink mission upload
 ```
@@ -466,7 +466,18 @@ Two persistent cards at the bottom of the screen (one per rover). Each card cont
 - **HB** heartbeat dot: blinks on each received HEARTBEAT.
 - **RTK** badge: shows GPS fix type (RTK FIX, RTK FLT, DGPS, 3D FIX, NO GPS). Updated via `onGpsStatus` callback from `NAMED_VALUE_FLOAT 'RTK'` transmitted by mavlink_bridge at 1 Hz. Note: `GpsRawInt` is also sent but not used — java-mavlink 1.1.9 fails to parse it because pymavlink truncates zero extension fields per MAVLink v2 spec, leaving a 30-byte base payload that java-mavlink rejects.
 - **STATUS badge**: `NA` (grey) / `MSL` (blue) / `ARM` (orange). Transmitted via `NAMED_VALUE_FLOAT 'STATUS'` (0=NA, 1=MSL, 2=ARM). `NA` = no mission loaded; `MSL` = mission loaded, disarmed; `ARM` = armed.
+- **WP counter**: `WP: X/Y` — current waypoint / total. Updated via `NAMED_VALUE_FLOAT 'WP_ACT'` at 1 Hz. Rover decides progress; Android app does not guess.
 - Battery, temperature, tank level.
+- Passed waypoint dots are **erased** from the map as the rover reaches each waypoint (driven by `WP_ACT`, not app-side logic).
+
+### Mission auto-disarm
+When navigator publishes `wp_active = -1` (all chunks complete), `mavlink_bridge` auto-disarms, clears mission count, and publishes `MANUAL` mode. STATUS drops to `NA`. Only fires when `_pending_path_chunks` is empty (chunk boundaries do not trigger disarm).
+
+### Planned path overlay
+After every mission upload the navigator publishes the full planned path (including bypass waypoints) via `rerouted_pub` → TUNNEL to GQC. Android renders it as a **green dotted line** on the map. Bypass detour segments shown in rover color (orange RV1, cyan RV2). This fires even for plain missions with no obstacles — `mavlink_bridge` always publishes `mission_fence` (empty polygons) on mission ACK; navigator always calls `_reroute_path()` in response.
+
+### Waypoint speed recording
+`MissionAction.Waypoint.speed` is stored as `dist_m / 0.5 s` (average rover speed over the 0.5 s recording interval), clamped to `[min_speed, max_speed]` = `[0.3, 1.5]` m/s. First waypoint uses `0f` (navigator default). Sent as `z` field of `NAV_WAYPOINT` MISSION_ITEM_INT; mavlink_bridge reads `msg.z` → `wp.speed`; navigator uses it as segment target speed.
 
 ### Screen always-on
 `window.addFlags(FLAG_KEEP_SCREEN_ON)` is set in `onCreate` — screen never dims while app is running.
