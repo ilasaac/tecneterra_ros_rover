@@ -1066,7 +1066,8 @@ def simulate(waypoints:       list[SimWaypoint],
         print(f'  {"step":>5}  {"t":>5}  {"wp":>3}  {"dist":>6}  {"hdg_err":>8}  {"cte":>7}  {"steer":>6}  {"mode":>7}  {"s_clip":>8}')
 
     result_path:       list[tuple[float, float]] = [_center_pos(rover, bm)]
-    xte_log:           list[float]               = []
+    xte_log:           list[float]               = [0.0]  # one per path point (synced with result_path)
+    xte_all:           list[float]               = []     # one per step (for rms/max/avg stats)
     wps_reached:       list[int]                 = []
     t_mono             = 0.0
     prev_advanced      = 0        # tracks path_n.total_advanced (cross-chunk monotonic)
@@ -1131,16 +1132,21 @@ def simulate(waypoints:       list[SimWaypoint],
 
         rlat_new, rlon_new = _center_pos(rover, bm)
         flat_new, flon_new = _front_pos(rover, bm)
-        # Deduplicate path: pivot spins accumulate dozens of nearly-identical points
-        # (rover centre is fixed during spin) → visual smear on the map.  Only append
-        # when the rover actually moved more than 2 cm from the last recorded point.
-        if not result_path or _haversine(rlat_new, rlon_new,
-                                         result_path[-1][0], result_path[-1][1]) > 0.02:
+        cte = abs(path_n._cte_to_seg(flat_new, flon_new, best_seg))
+        xte_all.append(cte)
+        # Deduplicate path + xte_log together (must stay in sync — frontend maps
+        # xte_log[i] to the segment path[i]→path[i+1]).  Pivot spins accumulate
+        # dozens of near-identical coordinates (rover centre is fixed); skipping
+        # them eliminates the visual smear without losing any meaningful data.
+        if _haversine(rlat_new, rlon_new,
+                      result_path[-1][0], result_path[-1][1]) > 0.02:
             result_path.append((rlat_new, rlon_new))
-        cte = path_n._cte_to_seg(flat_new, flon_new, best_seg)
-        xte_log.append(abs(cte))
+            xte_log.append(cte)
+        else:
+            # Update the last recorded XTE to the worst value seen since that point.
+            xte_log[-1] = max(xte_log[-1], cte)
 
-    xte_arr  = [x for x in xte_log if x >= 0]
+    xte_arr  = xte_all  # use all steps for accurate statistics
     rms_xte  = math.sqrt(sum(x ** 2 for x in xte_arr) / len(xte_arr)) if xte_arr else 0.0
     max_xte  = max(xte_arr, default=0.0)
     avg_xte  = sum(xte_arr) / len(xte_arr) if xte_arr else 0.0
