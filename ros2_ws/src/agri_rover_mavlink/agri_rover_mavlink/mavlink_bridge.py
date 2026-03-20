@@ -624,13 +624,13 @@ class MavlinkBridgeNode(Node):
             self.get_logger().info(
                 f'Mission received: {self._mission_count} items '
                 f'({len(self._mission_buf)} waypoints, {len(self._fence_buf)} fence vertices)')
-            # Publish fence polygons to navigator (and to monitor via broadcast).
-            if self._fence_buf:
-                polys = self._parse_fence_polygons()
-                if polys:
-                    fence_msg = String()
-                    fence_msg.data = json.dumps({'polygons': polys})
-                    self.fence_pub.publish(fence_msg)
+            # Publish fence polygons to navigator — always, even if empty.
+            # An empty polygon list signals mission-complete so the navigator
+            # publishes its planned path back to GQC for the map overlay.
+            polys = self._parse_fence_polygons() if self._fence_buf else []
+            fence_msg = String()
+            fence_msg.data = json.dumps({'polygons': polys})
+            self.fence_pub.publish(fence_msg)
 
 
 def main(args=None):

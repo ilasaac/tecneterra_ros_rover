@@ -409,12 +409,15 @@ class NavigatorNode(Node):
                 exp = self._expanded_polygons[pi]
                 exp_str = '  '.join(f'{lat:.7f},{lon:.7f}' for lat, lon in exp)
                 self.get_logger().info(f'  poly[{pi}] expanded: {exp_str}')
-            if self._path_original:
-                self._reroute_path()
-            else:
-                self.get_logger().warn(
-                    'Obstacle fence arrived before waypoints — reroute deferred '
-                    '(will trigger on next waypoint via _cb_mission)')
+
+        # Always reroute when we have a path — with no obstacles this just publishes
+        # the plain mission path to GQC for the map overlay.
+        if self._path_original:
+            self._reroute_path()
+        elif self._obstacle_polygons:
+            self.get_logger().warn(
+                'Obstacle fence arrived before waypoints — reroute deferred '
+                '(will trigger on next waypoint via _cb_mission)')
         else:
             self.get_logger().info('Obstacle fence: empty (no polygons)')
 
