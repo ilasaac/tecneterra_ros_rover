@@ -56,20 +56,31 @@
             android:layout_marginStart="4dp"
             android:contentDescription="Planner menu" />
 
+        <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1"/>
+
+        <TextView
+            android:id="@+id/ledRec"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="&#x25CF;"
+            android:textColor="#444444"
+            android:textSize="10sp"
+            android:visibility="gone"
+            android:layout_marginEnd="3dp" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnRec"
             android:layout_width="wrap_content"
             android:layout_height="36dp"
             android:text="REC"
-            android:backgroundTint="#C62828"
+            android:backgroundTint="#37474F"
             android:textColor="#FFFFFF"
             android:textSize="11sp"
             android:paddingStart="12dp"
             android:paddingEnd="12dp"
             android:visibility="gone"
-            android:layout_marginStart="4dp"
             app:strokeWidth="0dp"
-            app:strokeColor="#FFD600" />
+            app:strokeColor="@android:color/transparent" />
 
         <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1"/>
 

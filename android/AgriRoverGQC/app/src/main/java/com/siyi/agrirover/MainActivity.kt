@@ -71,6 +71,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var txtRv2Tank:  TextView
     private lateinit var txtRv2Rtk:   TextView
     private lateinit var txtRcChannels:  TextView   // RC PPM strip
+    private lateinit var ledRec:         TextView
     private lateinit var btnPlannerMenu: ImageButton
     private lateinit var btnRec:         MaterialButton
     private lateinit var btnLayers:      FloatingActionButton
@@ -277,6 +278,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         txtRv2Rtk             = findViewById(R.id.txtRv2Rtk)
         txtRcChannels         = findViewById(R.id.txtRcChannels)
         btnPlannerMenu        = findViewById(R.id.btnPlannerMenu)
+        ledRec                = findViewById(R.id.ledRec)
         btnRec                = findViewById(R.id.btnRec)
         btnLayers             = findViewById(R.id.btnLayers)
         btnCenter             = findViewById(R.id.btnCenter)
@@ -291,7 +293,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         mapFragment.getMapAsync(this)
 
         setupListeners()
-        setMode(AppMode.MANUAL)
+        setMode(AppMode.PLANNER)
         roverManager.startListening(this)
     }
 
@@ -391,8 +393,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = pwm))
         }
         btnRec.text = "STOP"
-        btnRec.strokeWidth = (3 * resources.displayMetrics.density + 0.5f).toInt()
-        btnRec.strokeColor = ColorStateList.valueOf(Color.parseColor("#FFD600"))
+        ledRec.setTextColor(Color.parseColor("#FF1744"))
         recordHandler.post(recordRunnable)
         Toast.makeText(this, "Recording…", Toast.LENGTH_SHORT).show()
     }
@@ -401,7 +402,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         isRecording = false
         recordHandler.removeCallbacks(recordRunnable)
         btnRec.text = "REC"
-        btnRec.strokeWidth = 0
+        ledRec.setTextColor(Color.parseColor("#444444"))
         val wpCount  = recordedMission.filterIsInstance<MissionAction.Waypoint>().size
         val srvCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
         Toast.makeText(this,
@@ -836,12 +837,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun showModeMenu(view: View) {
         val popup = PopupMenu(this, view)
-        popup.menu.add("Manual Mode")
         popup.menu.add("Mission Planner")
         popup.menu.add("Auto Mode")
         popup.setOnMenuItemClickListener { item ->
             when (item.title) {
-                "Manual Mode"     -> setMode(AppMode.MANUAL)
                 "Mission Planner" -> setMode(AppMode.PLANNER)
                 "Auto Mode"       -> setMode(AppMode.AUTO)
             }
@@ -917,6 +916,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         currentMode = mode
         touchOverlay.visibility   = View.GONE
         btnPlannerMenu.visibility = View.GONE
+        ledRec.visibility         = View.GONE
         btnRec.visibility         = View.GONE
         btnStart.visibility       = View.GONE
         btnStop.visibility        = View.GONE
@@ -925,6 +925,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             AppMode.PLANNER -> {
                 btnModeMenu.text          = "MODE: PLANNER"
                 btnPlannerMenu.visibility = View.VISIBLE
+                ledRec.visibility         = View.VISIBLE
                 btnRec.visibility         = View.VISIBLE
             }
             AppMode.AUTO    -> {
