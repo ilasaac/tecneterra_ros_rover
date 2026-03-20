@@ -20,46 +20,279 @@
         android:background="#00000000"
         android:visibility="gone" />
 
-    <!-- ── Top status bar ──────────────────────────────────────────────── -->
+    <!-- ── Command bar ──────────────────────────────────────────────────── -->
     <LinearLayout
         android:id="@+id/topBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#80000000"
-        android:padding="8dp"
+        android:background="#CC0D1117"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
         android:orientation="horizontal"
+        android:gravity="center_vertical"
         app:layout_constraintTop_toTopOf="parent">
 
         <Button
             android:id="@+id/btnModeMenu"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_height="36dp"
             android:text="MODE: MANUAL"
-            android:backgroundTint="#FF9800" />
+            android:textSize="11sp"
+            android:textColor="#FF9800"
+            android:backgroundTint="#1A2030"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp" />
 
         <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1"/>
 
         <Button
             android:id="@+id/btnEStop"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_height="36dp"
             android:text="E-STOP"
-            android:backgroundTint="#FF0000"
-            android:textStyle="bold" />
+            android:backgroundTint="#B71C1C"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:textSize="12sp"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp" />
+    </LinearLayout>
 
-        <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1"/>
+    <!-- ── Dual rover HUD ──────────────────────────────────────────────── -->
+    <LinearLayout
+        android:id="@+id/roverHud"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#CC0D1117"
+        android:orientation="horizontal"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp"
+        android:paddingBottom="4dp"
+        app:layout_constraintTop_toBottomOf="@id/topBar">
 
-        <TextView
-            android:id="@+id/txtConnection"
-            android:layout_width="wrap_content"
+        <!-- RV1 card -->
+        <LinearLayout
+            android:id="@+id/rv1Card"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="●"
-            android:textColor="#FF9800"
-            android:textSize="20sp"
-            android:layout_marginEnd="8dp" />
-        <TextView android:id="@+id/txtBattery" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="B: --%" android:textColor="#FFF" android:layout_marginEnd="8dp"/>
-        <TextView android:id="@+id/txtTank"    android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="T: --%" android:textColor="#FFF" android:layout_marginEnd="8dp"/>
-        <TextView android:id="@+id/txtTemp"    android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="C: --°" android:textColor="#FFF"/>
+            android:layout_weight="1"
+            android:background="#22FF3333"
+            android:orientation="vertical"
+            android:padding="6dp"
+            android:layout_marginEnd="3dp">
+
+            <!-- Header: label + HB dot + RTK badge -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="RV1"
+                    android:textColor="#FF4444"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:layout_marginEnd="4dp" />
+
+                <TextView
+                    android:id="@+id/dotRv1Hb"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="&#x25CF;"
+                    android:textColor="#888888"
+                    android:textSize="9sp" />
+
+                <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1"/>
+
+                <TextView
+                    android:id="@+id/txtRv1Rtk"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="NO GPS"
+                    android:textColor="#888888"
+                    android:textSize="9sp"
+                    android:background="#33FFFFFF"
+                    android:paddingStart="4dp"
+                    android:paddingEnd="4dp"
+                    android:paddingTop="1dp"
+                    android:paddingBottom="1dp" />
+            </LinearLayout>
+
+            <!-- Sensor row: battery, temperature, tank -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="3dp">
+
+                <TextView
+                    android:id="@+id/txtRv1Bat"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="BAT: --%"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="9sp"
+                    android:layout_marginEnd="6dp" />
+
+                <TextView
+                    android:id="@+id/txtRv1Temp"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="TMP: --&#xB0;"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="9sp"
+                    android:layout_marginEnd="6dp" />
+
+                <TextView
+                    android:id="@+id/txtRv1Tank"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="TNK: --%"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="9sp" />
+            </LinearLayout>
+
+            <!-- Link row: SBUS indicator -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="2dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="SBUS "
+                    android:textColor="#666666"
+                    android:textSize="8sp" />
+
+                <TextView
+                    android:id="@+id/dotRv1Sbus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="&#x25CF;"
+                    android:textColor="#888888"
+                    android:textSize="10sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- RV2 card -->
+        <LinearLayout
+            android:id="@+id/rv2Card"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="#222244FF"
+            android:orientation="vertical"
+            android:padding="6dp"
+            android:layout_marginStart="3dp">
+
+            <!-- Header: label + HB dot + RTK badge -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="RV2"
+                    android:textColor="#4488FF"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:layout_marginEnd="4dp" />
+
+                <TextView
+                    android:id="@+id/dotRv2Hb"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="&#x25CF;"
+                    android:textColor="#888888"
+                    android:textSize="9sp" />
+
+                <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1"/>
+
+                <TextView
+                    android:id="@+id/txtRv2Rtk"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="NO GPS"
+                    android:textColor="#888888"
+                    android:textSize="9sp"
+                    android:background="#33FFFFFF"
+                    android:paddingStart="4dp"
+                    android:paddingEnd="4dp"
+                    android:paddingTop="1dp"
+                    android:paddingBottom="1dp" />
+            </LinearLayout>
+
+            <!-- Sensor row: battery, temperature, tank -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="3dp">
+
+                <TextView
+                    android:id="@+id/txtRv2Bat"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="BAT: --%"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="9sp"
+                    android:layout_marginEnd="6dp" />
+
+                <TextView
+                    android:id="@+id/txtRv2Temp"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="TMP: --&#xB0;"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="9sp"
+                    android:layout_marginEnd="6dp" />
+
+                <TextView
+                    android:id="@+id/txtRv2Tank"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="TNK: --%"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="9sp" />
+            </LinearLayout>
+
+            <!-- Link row: RF (LoRa) indicator -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="2dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="RF "
+                    android:textColor="#666666"
+                    android:textSize="8sp" />
+
+                <TextView
+                    android:id="@+id/dotRv2Rf"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="&#x25CF;"
+                    android:textColor="#888888"
+                    android:textSize="10sp" />
+            </LinearLayout>
+        </LinearLayout>
     </LinearLayout>
 
     <!-- ── RC channel strip (PPM µs values from RP2040 via HM30 SBUS) ── -->
@@ -73,7 +306,7 @@
         android:paddingTop="2dp"
         android:paddingBottom="2dp"
         android:orientation="horizontal"
-        app:layout_constraintTop_toBottomOf="@id/topBar">
+        app:layout_constraintTop_toBottomOf="@id/roverHud">
 
         <TextView
             android:id="@+id/txtRcChannels"
@@ -115,18 +348,63 @@
         android:id="@+id/plannerToolbar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#AA000000"
+        android:background="#CC0D1117"
         android:gravity="center"
-        android:padding="10dp"
+        android:padding="8dp"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent">
 
-        <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/btnSave" android:layout_width="wrap_content" android:layout_height="wrap_content" android:src="@android:drawable/ic_menu_save" android:layout_margin="5dp"/>
-        <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/btnLoad" android:layout_width="wrap_content" android:layout_height="wrap_content" android:src="@android:drawable/ic_menu_upload" android:layout_margin="5dp"/>
-        <Button android:id="@+id/btnRec" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="⏺ REC" android:backgroundTint="#F44336" android:layout_margin="5dp"/>
-        <Button android:id="@+id/btnObs" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="OBS" android:backgroundTint="#FF9800" android:layout_margin="5dp"/>
-        <Button android:id="@+id/btnUpload" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="UPLOAD" android:backgroundTint="#2196F3" android:layout_margin="5dp"/>
-        <Button android:id="@+id/btnClearPlanner" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="CLEAR" android:layout_margin="5dp"/>
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/btnSave"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:src="@android:drawable/ic_menu_save"
+            app:backgroundTint="#37474F"
+            android:layout_margin="5dp"/>
+
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/btnLoad"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:src="@android:drawable/ic_menu_upload"
+            app:backgroundTint="#37474F"
+            android:layout_margin="5dp"/>
+
+        <Button
+            android:id="@+id/btnRec"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="REC"
+            android:backgroundTint="#C62828"
+            android:textColor="#FFFFFF"
+            android:layout_margin="5dp"/>
+
+        <Button
+            android:id="@+id/btnObs"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="OBS"
+            android:backgroundTint="#E65100"
+            android:textColor="#FFFFFF"
+            android:layout_margin="5dp"/>
+
+        <Button
+            android:id="@+id/btnUpload"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="UPLOAD"
+            android:backgroundTint="#00695C"
+            android:textColor="#FFFFFF"
+            android:layout_margin="5dp"/>
+
+        <Button
+            android:id="@+id/btnClearPlanner"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="CLEAR"
+            android:backgroundTint="#37474F"
+            android:textColor="#FFFFFF"
+            android:layout_margin="5dp"/>
     </LinearLayout>
 
     <!-- ── Auto toolbar (bottom) ───────────────────────────────────────── -->
@@ -134,18 +412,58 @@
         android:id="@+id/autoToolbar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#AA000000"
+        android:background="#CC0D1117"
         android:gravity="center"
-        android:padding="10dp"
+        android:padding="8dp"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent">
 
-        <Button android:id="@+id/btnToggleR1" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="R1" android:backgroundTint="#F44336" android:layout_margin="5dp" android:minWidth="48dp"/>
-        <Button android:id="@+id/btnToggleR2" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="R2" android:backgroundTint="#2196F3" android:layout_margin="5dp" android:minWidth="48dp"/>
-        <Button android:id="@+id/btnStart" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="START" android:backgroundTint="#4CAF50" android:layout_margin="5dp"/>
-        <Button android:id="@+id/btnStop" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="PAUSE" android:backgroundTint="#FF9800" android:layout_margin="5dp"/>
-        <Button android:id="@+id/btnClear" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="CLEAR" android:layout_margin="5dp"/>
-    </LinearLayout>
+        <Button
+            android:id="@+id/btnToggleR1"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="RV1"
+            android:backgroundTint="#C62828"
+            android:textColor="#FFFFFF"
+            android:layout_margin="5dp"
+            android:minWidth="52dp"/>
 
+        <Button
+            android:id="@+id/btnToggleR2"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="RV2"
+            android:backgroundTint="#1565C0"
+            android:textColor="#FFFFFF"
+            android:layout_margin="5dp"
+            android:minWidth="52dp"/>
+
+        <Button
+            android:id="@+id/btnStart"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="START"
+            android:backgroundTint="#2E7D32"
+            android:textColor="#FFFFFF"
+            android:layout_margin="5dp"/>
+
+        <Button
+            android:id="@+id/btnStop"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="PAUSE"
+            android:backgroundTint="#E65100"
+            android:textColor="#FFFFFF"
+            android:layout_margin="5dp"/>
+
+        <Button
+            android:id="@+id/btnClear"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="CLEAR"
+            android:backgroundTint="#37474F"
+            android:textColor="#FFFFFF"
+            android:layout_margin="5dp"/>
+    </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

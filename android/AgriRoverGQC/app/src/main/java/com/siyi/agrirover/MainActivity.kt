@@ -58,12 +58,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var plannerToolbar: LinearLayout
     private lateinit var autoToolbar: LinearLayout
 
-    // Status & Buttons
-    private lateinit var txtBattery:     TextView
-    private lateinit var txtTank:        TextView
-    private lateinit var txtTemp:        TextView
-    private lateinit var txtConnection:  TextView   // ● connection dot
-    private lateinit var txtRcChannels:  TextView   // RC PPM strip
+    // Per-rover HUD panels
+    private lateinit var dotRv1Hb:    TextView
+    private lateinit var dotRv2Hb:    TextView
+    private lateinit var dotRv1Sbus:  TextView
+    private lateinit var dotRv2Rf:    TextView
+    private lateinit var txtRv1Bat:   TextView
+    private lateinit var txtRv1Temp:  TextView
+    private lateinit var txtRv1Tank:  TextView
+    private lateinit var txtRv1Rtk:   TextView
+    private lateinit var txtRv2Bat:   TextView
+    private lateinit var txtRv2Temp:  TextView
+    private lateinit var txtRv2Tank:  TextView
+    private lateinit var txtRv2Rtk:   TextView
+    private lateinit var txtRcChannels: TextView   // RC PPM strip
     private lateinit var btnSave:        FloatingActionButton
     private lateinit var btnLoad:        FloatingActionButton
     private lateinit var btnLayers:      FloatingActionButton
@@ -168,13 +176,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
         },
         onSensorUpdate = { sysId, bat, temp, tank, _ ->
-            runOnUiThread {
-                if (sysId == selectedRoverId) {
-                    if (bat  != -1f) txtBattery.text = "B: ${bat.toInt()}%"
-                    if (temp != -1f) txtTemp.text    = "C: %.1f°".format(temp)
-                    if (tank != -1f) txtTank.text    = "T: %.0f%%".format(tank)
-                }
-            }
+            runOnUiThread { updateRoverSensors(sysId, bat, temp, tank) }
         },
 
         onArmState = { sysId, armed ->
@@ -215,7 +217,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         },
 
         onConnectionChange = { sysId, connected ->
-            runOnUiThread { updateConnectionDot(sysId, connected) }
+            runOnUiThread { updateHbDot(sysId, connected) }
         },
 
         // RC_CHANNELS (#65) — PPM µs values from RP2040 (physical RC sticks via HM30/SBUS)
@@ -238,6 +240,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     updateRcStrip(sysId)
                     if (isRecording) checkAuxChannelChanges(channels)
                 }
+                updateLinkIndicators(sysId)
             }
         },
 
@@ -253,6 +256,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 redrawReroutedPath(sysId)
             }
         },
+
+        onGpsStatus = { sysId, fixType ->
+            runOnUiThread { updateRtkLabel(sysId, fixType) }
+        },
     )
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -266,10 +273,18 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnModeMenu           = findViewById(R.id.btnModeMenu)
         plannerToolbar        = findViewById(R.id.plannerToolbar)
         autoToolbar           = findViewById(R.id.autoToolbar)
-        txtBattery            = findViewById(R.id.txtBattery)
-        txtTank               = findViewById(R.id.txtTank)
-        txtTemp               = findViewById(R.id.txtTemp)
-        txtConnection         = findViewById(R.id.txtConnection)
+        dotRv1Hb              = findViewById(R.id.dotRv1Hb)
+        dotRv2Hb              = findViewById(R.id.dotRv2Hb)
+        dotRv1Sbus            = findViewById(R.id.dotRv1Sbus)
+        dotRv2Rf              = findViewById(R.id.dotRv2Rf)
+        txtRv1Bat             = findViewById(R.id.txtRv1Bat)
+        txtRv1Temp            = findViewById(R.id.txtRv1Temp)
+        txtRv1Tank            = findViewById(R.id.txtRv1Tank)
+        txtRv1Rtk             = findViewById(R.id.txtRv1Rtk)
+        txtRv2Bat             = findViewById(R.id.txtRv2Bat)
+        txtRv2Temp            = findViewById(R.id.txtRv2Temp)
+        txtRv2Tank            = findViewById(R.id.txtRv2Tank)
+        txtRv2Rtk             = findViewById(R.id.txtRv2Rtk)
         txtRcChannels         = findViewById(R.id.txtRcChannels)
         btnSave               = findViewById(R.id.btnSave)
         btnLoad               = findViewById(R.id.btnLoad)
@@ -287,11 +302,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnToggleR2           = findViewById(R.id.btnToggleR2)
 
         loadStations()
-
-        // Hotspot mode: app auto-discovers rovers via broadcast — no target IP needed.
-        // Just start listening; rovers will reply to us once they receive our heartbeat.
-        txtConnection.text      = "● Waiting…"
-        txtConnection.setTextColor(Color.parseColor("#FF9800"))
 
         val mapFragment = supportFragmentManager
             .findFragmentById(R.id.map) as SupportMapFragment
@@ -445,7 +455,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             lastAuxPwm[i] = pwm
             recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = pwm))
         }
-        btnRec.text = "⏹ STOP"
+        btnRec.text = "STOP"
         btnRec.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#607D8B"))
         recordHandler.post(recordRunnable)
         Toast.makeText(this, "Recording…", Toast.LENGTH_SHORT).show()
@@ -454,7 +464,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun stopRecording() {
         isRecording = false
         recordHandler.removeCallbacks(recordRunnable)
-        btnRec.text = "⏺ REC"
+        btnRec.text = "REC"
         btnRec.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#F44336"))
         val wpCount  = recordedMission.filterIsInstance<MissionAction.Waypoint>().size
         val srvCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
@@ -517,18 +527,47 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    // ─── Connection indicator ────────────────────────────────────────────────
+    // ─── Per-rover HUD helpers ───────────────────────────────────────────────
 
-    private fun updateConnectionDot(sysId: Int, connected: Boolean) {
-        if (connected) {
-            txtConnection.setTextColor(Color.GREEN)
-            txtConnection.text = "● R$sysId"
-        } else {
-            txtConnection.setTextColor(Color.RED)
-            txtConnection.text = "● Lost R$sysId"
-        }
-        // Refresh RC strip when selected rover connection changes
+    private fun updateHbDot(sysId: Int, connected: Boolean) {
+        val dot = if (sysId == 1) dotRv1Hb else dotRv2Hb
+        dot.setTextColor(
+            if (connected) Color.parseColor("#4CAF50") else Color.parseColor("#F44336"))
         if (sysId == selectedRoverId) updateRcStrip(sysId)
+    }
+
+    private fun updateRoverSensors(sysId: Int, bat: Float, temp: Float, tank: Float) {
+        val batView  = if (sysId == 1) txtRv1Bat  else txtRv2Bat
+        val tempView = if (sysId == 1) txtRv1Temp else txtRv2Temp
+        val tankView = if (sysId == 1) txtRv1Tank else txtRv2Tank
+        if (bat  != -1f) batView.text  = "BAT: ${bat.toInt()}%"
+        if (temp != -1f) tempView.text = "TMP: %.1f°".format(temp)
+        if (tank != -1f) tankView.text = "TNK: %.0f%%".format(tank)
+    }
+
+    private fun updateRtkLabel(sysId: Int, fixType: Int) {
+        val (text, colorHex) = when (fixType) {
+            6    -> "RTK FIX" to "#4CAF50"
+            5    -> "RTK FLT" to "#FFC107"
+            4    -> "DGPS"    to "#00BCD4"
+            3    -> "3D FIX"  to "#FFFFFF"
+            2    -> "2D FIX"  to "#FF9800"
+            1    -> "NO FIX"  to "#F44336"
+            else -> "NO GPS"  to "#888888"
+        }
+        val view = if (sysId == 1) txtRv1Rtk else txtRv2Rtk
+        view.text = text
+        view.setTextColor(Color.parseColor(colorHex))
+    }
+
+    private fun updateLinkIndicators(sysId: Int) {
+        val channels = roverPpmChannels[sysId]
+        val valid = channels != null && (channels.getOrNull(2) ?: 65535) != 65535
+        val color = if (valid) Color.parseColor("#4CAF50") else Color.parseColor("#888888")
+        when (sysId) {
+            1 -> dotRv1Sbus.setTextColor(color)  // RV1: SBUS link from HM30
+            2 -> dotRv2Rf.setTextColor(color)    // RV2: RF (LoRa) link from master RP2040
+        }
     }
 
     // ─── Link mismatch warning ───────────────────────────────────────────────

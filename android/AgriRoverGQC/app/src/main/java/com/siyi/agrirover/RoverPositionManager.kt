@@ -67,6 +67,11 @@ class RoverPositionManager(
      * An empty list means the path was cleared.
      */
     private val onReroutedPath:     (Int, List<Triple<Double, Double, Boolean>>) -> Unit,
+    /**
+     * Called when GPS_RAW_INT (#24) is received.
+     * fixType: 0=NO_GPS  1=NO_FIX  2=2D  3=3D  4=DGPS  5=RTK_FLOAT  6=RTK_FIXED
+     */
+    private val onGpsStatus:        (Int, Int) -> Unit,
 ) {
     private val PORT        = 14550
     private val MASTER_SYSID = 1
@@ -589,6 +594,12 @@ class RoverPositionManager(
                 scope.launch(Dispatchers.Main) { onRcChannels(senderId, channels) }
                 // Re-check mismatch whenever master's actual RC state changes
                 if (senderId == MASTER_SYSID) checkLinkMismatch()
+            }
+
+            // GPS_RAW_INT (#24) — GPS fix type and quality
+            is GpsRawInt -> {
+                val fixType = payload.fixType().value()
+                scope.launch(Dispatchers.Main) { onGpsStatus(senderId, fixType) }
             }
 
             // TUNNEL (#385) payload_type=0x5250 — rerouted path chunks from navigator
