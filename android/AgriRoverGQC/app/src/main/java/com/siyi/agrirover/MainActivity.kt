@@ -353,6 +353,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         // START — arm then set AUTO mode
         btnStart.setOnClickListener {
+            val missionStart = roverMissions[selectedRoverId]?.firstOrNull()
+            val roverPos     = roverPositions[selectedRoverId]
+            if (missionStart == null) {
+                Toast.makeText(this, "No mission uploaded", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (roverPos == null || distanceMeters(roverPos, missionStart) > 0.5) {
+                AlertDialog.Builder(this)
+                    .setTitle("Too far from start")
+                    .setMessage("Move the rover manually to the starting position")
+                    .setPositiveButton("OK", null)
+                    .show()
+                return@setOnClickListener
+            }
             roverManager.sendCommand(selectedRoverId, 400, 1f, 0f)  // ARM
             Handler(Looper.getMainLooper()).postDelayed({
                 roverManager.sendCommand(selectedRoverId, 176, 1f, 3f)  // AUTO
@@ -722,6 +736,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     ?.also { overlays.add(it) }
             }
         }
+    }
+
+    private fun distanceMeters(a: LatLng, b: LatLng): Double {
+        val R    = 6371000.0
+        val lat1 = Math.toRadians(a.latitude)
+        val lat2 = Math.toRadians(b.latitude)
+        val dLat = Math.toRadians(b.latitude - a.latitude)
+        val dLon = Math.toRadians(b.longitude - a.longitude)
+        val h    = sin(dLat / 2).pow(2) + cos(lat1) * cos(lat2) * sin(dLon / 2).pow(2)
+        return 2 * R * asin(sqrt(h))
     }
 
     private fun createDotBitmap(color: Int, sizeDp: Int): BitmapDescriptor {
