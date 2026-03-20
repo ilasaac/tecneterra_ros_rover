@@ -665,6 +665,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 routeOverlays.add(map.addPolyline(
                     PolylineOptions().addAll(pending).width(8f).color(Color.parseColor("#F44336"))))
             }
+            routePoints.forEachIndexed { i, pt ->
+                val dotColor = if (i == 0) Color.parseColor("#FFD600") else Color.WHITE
+                map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
+                    .icon(createDotBitmap(dotColor, 12)).flat(true))
+                    ?.also { routeOverlays.add(it) }
+            }
         }
     }
 
@@ -700,7 +706,22 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 overlays.add(map.addPolyline(
                     PolylineOptions().addAll(pending).width(8f).color(pendingColor)))
             }
+            // Waypoint dots
+            points.forEachIndexed { i, pt ->
+                val dotColor = if (i == 0) Color.parseColor("#FFD600") else Color.WHITE
+                map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
+                    .icon(createDotBitmap(dotColor, 12)).flat(true))
+                    ?.also { overlays.add(it) }
+            }
         }
+    }
+
+    private fun createDotBitmap(color: Int, sizeDp: Int): BitmapDescriptor {
+        val px = (sizeDp * resources.displayMetrics.density + 0.5f).toInt()
+        val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).drawCircle(px / 2f, px / 2f, px / 2f,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color })
+        return BitmapDescriptorFactory.fromBitmap(bmp)
     }
 
     // ─── Rerouted path drawing ────────────────────────────────────────────────
