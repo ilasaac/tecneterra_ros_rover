@@ -849,8 +849,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     /**
      * Draw the rerouted path for [roverId] as a dashed overlay.
-     * Color: orange (#FF9800) for RV1, cyan (#00BCD4) for RV2.
-     * Bypass segments are drawn with the rover color; original segments in gray.
+     * Original path: green (#4CAF50) dots. Bypass detour segments: rover color
+     * (orange #FF9800 for RV1, cyan #00BCD4 for RV2).
      * Called whenever a new rerouted path arrives via TUNNEL.
      */
     private fun redrawReroutedPath(roverId: Int) {
@@ -869,15 +869,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         if (path.isEmpty()) return
 
         val overlays = reroutedPathOverlays[roverId]!!
+        // Bypass detour segments shown in rover color; original path in green
         val roverColor = if (roverId == 1) Color.parseColor("#FF9800")
                          else              Color.parseColor("#00BCD4")
+        val plannedColor = Color.parseColor("#4CAF50")
         val pattern = listOf<com.google.android.gms.maps.model.PatternItem>(
-            com.google.android.gms.maps.model.Dash(24f),
-            com.google.android.gms.maps.model.Gap(12f)
+            com.google.android.gms.maps.model.Dot(),
+            com.google.android.gms.maps.model.Gap(10f)
         )
 
         // Walk the path and emit a new polyline segment each time isBypass toggles
-        // so bypass segments get the rover color and original segments get gray.
         var segStart = 0
         var segBypass = path[0].third
         for (i in 1..path.size) {
@@ -885,10 +886,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             if (flip) {
                 val pts = path.slice(segStart until i)
                     .map { LatLng(it.first, it.second) }
-                val color = if (segBypass) roverColor
-                            else           Color.argb(200, 160, 160, 160)
+                val color = if (segBypass) roverColor else plannedColor
                 overlays.add(map.addPolyline(
-                    PolylineOptions().addAll(pts).width(5f).color(color).pattern(pattern)
+                    PolylineOptions().addAll(pts).width(6f).color(color).pattern(pattern)
                 ))
                 if (i < path.size) {
                     segStart  = i - 1   // overlap by 1 pt so segments connect
