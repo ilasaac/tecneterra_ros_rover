@@ -38,6 +38,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val roverPositions  = HashMap<Int, LatLng>()
     private val roverModes      = HashMap<Int, AppMode>()
     private val roverArmed      = HashMap<Int, Boolean>()
+    private val roverNavStatus  = HashMap<Int, String>()   // "NA" | "MSL" | "ARM"
     private val roverPpmChannels = HashMap<Int, IntArray>()   // latest RC_CHANNELS per rover
 
     // Per-rover uploaded missions
@@ -64,11 +65,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var txtRv1Bat:   TextView
     private lateinit var txtRv1Temp:  TextView
     private lateinit var txtRv1Tank:  TextView
-    private lateinit var txtRv1Rtk:   TextView
+    private lateinit var txtRv1Rtk:    TextView
+    private lateinit var txtRv1Status: TextView
     private lateinit var txtRv2Bat:   TextView
     private lateinit var txtRv2Temp:  TextView
     private lateinit var txtRv2Tank:  TextView
-    private lateinit var txtRv2Rtk:   TextView
+    private lateinit var txtRv2Rtk:    TextView
+    private lateinit var txtRv2Status: TextView
     private lateinit var txtRcChannels:  TextView   // RC PPM strip
     private lateinit var btnPlannerMenu: ImageButton
     private lateinit var btnRec:         FloatingActionButton
@@ -251,6 +254,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         onGpsStatus = { sysId, fixType ->
             runOnUiThread { updateRtkLabel(sysId, fixType) }
         },
+
+        onNavStatus = { sysId, status ->
+            runOnUiThread {
+                roverNavStatus[sysId] = status
+                updateNavStatus(sysId, status)
+            }
+        },
     )
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -270,10 +280,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         txtRv1Temp            = findViewById(R.id.txtRv1Temp)
         txtRv1Tank            = findViewById(R.id.txtRv1Tank)
         txtRv1Rtk             = findViewById(R.id.txtRv1Rtk)
+        txtRv1Status          = findViewById(R.id.txtRv1Status)
         txtRv2Bat             = findViewById(R.id.txtRv2Bat)
         txtRv2Temp            = findViewById(R.id.txtRv2Temp)
         txtRv2Tank            = findViewById(R.id.txtRv2Tank)
         txtRv2Rtk             = findViewById(R.id.txtRv2Rtk)
+        txtRv2Status          = findViewById(R.id.txtRv2Status)
         txtRcChannels         = findViewById(R.id.txtRcChannels)
         btnPlannerMenu        = findViewById(R.id.btnPlannerMenu)
         btnRec                = findViewById(R.id.btnRec)
@@ -356,6 +368,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             val roverPos     = roverPositions[selectedRoverId]
             if (missionStart == null) {
                 Toast.makeText(this, "No mission uploaded", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (roverNavStatus[selectedRoverId] == "NA") {
+                Toast.makeText(this, "No mission loaded on rover", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             if (roverPos == null || distanceMeters(roverPos, missionStart) > 0.5) {
@@ -500,6 +516,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             else -> "NO GPS"  to "#888888"
         }
         val view = if (sysId == 1) txtRv1Rtk else txtRv2Rtk
+        view.text = text
+        view.setTextColor(Color.parseColor(colorHex))
+    }
+
+    private fun updateNavStatus(sysId: Int, status: String) {
+        val (text, colorHex) = when (status) {
+            "ARM" -> "ARM" to "#FF9800"
+            "MSL" -> "MSL" to "#2196F3"
+            else  -> "NA"  to "#888888"
+        }
+        val view = if (sysId == 1) txtRv1Status else txtRv2Status
         view.text = text
         view.setTextColor(Color.parseColor(colorHex))
     }

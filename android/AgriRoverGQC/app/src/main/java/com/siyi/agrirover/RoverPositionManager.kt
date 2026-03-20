@@ -72,6 +72,8 @@ class RoverPositionManager(
      * fixType: 0=NO_GPS  1=NO_FIX  2=2D  3=3D  4=DGPS  5=RTK_FLOAT  6=RTK_FIXED
      */
     private val onGpsStatus:        (Int, Int) -> Unit,
+    /** Called when NAMED_VALUE_FLOAT "STATUS" is received. status: "NA" | "MSL" | "ARM" */
+    private val onNavStatus:        (Int, String) -> Unit,
 ) {
     private val PORT        = 14550
     private val MASTER_SYSID = 1
@@ -568,11 +570,19 @@ class RoverPositionManager(
                 val name  = payload.name().trimEnd('\u0000')
                 val value = payload.value()
                 when (name) {
-                    "TANK"  -> scope.launch(Dispatchers.Main) {
+                    "TANK"   -> scope.launch(Dispatchers.Main) {
                         onSensorUpdate(senderId, -1f, -1f, value, -1f)
                     }
-                    "HUMID" -> scope.launch(Dispatchers.Main) {
+                    "HUMID"  -> scope.launch(Dispatchers.Main) {
                         onSensorUpdate(senderId, -1f, -1f, -1f, value)
+                    }
+                    "STATUS" -> {
+                        val s = when {
+                            value >= 2f -> "ARM"
+                            value >= 1f -> "MSL"
+                            else        -> "NA"
+                        }
+                        scope.launch(Dispatchers.Main) { onNavStatus(senderId, s) }
                     }
                 }
             }

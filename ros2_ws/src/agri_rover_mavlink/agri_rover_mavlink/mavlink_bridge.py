@@ -306,6 +306,7 @@ class MavlinkBridgeNode(Node):
 
     def _send_named_values(self):
         t = self._uptime_ms()
+        nav_status = 2.0 if self._armed else (1.0 if self._mission_count > 0 else 0.0)
         pairs = [
             ('TANK',     self._sensors.tank_level),
             ('TEMP',     self._sensors.temperature),
@@ -316,6 +317,7 @@ class MavlinkBridgeNode(Node):
             ('WP_ACT',   float(self._wp_active)),
             ('WP_TOT',   float(self._mission_count)),
             ('XTE',      self._xte),
+            ('STATUS',   nav_status),
         ]
         for name, value in pairs:
             self._send(self._mav.mav.named_value_float_encode(
