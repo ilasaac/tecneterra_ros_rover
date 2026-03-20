@@ -109,13 +109,8 @@ def _load_rover_params(rover: int = 1) -> dict:
         with open(cfg_path) as fh:
             raw = _yaml.safe_load(fh)
         nav_params = raw.get(f'/rv{rover}/navigator', {}).get('ros__parameters', {})
-        # Only copy keys that DEFAULT_NAV knows about (exclude sim-only keys like max_timeout).
-        # Also exclude 'default_acceptance_radius': mavlink_bridge hardcodes wp.acceptance_radius=0.3
-        # for all uploaded missions, so the YAML value only affects navigator's bypass waypoints —
-        # not the SIL sim.  The sim needs its own 0.4 m default so discrete 25 Hz steps reliably
-        # trigger waypoint arrival; 0.1 m is too tight and causes timeout on every route.
-        _SIM_EXCLUDE = {'default_acceptance_radius'}
-        overrides = {k: nav_params[k] for k in DEFAULT_NAV if k in nav_params and k not in _SIM_EXCLUDE}
+        # Only copy keys that DEFAULT_NAV knows about (exclude sim-only keys like max_timeout)
+        overrides = {k: nav_params[k] for k in DEFAULT_NAV if k in nav_params}
         print(f'[sim_navigator] Loaded {len(overrides)} navigator params from {os.path.basename(cfg_path)}', flush=True)
         return overrides
     except Exception as exc:
@@ -466,6 +461,7 @@ class PathNavigator:
         self._nav        = nav
         self._algo       = nav.get('control_algorithm', 'stanley')
         self.path_idx    = 0
+        self.total_advanced = 0   # monotonically counts _advance() calls across all chunks
         self._pivoting   = False
         self._pivot_hdg  = 0.0
         self._holding    = False
@@ -649,6 +645,11 @@ class PathNavigator:
         hdg_out = _bearing_to(self._wps[idx].lat, self._wps[idx].lon,
                               self._wps[idx + 1].lat, self._wps[idx + 1].lon)
         if idx == 0:
+            if _haversine(self._origin_lat, self._origin_lon,
+                          self._wps[0].lat, self._wps[0].lon) < 0.01:
+                # Zero-length origin→wp[0] segment (anchor fix places wp[0] at start pos).
+                # No meaningful incoming direction — no turn at wp[0].
+                return 0.0
             hdg_in = _bearing_to(self._origin_lat, self._origin_lon,
                                  self._wps[0].lat, self._wps[0].lon)
         else:
@@ -943,6 +944,7 @@ class PathNavigator:
     def _advance(self):
         if self.path_idx < len(self._wps):
             self.path_idx += 1
+            self.total_advanced += 1
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -1026,11 +1028,12 @@ def simulate(waypoints:       list[SimWaypoint],
         print(f'{"─"*60}')
         print(f'  {"step":>5}  {"t":>5}  {"wp":>3}  {"dist":>6}  {"hdg_err":>8}  {"cte":>7}  {"steer":>6}  {"mode":>7}  {"s_clip":>8}')
 
-    result_path: list[tuple[float, float]] = [_center_pos(rover, bm)]
-    xte_log:     list[float]               = []
-    wps_reached: list[int]                 = []
-    t_mono = 0.0
-    prev_idx = 0
+    result_path:       list[tuple[float, float]] = [_center_pos(rover, bm)]
+    xte_log:           list[float]               = []
+    wps_reached:       list[int]                 = []
+    t_mono             = 0.0
+    prev_advanced      = 0        # tracks path_n.total_advanced (cross-chunk monotonic)
+    completed_normally = False
 
     max_steps = int(nav['max_timeout'] / dt)
     step_log_data: list = []
@@ -1059,14 +1062,16 @@ def simulate(waypoints:       list[SimWaypoint],
                   f'{si.get("mode", "?"):>7}  '
                   f'{s_clip_str:>8}')
 
-        # Track newly reached waypoints (only original, not synthetic bypass)
-        while prev_idx < path_n.path_idx and prev_idx < len(effective_wps):
-            wp = effective_wps[prev_idx]
+        # Track newly reached waypoints using total_advanced (monotonic across chunks).
+        # path_n.path_idx resets to 0 on each chunk load so it cannot be used here.
+        while prev_advanced < path_n.total_advanced and prev_advanced < len(effective_wps):
+            wp = effective_wps[prev_advanced]
             if wp.seq <= max(w.seq for w in waypoints):
                 wps_reached.append(wp.seq)
-            prev_idx += 1
+            prev_advanced += 1
 
         if done:
+            completed_normally = True
             break
 
         if was_pivoting or path_n._pivoting:
@@ -1100,7 +1105,7 @@ def simulate(waypoints:       list[SimWaypoint],
 
     if verbose:
         print(f'\n{"─"*60}')
-        print(f'Complete: {path_n.path_idx >= len(effective_wps)}  '
+        print(f'Complete: {completed_normally}  '
               f'{step+1} steps  {(step+1)/nav["control_rate"]:.1f}s simulated')
         print(f'Reached : {len(wps_reached)}/{len(waypoints)} waypoints')
         print(f'XTE rms : {rms_xte:.3f} m   max: {max_xte:.3f} m')
@@ -1113,7 +1118,7 @@ def simulate(waypoints:       list[SimWaypoint],
         max_xte           = round(max_xte, 4),
         avg_xte           = round(avg_xte, 4),
         total_steps       = step + 1,
-        complete          = path_n.path_idx >= len(effective_wps),
+        complete          = completed_normally,
         obstacle_polygons = [list(poly) for poly in expanded_polygons],
         rerouted_wps      = [[wp.lat, wp.lon] for wp in effective_wps],
         step_log          = step_log_data,
