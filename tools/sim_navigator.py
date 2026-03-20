@@ -109,8 +109,13 @@ def _load_rover_params(rover: int = 1) -> dict:
         with open(cfg_path) as fh:
             raw = _yaml.safe_load(fh)
         nav_params = raw.get(f'/rv{rover}/navigator', {}).get('ros__parameters', {})
-        # Only copy keys that DEFAULT_NAV knows about (exclude sim-only keys like max_timeout)
-        overrides = {k: nav_params[k] for k in DEFAULT_NAV if k in nav_params}
+        # Only copy keys that DEFAULT_NAV knows about (exclude sim-only keys like max_timeout).
+        # Also exclude 'default_acceptance_radius': mavlink_bridge hardcodes wp.acceptance_radius=0.3
+        # for all uploaded missions, so the YAML value only affects navigator's bypass waypoints —
+        # not the SIL sim.  The sim needs its own 0.4 m default so discrete 25 Hz steps reliably
+        # trigger waypoint arrival; 0.1 m is too tight and causes timeout on every route.
+        _SIM_EXCLUDE = {'default_acceptance_radius'}
+        overrides = {k: nav_params[k] for k in DEFAULT_NAV if k in nav_params and k not in _SIM_EXCLUDE}
         print(f'[sim_navigator] Loaded {len(overrides)} navigator params from {os.path.basename(cfg_path)}', flush=True)
         return overrides
     except Exception as exc:
