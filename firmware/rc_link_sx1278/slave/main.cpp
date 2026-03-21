@@ -60,6 +60,12 @@
 #define CH_AUTONOMOUS    5     // same as master — auto switch
 #define RELAY_LOW        1250  // below → master manually selected (slave neutral)
 #define RELAY_HIGH       1750  // above → slave manually selected
+
+// PPM speed limit: throttle (CH1=idx0) and spin (CH2=idx1) clamped to ±30%.
+// 30% of 500 µs = 150 µs → hardware PPM stays in [1350, 1650].
+// Other channels and the Jetson serial status are unaffected.
+#define SPEED_LIMIT_MAX  1650U
+#define SPEED_LIMIT_MIN  1350U
 #define EMERGENCY_THRESH 1700
 #define AUTO_THRESH      1700
 
@@ -107,6 +113,11 @@ static void ppm_buf_update(void) {
         uint16_t ch = out_ch[i];
         if (ch < 1000) ch = 1000;
         if (ch > 2000) ch = 2000;
+        // Speed limit: throttle (idx 0) and spin (idx 1) only
+        if (i <= 1) {
+            if (ch > SPEED_LIMIT_MAX) ch = SPEED_LIMIT_MAX;
+            if (ch < SPEED_LIMIT_MIN) ch = SPEED_LIMIT_MIN;
+        }
         ppm_buf[i * 2]     = PPM_HIGH_COUNT;
         ppm_buf[i * 2 + 1] = (uint32_t)(ch - 302);
         sum += ch;
