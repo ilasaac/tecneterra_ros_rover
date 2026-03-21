@@ -5,11 +5,11 @@ Usage:
   python tools/mission_planner.py [--port 8089] [--lat LAT] [--lon LON]
 
 Then open:  http://localhost:8089
-  - Click map to add waypoints (enable with "+ Add WP" button)
+  - Click canvas to add waypoints (enable with "+ Add WP" button)
   - Right-click a waypoint marker to delete it
   - Drag markers to reposition
   - Import / Export CSV (same format as mission_uploader.py)
-  - Press Simulate to run sim_navigator SIL and see the path on the map
+  - Press Simulate to run sim_navigator SIL and see the path on the canvas
   - Save / Load named missions as JSON (includes obstacles)
   - Upload current mission directly to rover via MAVLink
   - Import any mission that GQC uploads to the rover (passive snooper on :14550)
@@ -205,12 +205,12 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>AgriRover Mission Planner</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{display:flex;height:100vh;font-family:Arial,sans-serif;font-size:13px;background:#111}
 #sidebar{width:310px;background:#1a1a2e;color:#ddd;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
-#map{flex:1}
+#cv-wrap{flex:1;position:relative;overflow:hidden;background:#0a0a14}
+#canvas{display:block}
 .toolbar{padding:6px;background:#0d0d1a;display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid #333}
 button{padding:5px 9px;border:none;border-radius:3px;cursor:pointer;font-size:12px;font-weight:bold}
 .btn-blue{background:#0f3460;color:#fff}.btn-green{background:#1a7a3a;color:#fff}
@@ -234,6 +234,9 @@ tr:hover td{background:#1e1e3a}
 #gen-panel label{display:block;color:#aaa;margin-top:5px;margin-bottom:1px}
 #gen-panel input,#gen-panel select{width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:2px 4px;border-radius:2px;font-size:11px}
 #gen-panel .grow{display:flex;gap:4px;margin-top:8px}
+#map-ctrl{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;gap:4px;z-index:10}
+#map-ctrl button{width:32px;height:32px;padding:0;font-size:16px;background:#1a1a2e;color:#ddd;border:1px solid #444;border-radius:4px}
+#map-ctrl button:hover{background:#0f3460}
 </style>
 </head>
 <body>
@@ -255,10 +258,10 @@ tr:hover td{background:#1e1e3a}
     <span style="color:#888;font-size:10px">m/s</span>
     <button onclick="applyBulkSpeed()" style="padding:2px 7px;font-size:11px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer">&#10003;</button>
   </div>
-  <div id="status-bar">Click "+ Add WP" then click the map to place waypoints.</div>
+  <div id="status-bar">Click "+ Add WP" then click the canvas to place waypoints.</div>
   <div class="section">
-    <label>Start lat</label><input id="s-lat" size="11" value="START_LAT">
-    <label>lon</label><input id="s-lon" size="12" value="START_LON">
+    <label>Start lat</label><input id="s-lat" size="11" value="START_LAT" onchange="redraw()">
+    <label>lon</label><input id="s-lon" size="12" value="START_LON" onchange="redraw()">
     <label>hdg&deg;</label><input id="s-hdg" size="4" value="0">
   </div>
   <div class="section" style="background:#0d1a2e">
@@ -303,7 +306,7 @@ tr:hover td{background:#1e1e3a}
   </div>
   <label>Pattern</label>
   <select id="gen-pattern" onchange="updateGenFields()">
-    <option value="grid">Grid — serpentine rows (180° U-turns)</option>
+    <option value="grid">Grid — serpentine rows (180&#176; U-turns)</option>
     <option value="zigzag">Zigzag — sharp diagonal turns</option>
     <option value="scatter">Scatter — random points</option>
     <option value="spiral">Spiral — outward arc</option>
@@ -337,7 +340,7 @@ tr:hover td{background:#1e1e3a}
   <input id="gen-speed" type="number" value="1.0" min="0" max="1.5" step="0.1">
   <label>Center on</label>
   <select id="gen-center">
-    <option value="map">Map centre</option>
+    <option value="view">View centre</option>
     <option value="start">Start lat/lon</option>
   </select>
   <div style="margin-top:6px;display:flex;align-items:center;gap:5px">
@@ -349,86 +352,382 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-blue" style="flex:1;padding:4px" onclick="applyGenerate(true)">&#43; Append</button>
   </div>
 </div>
-<div id="map"></div>
+<div id="cv-wrap">
+  <canvas id="canvas"></canvas>
+  <div id="map-ctrl">
+    <button onclick="zoomIn()" title="Zoom in">+</button>
+    <button onclick="fitAll()" title="Fit all">&#9635;</button>
+    <button onclick="zoomOut()" title="Zoom out">&minus;</button>
+  </div>
+</div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-// ── Map ──────────────────────────────────────────────────────────
-const map = L.map('map').setView([START_LAT, START_LON], 18);
-L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-  {attribution:'ESRI',maxZoom:23,maxNativeZoom:19}).addTo(map);
+// ── Canvas & view state ───────────────────────────────────────────
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+let viewLat  = START_LAT;
+let viewLon  = START_LON;
+let scale    = 50;   // pixels per metre
 
-// ── State ────────────────────────────────────────────────────────
-let waypoints = [];
-let wpMarkers = [], routeLine = null;
-let simLayers = [];
-let addMode = false;
+function resizeCanvas() {
+  const wrap = document.getElementById('cv-wrap');
+  canvas.width  = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+  redraw();
+}
+window.addEventListener('resize', resizeCanvas);
 
-// Obstacle drawing state
-let obstacles = [];          // completed polygons: [[[lat,lon],...], ...]
-let obsMode = false;         // currently drawing an obstacle
-let obsCurPts = [];          // vertices of polygon being drawn
-let obsCurMarkers = [];      // temporary vertex markers
-let obsCurLine = null;       // preview polyline while drawing
-let obsLayers = [];          // rendered completed obstacle layers
+function project(lat, lon) {
+  const cosLat = Math.cos(viewLat * Math.PI / 180);
+  return {
+    x: canvas.width  / 2 + (lon - viewLon) * 111320 * cosLat * scale,
+    y: canvas.height / 2 - (lat - viewLat) * 111320 * scale,
+  };
+}
+function unproject(x, y) {
+  const cosLat = Math.cos(viewLat * Math.PI / 180);
+  return {
+    lat: viewLat - (y - canvas.height / 2) / (111320 * scale),
+    lon: viewLon + (x - canvas.width  / 2) / (111320 * cosLat * scale),
+  };
+}
 
+// ── App state ─────────────────────────────────────────────────────
+let waypoints  = [];
+let addMode    = false;
+let simResult  = null;
+let obstacles  = [];
+let obsMode    = false;
+let obsCurPts  = [];
+
+// Drag / pan tracking
+let _drag    = null;   // {type:'wp',idx} | {type:'pan',sx,sy,sLat,sLon}
+let _didDrag = false;
+
+// ── Zoom / fit ────────────────────────────────────────────────────
+function zoomIn()  { scale *= 1.4; redraw(); }
+function zoomOut() { scale /= 1.4; redraw(); }
+
+function fitAll() {
+  const pts = waypoints.map(w => [w.lat, w.lon]);
+  if (simResult) pts.push(...(simResult.path || []));
+  obstacles.forEach(poly => pts.push(...poly));
+  obsCurPts.forEach(p => pts.push(p));
+  if (!pts.length) return;
+  let minLat = Infinity, maxLat = -Infinity;
+  let minLon = Infinity, maxLon = -Infinity;
+  pts.forEach(([la, lo]) => {
+    if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
+    if (lo < minLon) minLon = lo; if (lo > maxLon) maxLon = lo;
+  });
+  viewLat = (minLat + maxLat) / 2;
+  viewLon = (minLon + maxLon) / 2;
+  const cosLat = Math.cos(viewLat * Math.PI / 180);
+  const spanLat = Math.max((maxLat - minLat) * 111320, 2);
+  const spanLon = Math.max((maxLon - minLon) * 111320 * cosLat, 2);
+  scale = Math.min(canvas.width * 0.85 / spanLon, canvas.height * 0.85 / spanLat);
+  redraw();
+}
+
+// ── Drawing ───────────────────────────────────────────────────────
+function redraw() {
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0a0a14';
+  ctx.fillRect(0, 0, W, H);
+  drawGrid(W, H);
+  drawObstacles();
+  drawObsPreview();
+  drawRoute();
+  drawSimPath();
+  drawPivotMarkers();
+  drawWaypoints();
+  drawStartMarker();
+}
+
+function drawGrid(W, H) {
+  const sizes = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+  const gridM = sizes.find(g => g * scale >= 70) || 1000;
+  const cosLat = Math.cos(viewLat * Math.PI / 180);
+  const latStep = gridM / 111320;
+  const lonStep = gridM / (111320 * cosLat);
+  const tl = unproject(0, 0), br = unproject(W, H);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  for (let la = Math.floor(br.lat / latStep) * latStep; la <= tl.lat + latStep; la += latStep) {
+    const py = project(la, viewLon).y;
+    ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(W, py); ctx.stroke();
+  }
+  for (let lo = Math.floor(tl.lon / lonStep) * lonStep; lo <= br.lon + lonStep; lo += lonStep) {
+    const px = project(viewLat, lo).x;
+    ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, H); ctx.stroke();
+  }
+  ctx.restore();
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+  ctx.fillText('grid: ' + (gridM >= 1000 ? gridM/1000 + 'km' : gridM + 'm'), 8, H - 6);
+}
+
+function drawRoute() {
+  if (waypoints.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(46,204,113,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  waypoints.forEach((wp, i) => {
+    const p = project(wp.lat, wp.lon);
+    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+  });
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawObstacles() {
+  obstacles.forEach(poly => {
+    if (poly.length < 3) return;
+    ctx.beginPath();
+    poly.forEach(([la, lo], i) => {
+      const p = project(la, lo);
+      i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+    });
+    ctx.closePath();
+    ctx.fillStyle   = 'rgba(231,76,60,0.20)';
+    ctx.strokeStyle = 'rgba(231,76,60,0.70)';
+    ctx.lineWidth   = 1.5;
+    ctx.fill(); ctx.stroke();
+  });
+}
+
+function drawObsPreview() {
+  if (!obsCurPts.length) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(231,76,60,0.7)';
+  ctx.lineWidth   = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  obsCurPts.forEach(([la, lo], i) => {
+    const p = project(la, lo);
+    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+  });
+  if (obsCurPts.length > 1) {
+    const p0 = project(obsCurPts[0][0], obsCurPts[0][1]);
+    ctx.lineTo(p0.x, p0.y);
+  }
+  ctx.stroke();
+  ctx.restore();
+  obsCurPts.forEach(([la, lo]) => {
+    const p = project(la, lo);
+    ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = '#e74c3c'; ctx.fill();
+  });
+}
+
+function drawSimPath() {
+  if (!simResult) return;
+  const path   = simResult.path    || [];
+  const xteLog = simResult.xte_log || [];
+  if (path.length < 2) return;
+  const xteMax = Math.max(...xteLog, 0.001);
+  ctx.lineWidth = 3;
+  for (let i = 0; i + 1 < path.length; i++) {
+    const t  = (xteLog[i] || 0) / xteMax;
+    const r  = Math.round(255 * Math.min(t * 2, 1));
+    const g  = Math.round(255 * Math.max(1 - t * 2 + 1, 0));
+    const p1 = project(path[i][0],   path[i][1]);
+    const p2 = project(path[i+1][0], path[i+1][1]);
+    ctx.strokeStyle = `rgb(${r},${g},30)`;
+    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+  }
+  // Rerouted path overlay
+  const rerouted = simResult.rerouted_wps || [];
+  if (obstacles.length && rerouted.length > 1) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    rerouted.forEach(([la, lo], i) => {
+      const p = project(la, lo);
+      i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawPivotMarkers() {
+  if (!simResult) return;
+  (simResult.pivot_wps || []).forEach(pw => {
+    const p       = project(pw.lat, pw.lon);
+    const bypass  = pw.is_bypass;
+    const r       = bypass ? 11 : 13;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fillStyle   = bypass ? 'rgba(180,80,200,0.5)' : 'rgba(230,126,34,0.45)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth   = 1.5;
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle    = '#fff';
+    ctx.font         = `bold ${bypass ? 11 : 13}px sans-serif`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('\u21bb', p.x, p.y);
+  });
+}
+
+function drawWaypoints() {
+  waypoints.forEach((wp, i) => {
+    const p = project(wp.lat, wp.lon);
+    ctx.beginPath(); ctx.arc(p.x, p.y, 11, 0, Math.PI * 2);
+    ctx.fillStyle   = 'rgba(26,122,58,0.6)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth   = 1.5;
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle    = '#fff';
+    ctx.font         = 'bold 10px sans-serif';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(i), p.x, p.y);
+  });
+}
+
+function drawStartMarker() {
+  const lat = parseFloat(document.getElementById('s-lat').value);
+  const lon = parseFloat(document.getElementById('s-lon').value);
+  if (isNaN(lat) || isNaN(lon)) return;
+  const p = project(lat, lon);
+  const r = 9;
+  ctx.strokeStyle = '#FFD600';
+  ctx.lineWidth   = 2.5;
+  ctx.beginPath(); ctx.moveTo(p.x - r, p.y); ctx.lineTo(p.x + r, p.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x, p.y + r); ctx.stroke();
+}
+
+// ── Hit testing ───────────────────────────────────────────────────
+function hitWaypoint(x, y) {
+  for (let i = waypoints.length - 1; i >= 0; i--) {
+    const p = project(waypoints[i].lat, waypoints[i].lon);
+    if (Math.hypot(p.x - x, p.y - y) <= 13) return i;
+  }
+  return -1;
+}
+
+function hitObstacleVertex(x, y) {
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    for (const [la, lo] of obstacles[i]) {
+      const p = project(la, lo);
+      if (Math.hypot(p.x - x, p.y - y) <= 7) return i;
+    }
+  }
+  return -1;
+}
+
+// ── Mouse interactions ─────────────────────────────────────────────
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  _didDrag = false;
+  const {offsetX: x, offsetY: y} = e;
+  if (!addMode && !obsMode) {
+    const wi = hitWaypoint(x, y);
+    if (wi >= 0) {
+      _drag = {type: 'wp', idx: wi};
+      return;
+    }
+    _drag = {type: 'pan', sx: x, sy: y, sLat: viewLat, sLon: viewLon};
+    canvas.style.cursor = 'grabbing';
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (!_drag) return;
+  _didDrag = true;
+  const {offsetX: x, offsetY: y} = e;
+  if (_drag.type === 'pan') {
+    const cosLat = Math.cos(viewLat * Math.PI / 180);
+    viewLat = _drag.sLat + (_drag.sy - y) / (111320 * scale);
+    viewLon = _drag.sLon - (_drag.sx - x) / (111320 * cosLat * scale);
+    redraw();
+  } else if (_drag.type === 'wp') {
+    const ll = unproject(x, y);
+    waypoints[_drag.idx].lat = ll.lat;
+    waypoints[_drag.idx].lon = ll.lon;
+    refreshTable();
+    redraw();
+  }
+});
+
+canvas.addEventListener('mouseup', () => {
+  _drag = null;
+  canvas.style.cursor = (addMode || obsMode) ? 'crosshair' : 'default';
+});
+
+canvas.addEventListener('mouseleave', () => {
+  _drag = null;
+  canvas.style.cursor = 'default';
+});
+
+canvas.addEventListener('click', e => {
+  if (_didDrag) return;
+  const {offsetX: x, offsetY: y} = e;
+  if (addMode) {
+    const ll = unproject(x, y);
+    addWp(ll.lat, ll.lon);
+  } else if (obsMode) {
+    const ll = unproject(x, y);
+    obsAddVertex(ll.lat, ll.lon);
+  }
+});
+
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const {offsetX: x, offsetY: y} = e;
+  const wi = hitWaypoint(x, y);
+  if (wi >= 0) { removeWp(wi); return; }
+  const oi = hitObstacleVertex(x, y);
+  if (oi >= 0) { removeObstacle(oi); }
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+  const ll = unproject(e.offsetX, e.offsetY);
+  scale *= factor;
+  const p = project(ll.lat, ll.lon);
+  const cosLat = Math.cos(viewLat * Math.PI / 180);
+  viewLat -= (p.y - e.offsetY) / (111320 * scale);
+  viewLon += (p.x - e.offsetX) / (111320 * cosLat * scale);
+  redraw();
+}, {passive: false});
+
+// ── Status bar ────────────────────────────────────────────────────
 function status(msg, color='#27ae60') {
   const el = document.getElementById('status-bar');
   el.style.color = color;
   el.textContent = msg;
 }
 
-// ── Add mode ─────────────────────────────────────────────────────
+// ── Add mode ──────────────────────────────────────────────────────
 function toggleAddMode() {
   addMode = !addMode;
-  const btn = document.getElementById('btn-add');
-  btn.classList.toggle('btn-active', addMode);
-  map.getContainer().style.cursor = addMode ? 'crosshair' : '';
-  status(addMode ? 'Click map to place waypoints. Right-click marker to delete.' : 'Add mode off.');
+  if (addMode) { obsMode = false; resetObsBtn(); }
+  document.getElementById('btn-add').classList.toggle('btn-active', addMode);
+  canvas.style.cursor = addMode ? 'crosshair' : 'default';
+  status(addMode ? 'Click canvas to place waypoints. Right-click to delete.' : 'Add mode off.');
 }
 
-map.on('click', e => {
-  if (addMode) addWp(e.latlng.lat, e.latlng.lng);
-  else if (obsMode) obsAddVertex(e.latlng.lat, e.latlng.lng);
-});
-
-// ── Waypoints ────────────────────────────────────────────────────
+// ── Waypoints ─────────────────────────────────────────────────────
 function addWp(lat, lon, speed=0, hold=0) {
   waypoints.push({lat, lon, speed, hold_secs: hold});
   refresh();
 }
 
-function removeWp(i) { waypoints.splice(i,1); refresh(); }
+function removeWp(i) { waypoints.splice(i, 1); refresh(); }
 
 function refresh() {
-  // Remove old markers + route
-  wpMarkers.forEach(m => map.removeLayer(m)); wpMarkers = [];
-  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
-
-  waypoints.forEach((wp, i) => {
-    const icon = L.divIcon({
-      html: `<div style="background:rgba(26,122,58,0.45);color:#fff;border-radius:50%;width:22px;height:22px;
-             display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;
-             border:1.5px solid rgba(255,255,255,0.7);box-shadow:0 1px 3px rgba(0,0,0,.4)">${i}</div>`,
-      className:'', iconAnchor:[11,11]
-    });
-    const m = L.marker([wp.lat, wp.lon], {icon, draggable:true})
-      .addTo(map)
-      .bindTooltip(`WP${i} (${wp.lat.toFixed(6)}, ${wp.lon.toFixed(6)})<br>speed:${wp.speed} m/s`);
-    m.on('dragend', e => {
-      const ll = e.target.getLatLng();
-      waypoints[i].lat = ll.lat; waypoints[i].lon = ll.lng;
-      refresh();
-    });
-    m.on('contextmenu', () => removeWp(i));
-    wpMarkers.push(m);
-  });
-
-  if (waypoints.length > 1)
-    routeLine = L.polyline(waypoints.map(w=>[w.lat,w.lon]),
-      {color:'#2ecc71',weight:1.5,dashArray:'6,4',opacity:.5}).addTo(map);
-
   refreshTable();
+  redraw();
   status(`${waypoints.length} waypoint(s).`);
 }
 
@@ -439,8 +738,8 @@ function refreshTable() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td style="color:#aaa">${i}</td>
-      <td><input value="${wp.lat.toFixed(7)}" onchange="waypoints[${i}].lat=+this.value;refresh()"></td>
-      <td><input value="${wp.lon.toFixed(7)}" onchange="waypoints[${i}].lon=+this.value;refresh()"></td>
+      <td><input value="${wp.lat.toFixed(7)}" onchange="waypoints[${i}].lat=+this.value;redraw()"></td>
+      <td><input value="${wp.lon.toFixed(7)}" onchange="waypoints[${i}].lon=+this.value;redraw()"></td>
       <td><input value="${wp.speed||0}" style="width:38px"
           onchange="waypoints[${i}].speed=+this.value||0"></td>
       <td><button onclick="removeWp(${i})"
@@ -449,20 +748,17 @@ function refreshTable() {
   });
 }
 
-// ── Simulation ───────────────────────────────────────────────────
-function clearSimOverlay() {
-  simLayers.forEach(l => map.removeLayer(l)); simLayers = [];
-}
+// ── Simulation ────────────────────────────────────────────────────
+function clearSimOverlay() { simResult = null; redraw(); }
 
 async function runSimulate() {
-  if (waypoints.length < 2) { status('Need at least 2 waypoints.','#e74c3c'); return; }
-  // Auto-finalize any in-progress obstacle polygon before running
+  if (waypoints.length < 2) { status('Need at least 2 waypoints.', '#e74c3c'); return; }
   if (obsMode) obsFinish();
-  clearSimOverlay();
+  simResult = null;
   const statsEl = document.getElementById('stats');
   statsEl.style.display = 'block';
   statsEl.innerHTML = '<span style="color:#f39c12">&#9654; Simulating...</span>';
-  status('Running simulation...','#f39c12');
+  status('Running simulation...', '#f39c12');
 
   const startLat = parseFloat(document.getElementById('s-lat').value) || waypoints[0].lat;
   const startLon = parseFloat(document.getElementById('s-lon').value) || waypoints[0].lon;
@@ -470,52 +766,16 @@ async function runSimulate() {
 
   try {
     const resp = await fetch('/simulate', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({waypoints, start:{lat:startLat, lon:startLon, heading:startHdg}, obstacles})
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({waypoints, start: {lat: startLat, lon: startLon, heading: startHdg}, obstacles}),
     });
     const d = await resp.json();
-
-    // Draw path colored green→red by XTE
-    const xteMax = Math.max(...(d.xte_log||[0.001]), 0.001);
-    for (let i = 0; i+1 < d.path.length && i < (d.xte_log||[]).length; i++) {
-      const t = d.xte_log[i] / xteMax;
-      const r2 = Math.round(255 * Math.min(t*2, 1));
-      const g2 = Math.round(255 * Math.max(1 - t*2 + 1, 0));
-      const seg = L.polyline([d.path[i], d.path[i+1]],
-        {color:`rgb(${r2},${g2},30)`, weight:3, opacity:.85}).addTo(map);
-      simLayers.push(seg);
-    }
-
-    // Pivot waypoint markers — rendered after path so they appear on top
-    (d.pivot_wps||[]).forEach(pw => {
-      const isBypass = pw.is_bypass;
-      const sz = isBypass ? 22 : 26;
-      const fs = isBypass ? 11 : 13;
-      const bg = isBypass ? 'rgba(180,80,200,0.5)' : 'rgba(230,126,34,0.45)';
-      const icon = L.divIcon({
-        html: `<div style="background:${bg};color:#fff;border-radius:50%;width:${sz}px;height:${sz}px;
-               display:flex;align-items:center;justify-content:center;font-size:${fs}px;font-weight:bold;
-               border:1.5px solid rgba(255,255,255,0.7);box-shadow:0 1px 3px rgba(0,0,0,.4)">&#8635;</div>`,
-        className:'', iconAnchor:[sz/2,sz/2]
-      });
-      const label = (isBypass ? 'Bypass pivot ' : 'Pivot ') + pw.turn_angle.toFixed(0) + '\u00b0';
-      const m = L.marker([pw.lat, pw.lon], {icon, zIndexOffset:1000})
-        .addTo(map).bindTooltip(label);
-      simLayers.push(m);
-    });
-
-    // Rerouted path (bypass around obstacles) — white dashed overlay
-    if (obstacles.length && (d.rerouted_wps||[]).length > 1) {
-      const rl = L.polyline(d.rerouted_wps, {
-        color:'#fff', weight:1.5, dashArray:'5,4', opacity:.55
-      }).addTo(map);
-      simLayers.push(rl);
-    }
-
+    simResult = d;
+    redraw();
     const dur = (d.total_steps / 25).toFixed(1);
     statsEl.innerHTML = `
-      <div><span class="lbl">Complete:</span> ${d.complete?'<b style="color:#2ecc71">\u2713 Yes</b>':'<b style="color:#e74c3c">\u2717 Timeout</b>'}</div>
+      <div><span class="lbl">Complete:</span> ${d.complete ? '<b style="color:#2ecc71">\u2713 Yes</b>' : '<b style="color:#e74c3c">\u2717 Timeout</b>'}</div>
       <div><span class="lbl">Duration:</span> ${dur} s (${d.total_steps} steps)</div>
       <div><span class="lbl">WP reached:</span> ${(d.waypoints_reached||[]).length}/${waypoints.length}</div>
       <div><span class="lbl">XTE rms:</span> ${d.rms_xte.toFixed(3)} m</div>
@@ -526,122 +786,98 @@ async function runSimulate() {
     status(`Done. XTE rms=${d.rms_xte.toFixed(3)}m max=${d.max_xte.toFixed(3)}m`);
   } catch(e) {
     statsEl.innerHTML = `<span style="color:#e74c3c">Error: ${e}</span>`;
-    status('Simulation failed.','#e74c3c');
+    status('Simulation failed.', '#e74c3c');
   }
 }
 
-// ── CSV export ───────────────────────────────────────────────────
+// ── CSV export / import ───────────────────────────────────────────
 function exportCSV() {
   fetch('/export_csv', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({waypoints})
-  }).then(r=>r.blob()).then(blob => {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({waypoints}),
+  }).then(r => r.blob()).then(blob => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'mission.csv'; a.click();
   });
 }
 
-// ── CSV import ───────────────────────────────────────────────────
 function importCSV(event) {
   const file = event.target.files[0]; if (!file) return;
   const reader = new FileReader();
   reader.onload = e => {
     const lines = e.target.result.trim().split('\n');
     const hdr = lines[0].toLowerCase().split(',');
-    const li=hdr.indexOf('lat'), loi=hdr.indexOf('lon');
-    const si=hdr.indexOf('speed'), hi=hdr.indexOf('hold_secs');
-    if (li<0||loi<0){status('CSV must have lat,lon columns','#e74c3c');return;}
+    const li = hdr.indexOf('lat'), loi = hdr.indexOf('lon');
+    const si = hdr.indexOf('speed'), hi = hdr.indexOf('hold_secs');
+    if (li < 0 || loi < 0) { status('CSV must have lat,lon columns', '#e74c3c'); return; }
     waypoints = [];
-    for (let i=1;i<lines.length;i++){
-      const c=lines[i].split(','); if(c.length<2)continue;
-      waypoints.push({lat:+c[li],lon:+c[loi],speed:si>=0?+c[si]||0:0,hold_secs:hi>=0?+c[hi]||0:0});
+    for (let i = 1; i < lines.length; i++) {
+      const c = lines[i].split(','); if (c.length < 2) continue;
+      waypoints.push({lat: +c[li], lon: +c[loi],
+                      speed: si >= 0 ? +c[si] || 0 : 0,
+                      hold_secs: hi >= 0 ? +c[hi] || 0 : 0});
     }
     refresh();
-    if (waypoints.length) map.setView([waypoints[0].lat,waypoints[0].lon],18);
-    event.target.value='';
+    if (waypoints.length) { viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll(); }
+    event.target.value = '';
   };
   reader.readAsText(file);
 }
 
-// ── Obstacles ────────────────────────────────────────────────────
+// ── Obstacles ─────────────────────────────────────────────────────
+function resetObsBtn() {
+  document.getElementById('btn-obs').textContent = '\u25a0 Obstacle';
+  document.getElementById('btn-obs').style.background = '';
+}
+
 function toggleObsMode() {
-  if (obsMode) {
-    obsFinish();
-  } else {
-    obsMode = true;
-    addMode = false;
-    document.getElementById('btn-add').classList.remove('btn-active');
-    document.getElementById('btn-obs').textContent = '\u2713 Done';
-    document.getElementById('btn-obs').style.background = '#8b0000';
-    map.getContainer().style.cursor = 'crosshair';
-    status('Click map to draw obstacle polygon. Click "Done" to close it.', '#e74c3c');
-  }
+  if (obsMode) { obsFinish(); return; }
+  obsMode = true; addMode = false;
+  document.getElementById('btn-add').classList.remove('btn-active');
+  document.getElementById('btn-obs').textContent = '\u2713 Done';
+  document.getElementById('btn-obs').style.background = '#8b0000';
+  canvas.style.cursor = 'crosshair';
+  status('Click canvas to draw obstacle polygon. Click "Done" to close it.', '#e74c3c');
 }
 
 function obsAddVertex(lat, lon) {
   obsCurPts.push([lat, lon]);
-  const m = L.circleMarker([lat, lon], {
-    radius:4, color:'#e74c3c', fillColor:'#e74c3c', fillOpacity:1, weight:1
-  }).addTo(map);
-  obsCurMarkers.push(m);
-  if (obsCurLine) map.removeLayer(obsCurLine);
-  if (obsCurPts.length > 1) {
-    const pts = [...obsCurPts, obsCurPts[0]];
-    obsCurLine = L.polyline(pts, {color:'#e74c3c', weight:1.5, dashArray:'4,3', opacity:.7}).addTo(map);
-  }
+  redraw();
   status(`Obstacle: ${obsCurPts.length} vertex(es). Click "Done" to close (min 3).`, '#e74c3c');
 }
 
 function obsFinish() {
   obsMode = false;
-  document.getElementById('btn-obs').textContent = '\u25a0 Obstacle';
-  document.getElementById('btn-obs').style.background = '';
-  map.getContainer().style.cursor = '';
-  // Clear preview markers and line
-  obsCurMarkers.forEach(m => map.removeLayer(m)); obsCurMarkers = [];
-  if (obsCurLine) { map.removeLayer(obsCurLine); obsCurLine = null; }
+  resetObsBtn();
+  canvas.style.cursor = 'default';
   if (obsCurPts.length < 3) {
     status('Need at least 3 vertices — obstacle discarded.', '#e74c3c');
-    obsCurPts = [];
-    return;
+    obsCurPts = []; redraw(); return;
   }
-  const poly = [...obsCurPts];
+  obstacles.push([...obsCurPts]);
   obsCurPts = [];
-  const idx = obstacles.length;
-  obstacles.push(poly);
-  renderObstacle(poly, idx);
-  status(`Obstacle ${idx} added (${poly.length} vertices). Total: ${obstacles.length}.`);
-}
-
-function renderObstacle(poly, idx) {
-  const layer = L.polygon(poly, {
-    color:'#e74c3c', weight:1.5,
-    fillColor:'#e74c3c', fillOpacity:0.2, opacity:0.7
-  }).addTo(map);
-  layer.bindTooltip(`Obstacle ${idx} — right-click to delete`);
-  layer.on('contextmenu', () => removeObstacle(idx));
-  obsLayers.push({layer, idx});
+  redraw();
+  status(`Obstacle ${obstacles.length - 1} added. Total: ${obstacles.length}.`);
 }
 
 function removeObstacle(idx) {
   obstacles.splice(idx, 1);
-  obsLayers.forEach(o => map.removeLayer(o.layer)); obsLayers = [];
-  obstacles.forEach((poly, i) => renderObstacle(poly, i));
+  redraw();
   status(`Obstacle removed. Total: ${obstacles.length}.`);
 }
 
 function clearObstacles() {
-  obstacles = []; obsCurPts = [];
-  obsCurMarkers.forEach(m => map.removeLayer(m)); obsCurMarkers = [];
-  if (obsCurLine) { map.removeLayer(obsCurLine); obsCurLine = null; }
-  obsLayers.forEach(o => map.removeLayer(o.layer)); obsLayers = [];
+  obstacles = []; obsCurPts = []; redraw();
 }
 
-// ── Clear ────────────────────────────────────────────────────────
+// ── Clear all ─────────────────────────────────────────────────────
 function clearAll() {
-  waypoints=[];refresh();clearSimOverlay();clearObstacles();
-  document.getElementById('stats').style.display='none';
+  waypoints = []; simResult = null;
+  clearObstacles();
+  refreshTable();
+  document.getElementById('stats').style.display = 'none';
+  redraw();
   status('Cleared.');
 }
 
@@ -650,8 +886,8 @@ async function saveMission() {
   const name = document.getElementById('m-name').value.trim();
   if (!name) { status('Enter a mission name first.', '#e74c3c'); return; }
   await fetch('/save_mission', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({name, waypoints, obstacles})
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, waypoints, obstacles}),
   });
   status(`Saved "${name}".`);
   refreshMissionList();
@@ -664,11 +900,10 @@ async function loadMission() {
   const resp = await fetch(`/load_mission?name=${encodeURIComponent(name)}`);
   const d = await resp.json();
   waypoints = d.waypoints || [];
-  obstacles = [];
-  clearObstacles();
-  (d.obstacles || []).forEach((poly, i) => { obstacles.push(poly); renderObstacle(poly, i); });
+  obstacles = []; obsCurPts = [];
+  (d.obstacles || []).forEach(poly => obstacles.push(poly));
   refresh();
-  if (waypoints.length) map.setView([waypoints[0].lat, waypoints[0].lon], 18);
+  if (waypoints.length) { viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll(); }
   status(`Loaded "${name}" — ${waypoints.length} wps, ${obstacles.length} obstacles.`);
 }
 
@@ -678,38 +913,36 @@ async function refreshMissionList() {
   const sel = document.getElementById('m-select');
   const cur = sel.value;
   sel.innerHTML = '<option value="">— saved missions —</option>' +
-    list.map(m => `<option value="${m.name}"${m.name===cur?' selected':''}>${m.name} (${m.wp_count}wp${m.obs_count?' '+m.obs_count+'obs':''})</option>`).join('');
+    list.map(m => `<option value="${m.name}"${m.name === cur ? ' selected' : ''}>${m.name} (${m.wp_count}wp${m.obs_count ? ' ' + m.obs_count + 'obs' : ''})</option>`).join('');
 }
 refreshMissionList();
 
-// ── Rover upload / network import ────────────────────────────────
+// ── Rover upload / network import ─────────────────────────────────
 let selectedRover = 1;
-const roverIPs = {1:'192.168.100.19', 2:'192.168.100.20'};
+const roverIPs = {1: '192.168.100.19', 2: '192.168.100.20'};
 
 function selectRover(n) {
   selectedRover = n;
-  document.getElementById('btn-rv1').classList.toggle('btn-active', n===1);
-  document.getElementById('btn-rv2').classList.toggle('btn-active', n===2);
+  document.getElementById('btn-rv1').classList.toggle('btn-active', n === 1);
+  document.getElementById('btn-rv2').classList.toggle('btn-active', n === 2);
   document.getElementById('r-ip').value = roverIPs[n] || '';
 }
 document.getElementById('r-ip').value = roverIPs[1];
 
 async function uploadRover() {
-  if (waypoints.length < 1) { status('No waypoints to upload.', '#e74c3c'); return; }
+  if (!waypoints.length) { status('No waypoints to upload.', '#e74c3c'); return; }
   const rover_ip = document.getElementById('r-ip').value.trim();
   if (!rover_ip) { status('Enter rover IP.', '#e74c3c'); return; }
   status(`Uploading to RV${selectedRover}...`, '#f39c12');
-  // Auto-finalize obstacle if drawing
   if (obsMode) obsFinish();
   const resp = await fetch('/upload_rover', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port:14550, rover_sysid:selectedRover})
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port: 14550, rover_sysid: selectedRover}),
   });
   const d = await resp.json();
   status(d.message, d.ok ? '#27ae60' : '#e74c3c');
 }
 
-// Poll for snooped network mission every 3 s
 async function pollSnooped() {
   try {
     const resp = await fetch('/snooped_mission');
@@ -717,7 +950,7 @@ async function pollSnooped() {
     const el = document.getElementById('snoop-status');
     const btn = document.getElementById('btn-net');
     if (d.waypoints && d.waypoints.length > 0) {
-      const age = d.ts ? Math.round((Date.now()/1000 - d.ts)) : '?';
+      const age = d.ts ? Math.round(Date.now() / 1000 - d.ts) : '?';
       el.textContent = `RV${d.rover}: ${d.waypoints.length}wp ${d.obstacles?.length||0}obs (${age}s ago)`;
       el.style.color = '#f39c12';
       btn.style.background = '#a05010';
@@ -739,7 +972,7 @@ function toggleGenPanel() {
 
 function updateGenFields() {
   const pat = document.getElementById('gen-pattern').value;
-  ['grid','zigzag','scatter','spiral'].forEach(t =>
+  ['grid', 'zigzag', 'scatter', 'spiral'].forEach(t =>
     document.getElementById(`gen-${t}-fields`).style.display = t === pat ? 'block' : 'none');
 }
 
@@ -756,13 +989,13 @@ function applyGenerate(append) {
   if (cMode === 'start') {
     cLat = parseFloat(document.getElementById('s-lat').value);
     cLon = parseFloat(document.getElementById('s-lon').value);
-  } else { const c = map.getCenter(); cLat = c.lat; cLon = c.lng; }
+  } else { cLat = viewLat; cLon = viewLon; }
 
   let newWps = [];
 
   if (pat === 'grid') {
-    const rows  = parseInt(document.getElementById('gen-rows').value)   || 4;
-    const cols  = parseInt(document.getElementById('gen-cols').value)   || 5;
+    const rows  = parseInt(document.getElementById('gen-rows').value)     || 4;
+    const cols  = parseInt(document.getElementById('gen-cols').value)     || 5;
     const rowSp = parseFloat(document.getElementById('gen-row-sp').value) || 5;
     const colSp = parseFloat(document.getElementById('gen-col-sp').value) || 5;
     const hdg   = (parseFloat(document.getElementById('gen-hdg').value) || 0) * Math.PI / 180;
@@ -781,11 +1014,11 @@ function applyGenerate(append) {
     }
 
   } else if (pat === 'zigzag') {
-    const legs   = parseInt(document.getElementById('gen-legs').value)    || 6;
+    const legs   = parseInt(document.getElementById('gen-legs').value)      || 6;
     const legLen = parseFloat(document.getElementById('gen-leg-len').value) || 10;
     const legOff = parseFloat(document.getElementById('gen-leg-off').value) || 5;
     const hdg    = (parseFloat(document.getElementById('gen-zhdg').value) || 0) * Math.PI / 180;
-    const tP = legOff * (legs - 1);
+    const tP     = legOff * (legs - 1);
     for (let i = 0; i < legs; i++) {
       const perp  = i * legOff - tP / 2;
       const along = (i % 2 === 0) ? -legLen / 2 : legLen / 2;
@@ -796,10 +1029,9 @@ function applyGenerate(append) {
     }
 
   } else if (pat === 'scatter') {
-    const nPts   = parseInt(document.getElementById('gen-npts').value)   || 10;
+    const nPts   = parseInt(document.getElementById('gen-npts').value)     || 10;
     const radius = parseFloat(document.getElementById('gen-radius').value) || 20;
     let   s      = parseInt(document.getElementById('gen-seed').value) || Date.now();
-    // Mulberry32 seeded PRNG
     const rnd = () => { s |= 0; s = s + 0x6D2B79F5 | 0;
       let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
       return ((t ^ t >>> 14) >>> 0) / 4294967296; };
@@ -817,12 +1049,12 @@ function applyGenerate(append) {
     for (let i = 0; i < total; i++) {
       const theta = (i / ptsTurn) * 2 * Math.PI;
       const r     = armSp * theta / (2 * Math.PI);
-      const [lat, lon] = offsetLatLon(cLat, cLon, r * Math.cos(theta - Math.PI/2), r * Math.sin(theta - Math.PI/2));
+      const [lat, lon] = offsetLatLon(cLat, cLon,
+        r * Math.cos(theta - Math.PI / 2), r * Math.sin(theta - Math.PI / 2));
       newWps.push({lat, lon, speed: spd, hold_secs: 0});
     }
   }
 
-  // Translate so WP[0] lands exactly at start pos (rover position)
   if (document.getElementById('gen-anchor').checked && newWps.length > 0) {
     const startLat = parseFloat(document.getElementById('s-lat').value);
     const startLon = parseFloat(document.getElementById('s-lon').value);
@@ -833,10 +1065,10 @@ function applyGenerate(append) {
     }
   }
 
-  if (!append) { waypoints = []; clearSimOverlay(); }
+  if (!append) { waypoints = []; simResult = null; }
   waypoints.push(...newWps);
   refresh();
-  if (waypoints.length) map.fitBounds(waypoints.map(w => [w.lat, w.lon]), {padding:[50,50]});
+  fitAll();
   toggleGenPanel();
   status(`Generated ${newWps.length} waypoints (${pat}).`);
 }
@@ -852,18 +1084,20 @@ function applyBulkSpeed() {
 async function importSnooped() {
   const resp = await fetch('/snooped_mission');
   const d = await resp.json();
-  if (!d.waypoints || d.waypoints.length === 0) {
+  if (!d.waypoints || !d.waypoints.length) {
     status('No network mission captured yet — arm GQC and upload a mission.', '#e74c3c');
     return;
   }
   waypoints = d.waypoints;
-  obstacles = [];
-  clearObstacles();
-  (d.obstacles || []).forEach((poly, i) => { obstacles.push(poly); renderObstacle(poly, i); });
+  obstacles = []; obsCurPts = [];
+  (d.obstacles || []).forEach(poly => obstacles.push(poly));
   refresh();
-  if (waypoints.length) map.setView([waypoints[0].lat, waypoints[0].lon], 18);
+  if (waypoints.length) { viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll(); }
   status(`Imported from RV${d.rover}: ${waypoints.length} wps, ${obstacles.length} obstacles.`);
 }
+
+// ── Init ──────────────────────────────────────────────────────────
+resizeCanvas();
 </script>
 </body>
 </html>
