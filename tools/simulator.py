@@ -363,7 +363,7 @@ def _rtk_col(quality: int) -> str:
 def _status_str(rv1: RoverState, rv2: RoverState,
                 rv1_ch: list, rv2_ch: list,
                 ppm_age: float, tick: int, args, dry_run: bool, addrs: AddrBook,
-                rtk: RtkState) -> str:
+                rtk: RtkState, no_rv1: bool = False) -> str:
     def ppm_col(age):
         if age < 0.5:  return ANSI_GRN
         if age < 2.0:  return ANSI_YLW
@@ -379,23 +379,40 @@ def _status_str(rv1: RoverState, rv2: RoverState,
         name = _QUALITY_NAMES.get(q, str(q))
         return f'{_rtk_col(q)}{name}{ANSI_RST}'
 
+    targets = (f'RV2 {rv2_ip}:{args.pri_port}/{args.sec_port}' if no_rv1
+               else f'RV1 {rv1_ip}:{args.pri_port}/{args.sec_port}'
+                    f'  RV2 {rv2_ip}:{args.pri_port}/{args.sec_port}')
+    rtk_cmd = ('  RTK cmd : fix2 N | fix N' if no_rv1
+                else '  RTK cmd : fix1 N | fix2 N | fix N')
+
     lines = [
         f'{ANSI_BOLD}AgriRover GPS Simulator{ANSI_RST}  [{mode}]  tick={tick}  rate={args.rate:.0f} Hz',
-        f'  PPM age : {ppm_str}  (>2 s → rovers frozen)',
-        f'  Targets : RV1 {rv1_ip}:{args.pri_port}/{args.sec_port}'
-        f'  RV2 {rv2_ip}:{args.pri_port}/{args.sec_port}',
+        f'  PPM age : {ppm_str}  (>2 s → rover frozen)',
+        f'  Targets : {targets}',
         '',
         f'  {"Rover":<6} {"Lat":>14} {"Lon":>14} {"Heading":>10} {"Speed":>10} {"RTK":>9}',
         f'  {"─"*6} {"─"*14} {"─"*14} {"─"*10} {"─"*10} {"─"*9}',
-        f'  {"RV1":<6} {rv1.lat:>14.7f} {rv1.lon:>14.7f} {rv1.heading_deg:>9.1f}° {rv1.speed_mps:>9.2f} m/s  {rtk_str(1)}',
-        f'  {"RV2":<6} {rv2.lat:>14.7f} {rv2.lon:>14.7f} {rv2.heading_deg:>9.1f}° {rv2.speed_mps:>9.2f} m/s  {rtk_str(2)}',
+    ]
+    if not no_rv1:
+        lines.append(
+            f'  {"RV1":<6} {rv1.lat:>14.7f} {rv1.lon:>14.7f}'
+            f' {rv1.heading_deg:>9.1f}° {rv1.speed_mps:>9.2f} m/s  {rtk_str(1)}'
+        )
+    lines += [
+        f'  {"RV2":<6} {rv2.lat:>14.7f} {rv2.lon:>14.7f}'
+        f' {rv2.heading_deg:>9.1f}° {rv2.speed_mps:>9.2f} m/s  {rtk_str(2)}',
         '',
-        f'  {"":5} {"Ch1":>4}  {"Ch2":>4}  {"Ch3":>4}  {"Ch4":>4}  {"Ch5":>4}  {"Ch6":>4}  {"Ch7":>4}  {"Ch8":>4}',
-        f'  {"":5} {"thr":>4}  {"str":>4}  {"SWA":>4}  {"SWB":>4}  {"sv5":>4}  {"sv6":>4}  {"sv7":>4}  {"sv8":>4}',
-        _ppm_row('RV1', rv1_ch),
+        f'  {"":5} {"Ch1":>4}  {"Ch2":>4}  {"Ch3":>4}  {"Ch4":>4}'
+        f'  {"Ch5":>4}  {"Ch6":>4}  {"Ch7":>4}  {"Ch8":>4}',
+        f'  {"":5} {"thr":>4}  {"str":>4}  {"SWA":>4}  {"SWB":>4}'
+        f'  {"sv5":>4}  {"sv6":>4}  {"sv7":>4}  {"sv8":>4}',
+    ]
+    if not no_rv1:
+        lines.append(_ppm_row('RV1', rv1_ch))
+    lines += [
         _ppm_row('RV2', rv2_ch),
         '',
-        '  RTK cmd : fix1 N | fix2 N | fix N   (0=NO_FIX 1=GPS 2=DGPS 4=RTK_FIX 5=RTK_FLT)',
+        f'{rtk_cmd}   (0=NO_FIX 1=GPS 2=DGPS 4=RTK_FIX 5=RTK_FLT)',
         '  Ctrl-C to stop',
         '',
     ]
@@ -449,6 +466,10 @@ def parse_args():
     p.add_argument('--rate',      default=25.0, type=float, metavar='HZ')
     p.add_argument('--thr-ch',    default=0,    type=int)
     p.add_argument('--str-ch',    default=1,    type=int)
+    p.add_argument('--no-rv1',    action='store_true',
+                   help='Single-rover mode: skip RV1 physics and NMEA; only simulate RV2. '
+                        'Requires ppm_decoder firmware with ROVER_TIMEOUT_MS support so '
+                        'output flows even when only RV2 PPM is connected.')
     p.add_argument('--dry-run',   action='store_true',
                    help='Print sample NMEA; do not send UDP')
     # RTK quality override
@@ -473,18 +494,20 @@ def main():
     if args.rv2_ip:
         addrs.set_ip(2, args.rv2_ip)
 
+    required_sysids = (2,) if args.no_rv1 else (1, 2)
+
     if not args.dry_run:
         addrs.start_listener(port=args.mavlink_port)
 
-        if not addrs.ready():
-            missing = [f'RV{i}' for i in (1, 2) if not addrs.get_ip(i)]
+        if not addrs.ready(required_sysids):
+            missing = [f'RV{i}' for i in required_sysids if not addrs.get_ip(i)]
             print(f'  Waiting for {", ".join(missing)} via MAVLink broadcast'
                   f' on :{args.mavlink_port} (timeout {args.discovery_timeout:.0f}s)...')
             deadline = time.monotonic() + args.discovery_timeout
-            while not addrs.ready() and time.monotonic() < deadline:
+            while not addrs.ready(required_sysids) and time.monotonic() < deadline:
                 time.sleep(0.2)
-            if not addrs.ready():
-                missing = [f'RV{i}' for i in (1, 2) if not addrs.get_ip(i)]
+            if not addrs.ready(required_sysids):
+                missing = [f'RV{i}' for i in required_sysids if not addrs.get_ip(i)]
                 sys.exit(f'[ERR] Not discovered: {", ".join(missing)}'
                          f' — is mavlink_bridge running?')
 
@@ -547,27 +570,28 @@ def main():
             rv1_ch = [1500] * 8
             rv2_ch = [1500] * 8
 
-        rv1.update(rv1_ch[args.thr_ch], rv1_ch[args.str_ch],
-                   args.max_speed, args.wheelbase, dt, args.turn_scale)
+        if not args.no_rv1:
+            rv1.update(rv1_ch[args.thr_ch], rv1_ch[args.str_ch],
+                       args.max_speed, args.wheelbase, dt, args.turn_scale)
         rv2.update(rv2_ch[args.thr_ch], rv2_ch[args.str_ch],
                    args.max_speed, args.wheelbase, dt, args.turn_scale)
 
-        s1_lat, s1_lon = rv1.secondary_pos(args.baseline)
         s2_lat, s2_lon = rv2.secondary_pos(args.baseline)
 
-        # Primary packets: GGA + VTG concatenated in one UDP datagram
-        q1 = rtk.get(1)
         q2 = rtk.get(2)
-        rv1_pri_pkt = make_gga(rv1.lat, rv1.lon, args.alt, q1) + make_vtg(rv1.heading_deg, rv1.speed_mps)
         rv2_pri_pkt = make_gga(rv2.lat, rv2.lon, args.alt, q2) + make_vtg(rv2.heading_deg, rv2.speed_mps)
-        # Secondary packets: GGA only (same quality as primary)
-        rv1_sec_pkt = make_gga(s1_lat, s1_lon, args.alt, q1)
         rv2_sec_pkt = make_gga(s2_lat, s2_lon, args.alt, q2)
+
+        if not args.no_rv1:
+            s1_lat, s1_lon = rv1.secondary_pos(args.baseline)
+            q1 = rtk.get(1)
+            rv1_pri_pkt = make_gga(rv1.lat, rv1.lon, args.alt, q1) + make_vtg(rv1.heading_deg, rv1.speed_mps)
+            rv1_sec_pkt = make_gga(s1_lat, s1_lon, args.alt, q1)
 
         # Resolve current IPs (updated live by AddrBook listener)
         rv1_ip = addrs.get_ip(1)
         rv2_ip = addrs.get_ip(2)
-        if rv1_ip:
+        if rv1_ip and not args.no_rv1:
             udp_send(sock, rv1_pri_pkt, (rv1_ip, args.pri_port), 'rv1_pri')
             udp_send(sock, rv1_sec_pkt, (rv1_ip, args.sec_port), 'rv1_sec')
         if rv2_ip:
@@ -576,7 +600,8 @@ def main():
 
         if tick % max(1, round(args.rate)) == 0:
             sys.stdout.write(_status_str(rv1, rv2, rv1_ch, rv2_ch,
-                                         ppm_age, tick, args, args.dry_run, addrs, rtk))
+                                         ppm_age, tick, args, args.dry_run, addrs, rtk,
+                                         no_rv1=args.no_rv1))
             sys.stdout.flush()
 
     print('\n\nSimulator stopped.')

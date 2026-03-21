@@ -15,6 +15,12 @@
  *   Both rovers are printed on the same line once both frames have been decoded.
  *   Channel values in µs, range 1000–2000, neutral = 1500.
  *
+ *   Single-rover mode: if one rover's PPM wire is not connected (or the rover
+ *   is powered off), the missing rover times out after ROVER_TIMEOUT_MS and
+ *   output continues driven by the active rover at its natural frame rate.
+ *   The offline rover holds its last-known channel values (neutral at boot).
+ *   Enable via --no-rv1 flag in simulator.py — no firmware reconfig needed.
+ *
  * ── PPM signal format (wFly RF209S / ppm_tx.pio wFly style) ──────────────────
  *   Idle HIGH. Each channel:  LOW separator ~300 µs + HIGH gap = channel_µs − 300 µs
  *   Sync gap (frame end):     LOW separator + HIGH gap = 20000 − Σchannels − 300 µs
@@ -61,6 +67,11 @@
 // idx >= PPM_CHANNELS handles that edge case; this threshold catches mid-frame
 // startup where idx is still low but a large sync gap passes through.
 #define SYNC_GAP_US     2500
+
+// Rover offline timeout: if a rover produces no complete frame within this
+// many ms, treat it as "ready" using its last-known channel values.
+// Allows single-rover operation without stalling the output loop.
+#define ROVER_TIMEOUT_MS  500
 
 // ── Per-rover frame assembler ──────────────────────────────────────────────────
 
@@ -110,6 +121,9 @@ int main(void) {
     printf("[BOOT] PPM decoder ready  RV1=GP%d  RV2=GP%d\n",
            PPM_PIN_RV1, PPM_PIN_RV2);
 
+    uint32_t rv1_last_frame_ms = 0;
+    uint32_t rv2_last_frame_ms = 0;
+
     while (true) {
 
         // Drain both PIO FIFOs (non-blocking)
@@ -119,9 +133,17 @@ int main(void) {
         while (!pio_sm_is_rx_fifo_empty(PIO_INST, SM_RV2))
             ppm_feed_gap(&rv2, pio_sm_get(PIO_INST, SM_RV2));
 
-        // Print only when both rovers have a fresh decoded frame, so both
-        // appear on the same line and are always time-aligned (~50 Hz).
-        if (rv1.updated && rv2.updated) {
+        uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+
+        // A rover is "ready" if it has a fresh decoded frame, OR if it has
+        // produced no frame within ROVER_TIMEOUT_MS (offline — use last-known
+        // values, which default to neutral 1500 at boot).
+        bool rv1_ready = rv1.updated || (now_ms - rv1_last_frame_ms >= ROVER_TIMEOUT_MS);
+        bool rv2_ready = rv2.updated || (now_ms - rv2_last_frame_ms >= ROVER_TIMEOUT_MS);
+
+        if (rv1_ready && rv2_ready) {
+            if (rv1.updated) rv1_last_frame_ms = now_ms;
+            if (rv2.updated) rv2_last_frame_ms = now_ms;
             rv1.updated = false;
             rv2.updated = false;
             printf("RV1:%d,%d,%d,%d,%d,%d,%d,%d RV2:%d,%d,%d,%d,%d,%d,%d,%d\n",
