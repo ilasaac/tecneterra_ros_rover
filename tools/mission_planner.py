@@ -593,6 +593,14 @@ function drawWaypoints() {
   });
 }
 
+// Keep s-lat/s-lon in sync with WP[0] so sim always starts at the mission origin.
+// Called after any load / import / generate that replaces the waypoint list.
+function syncStartToWp0() {
+  if (!waypoints.length) return;
+  document.getElementById('s-lat').value = waypoints[0].lat.toFixed(7);
+  document.getElementById('s-lon').value = waypoints[0].lon.toFixed(7);
+}
+
 function drawStartMarker() {
   const lat = parseFloat(document.getElementById('s-lat').value);
   const lon = parseFloat(document.getElementById('s-lon').value);
@@ -819,7 +827,10 @@ function importCSV(event) {
                       hold_secs: hi >= 0 ? +c[hi] || 0 : 0});
     }
     refresh();
-    if (waypoints.length) { viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll(); }
+    if (waypoints.length) {
+      syncStartToWp0();
+      viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll();
+    }
     event.target.value = '';
   };
   reader.readAsText(file);
@@ -903,7 +914,10 @@ async function loadMission() {
   obstacles = []; obsCurPts = [];
   (d.obstacles || []).forEach(poly => obstacles.push(poly));
   refresh();
-  if (waypoints.length) { viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll(); }
+  if (waypoints.length) {
+    syncStartToWp0();
+    viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll();
+  }
   status(`Loaded "${name}" — ${waypoints.length} wps, ${obstacles.length} obstacles.`);
 }
 
@@ -1067,6 +1081,8 @@ function applyGenerate(append) {
 
   if (!append) { waypoints = []; simResult = null; }
   waypoints.push(...newWps);
+  // If anchor is off, WP[0] is not at the start input — sync start to WP[0]
+  if (!document.getElementById('gen-anchor').checked) syncStartToWp0();
   refresh();
   fitAll();
   toggleGenPanel();
@@ -1092,7 +1108,10 @@ async function importSnooped() {
   obstacles = []; obsCurPts = [];
   (d.obstacles || []).forEach(poly => obstacles.push(poly));
   refresh();
-  if (waypoints.length) { viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll(); }
+  if (waypoints.length) {
+    syncStartToWp0();
+    viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll();
+  }
   status(`Imported from RV${d.rover}: ${waypoints.length} wps, ${obstacles.length} obstacles.`);
 }
 
