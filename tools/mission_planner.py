@@ -244,6 +244,7 @@ tr:hover td{background:#1e1e3a}
   <div class="toolbar">
     <button class="btn-blue" id="btn-add" onclick="toggleAddMode()">+ Add WP</button>
     <button id="btn-obs" class="btn-red" onclick="toggleObsMode()">&#9632; Obstacle</button>
+    <button id="btn-meas" class="btn-blue" onclick="toggleMeasureMode()" title="Measure distance from cursor to planned route">&#8614; Dist</button>
     <button class="btn-green" onclick="runSimulate()">&#9654; Simulate</button>
     <button class="btn-orange" onclick="exportCSV()">&#8595; CSV</button>
     <button class="btn-blue" onclick="document.getElementById('file-import').click()">&#8593; Import</button>
@@ -443,6 +444,7 @@ function redraw() {
   drawPivotMarkers();
   drawWaypoints();
   drawStartMarker();
+  drawMeasureOverlay();
 }
 
 function drawGrid(W, H) {
@@ -632,6 +634,89 @@ function hitObstacleVertex(x, y) {
   return -1;
 }
 
+// ── Measure mode ──────────────────────────────────────────────────
+let measureMode = false;
+let _measurePos = null;   // {x, y} in canvas pixels, or null
+let _rafPending = false;
+
+function toggleMeasureMode() {
+  measureMode = !measureMode;
+  if (measureMode) {
+    addMode = false; obsMode = false;
+    resetObsBtn();
+    document.getElementById('btn-add').classList.remove('btn-active');
+    canvas.style.cursor = 'crosshair';
+  } else {
+    _measurePos = null;
+    canvas.style.cursor = 'default';
+    redraw();
+  }
+  document.getElementById('btn-meas').classList.toggle('btn-active', measureMode);
+  status(measureMode ? 'Hover over canvas to measure distance to planned route.' : 'Measure off.');
+}
+
+// Nearest point on the planned route (canvas pixel coords).
+// Returns {px, py, distPx, segIdx} or null if no route.
+function nearestOnRoute(mx, my) {
+  if (waypoints.length < 2) return null;
+  let best = null;
+  for (let i = 0; i + 1 < waypoints.length; i++) {
+    const p1 = project(waypoints[i].lat,   waypoints[i].lon);
+    const p2 = project(waypoints[i+1].lat, waypoints[i+1].lon);
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const len2 = dx*dx + dy*dy;
+    let t = 0;
+    if (len2 > 0) t = Math.max(0, Math.min(1, ((mx-p1.x)*dx + (my-p1.y)*dy) / len2));
+    const cx = p1.x + t*dx, cy = p1.y + t*dy;
+    const d  = Math.hypot(mx - cx, my - cy);
+    if (!best || d < best.distPx) best = {px: cx, py: cy, distPx: d, segIdx: i};
+  }
+  return best;
+}
+
+function drawMeasureOverlay() {
+  if (!measureMode || !_measurePos || waypoints.length < 2) return;
+  const {x, y} = _measurePos;
+  const near = nearestOnRoute(x, y);
+  if (!near) return;
+
+  const distM = near.distPx / scale;  // px ÷ (px/m) = metres
+
+  // Dashed line from cursor to nearest route point
+  ctx.save();
+  ctx.setLineDash([5, 4]);
+  ctx.strokeStyle = '#FFD600';
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(near.px, near.py);
+  ctx.stroke();
+  ctx.restore();
+
+  // Dot at cursor
+  ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2);
+  ctx.fillStyle = '#FFD600'; ctx.fill();
+
+  // Dot at nearest route point
+  ctx.beginPath(); ctx.arc(near.px, near.py, 5, 0, Math.PI*2);
+  ctx.fillStyle = '#FFD600'; ctx.fill();
+
+  // Distance label — flip side if too close to right edge
+  const label  = distM < 1 ? `${(distM*100).toFixed(1)} cm` : `${distM.toFixed(3)} m`;
+  const padX   = 7, padY = 4;
+  ctx.font     = 'bold 12px monospace';
+  const tw     = ctx.measureText(label).width;
+  let lx = x + 10, ly = y - 10;
+  if (lx + tw + padX*2 > canvas.width)  lx = x - tw - padX*2 - 10;
+  if (ly - padY < 0)                     ly = y + 20;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(lx - padX, ly - 14 - padY, tw + padX*2, 20);
+  ctx.fillStyle = '#FFD600';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(label, lx, ly - padY);
+}
+
 // ── Mouse interactions ─────────────────────────────────────────────
 canvas.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
@@ -649,9 +734,18 @@ canvas.addEventListener('mousedown', e => {
 });
 
 canvas.addEventListener('mousemove', e => {
+  const {offsetX: x, offsetY: y} = e;
+  // Measure overlay — update position and schedule redraw
+  if (measureMode && !_drag) {
+    _measurePos = {x, y};
+    if (!_rafPending) {
+      _rafPending = true;
+      requestAnimationFrame(() => { redraw(); _rafPending = false; });
+    }
+    return;
+  }
   if (!_drag) return;
   _didDrag = true;
-  const {offsetX: x, offsetY: y} = e;
   if (_drag.type === 'pan') {
     const cosLat = Math.cos(viewLat * Math.PI / 180);
     viewLat = _drag.sLat + (_drag.sy - y) / (111320 * scale);
@@ -673,7 +767,9 @@ canvas.addEventListener('mouseup', () => {
 
 canvas.addEventListener('mouseleave', () => {
   _drag = null;
+  _measurePos = null;
   canvas.style.cursor = 'default';
+  if (measureMode) redraw();
 });
 
 canvas.addEventListener('click', e => {
@@ -719,7 +815,11 @@ function status(msg, color='#27ae60') {
 // ── Add mode ──────────────────────────────────────────────────────
 function toggleAddMode() {
   addMode = !addMode;
-  if (addMode) { obsMode = false; resetObsBtn(); }
+  if (addMode) {
+    obsMode = false; resetObsBtn();
+    measureMode = false; _measurePos = null;
+    document.getElementById('btn-meas').classList.remove('btn-active');
+  }
   document.getElementById('btn-add').classList.toggle('btn-active', addMode);
   canvas.style.cursor = addMode ? 'crosshair' : 'default';
   status(addMode ? 'Click canvas to place waypoints. Right-click to delete.' : 'Add mode off.');
@@ -845,7 +945,9 @@ function resetObsBtn() {
 function toggleObsMode() {
   if (obsMode) { obsFinish(); return; }
   obsMode = true; addMode = false;
+  measureMode = false; _measurePos = null;
   document.getElementById('btn-add').classList.remove('btn-active');
+  document.getElementById('btn-meas').classList.remove('btn-active');
   document.getElementById('btn-obs').textContent = '\u2713 Done';
   document.getElementById('btn-obs').style.background = '#8b0000';
   canvas.style.cursor = 'crosshair';
