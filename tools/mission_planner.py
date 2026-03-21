@@ -772,7 +772,7 @@ async function runSimulate() {
     });
     const d = await resp.json();
     simResult = d;
-    redraw();
+    fitAll();   // auto-center view on full path + waypoints after every simulation
     const dur = (d.total_steps / 25).toFixed(1);
     statsEl.innerHTML = `
       <div><span class="lbl">Complete:</span> ${d.complete ? '<b style="color:#2ecc71">\u2713 Yes</b>' : '<b style="color:#e74c3c">\u2717 Timeout</b>'}</div>
