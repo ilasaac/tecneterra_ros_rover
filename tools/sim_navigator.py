@@ -618,6 +618,34 @@ class PathNavigator:
         rv_dx = (lon - a_lon) * m_lon
         return (seg_dx * rv_dy - seg_dy * rv_dx) / seg_len
 
+    def _min_clamped_cte(self, lat: float, lon: float) -> float:
+        """Minimum clamped perpendicular distance from (lat,lon) to any segment
+        in the current chunk.  Matches what the mission-planner measure tool
+        shows: distance to the nearest point *on* the route (not on its infinite
+        line extension), measured from the rover centre."""
+        m_lat = 111_320.0
+        min_dist = float('inf')
+        seg_starts = [(self._origin_lat, self._origin_lon)] + \
+                     [(w.lat, w.lon) for w in self._wps[:-1]]
+        seg_ends   = [(w.lat, w.lon) for w in self._wps]
+        for (a_lat, a_lon), (b_lat, b_lon) in zip(seg_starts, seg_ends):
+            mid_lat = math.radians((a_lat + b_lat) / 2)
+            cos_lat = math.cos(mid_lat) or 1e-9
+            m_lon   = m_lat * cos_lat
+            bx = (b_lon - a_lon) * m_lon
+            by = (b_lat - a_lat) * m_lat
+            px = (lon   - a_lon) * m_lon
+            py = (lat   - a_lat) * m_lat
+            ab2 = bx * bx + by * by
+            if ab2 < 1e-6:
+                dist = math.hypot(px, py)
+            else:
+                t    = max(0.0, min(1.0, (px * bx + py * by) / ab2))
+                dist = math.hypot(px - t * bx, py - t * by)
+            if dist < min_dist:
+                min_dist = dist
+        return min_dist if min_dist < float('inf') else 0.0
+
     def _point_at_s(self, s_target: float) -> tuple[float, float]:
         if not self._wps or not self._path_s:
             return 0.0, 0.0
@@ -1132,7 +1160,7 @@ def simulate(waypoints:       list[SimWaypoint],
 
         rlat_new, rlon_new = _center_pos(rover, bm)
         flat_new, flon_new = _front_pos(rover, bm)
-        cte = abs(path_n._cte_to_seg(flat_new, flon_new, best_seg))
+        cte = path_n._min_clamped_cte(rlat_new, rlon_new)
         xte_all.append(cte)
         # Deduplicate path + xte_log together (must stay in sync — frontend maps
         # xte_log[i] to the segment path[i]→path[i+1]).  Pivot spins accumulate
