@@ -4,14 +4,14 @@
 
 /rv1/rp2040_bridge:
   ros__parameters:
-    uart_port:          /dev/ttyACM0
+    uart_port:          /dev/rv1_rp2040
     uart_baud:          115200
     heartbeat_interval: 0.2
 
 /rv1/gps_driver:
   ros__parameters:
-    primary_port:   /tmp/rv1_gps_pri   # real HW: /dev/ttyUSB0  sim: symlink from nmea_wifi_rx.py
-    secondary_port: /tmp/rv1_gps_sec   # real HW: /dev/ttyUSB1  sim: symlink from nmea_wifi_rx.py
+    primary_port:   /dev/rv1_gps_pri   # udev symlink → rear antenna u-blox (USB port 2.3.3)
+    secondary_port: /dev/rv1_gps_sec   # udev symlink → front antenna u-blox (USB port 2.4.3)
     baud:           115200
     # publish_rate: timer rate (Hz); only publishes when new GGA arrives — set to match GPS hw rate
     publish_rate:   25.0
