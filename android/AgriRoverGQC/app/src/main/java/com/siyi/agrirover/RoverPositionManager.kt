@@ -105,6 +105,9 @@ class RoverPositionManager(
     private val roverLastHb    = HashMap<Int, Long>()
     private val roverConnected = HashMap<Int, Boolean>()
 
+    // Per-rover last GLOBAL_POSITION_INT time_boot_ms — discard out-of-order packets
+    private val roverLastPosTms = HashMap<Int, Long>()
+
     // Per-rover RC_CHANNELS PPM values — used by checkLinkMismatch
     private val roverPpmChannels = HashMap<Int, IntArray>()
 
@@ -525,6 +528,12 @@ class RoverPositionManager(
 
             // GLOBAL_POSITION_INT (#33) — rover GPS position
             is GlobalPositionInt -> {
+                // Discard out-of-order packets (garden AP / any WiFi can reorder UDP).
+                // time_boot_ms is uint32 sent by mavlink_bridge — monotonically increasing.
+                val tMs = payload.timeBootMs().toLong() and 0xFFFFFFFFL
+                val lastTms = roverLastPosTms[senderId] ?: -1L
+                if (tMs <= lastTms) return
+                roverLastPosTms[senderId] = tMs
                 val lat = payload.lat() / 1e7
                 val lon = payload.lon() / 1e7
                 if (lat == 0.0 && lon == 0.0) return
