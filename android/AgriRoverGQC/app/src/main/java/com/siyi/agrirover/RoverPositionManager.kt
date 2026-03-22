@@ -108,8 +108,13 @@ class RoverPositionManager(
     // Per-rover last GLOBAL_POSITION_INT time_boot_ms — discard out-of-order packets
     private val roverLastPosTms = HashMap<Int, Long>()
 
-    // Per-rover last NAMED_VALUE_FLOAT time_boot_ms — discard out-of-order packets
-    private val roverLastNvfTms = HashMap<Int, Long>()
+    // Per-rover, per-name last NAMED_VALUE_FLOAT time_boot_ms — discard out-of-order/duplicate packets.
+    // Must be per-name: all names in one batch share the same timestamp, so a per-rover guard
+    // would discard every name after the first.
+    private val roverLastNvfTms = HashMap<Int, HashMap<String, Long>>()
+
+    // Per-rover last RC_CHANNELS time_boot_ms — discard out-of-order packets
+    private val roverLastRcTms = HashMap<Int, Long>()
 
     // Per-rover RC_CHANNELS PPM values — used by checkLinkMismatch
     private val roverPpmChannels = HashMap<Int, IntArray>()
@@ -582,11 +587,14 @@ class RoverPositionManager(
             // NAMED_VALUE_FLOAT (#251) — custom scalar sensors
             is NamedValueFloat -> {
                 // Discard out-of-order/duplicate packets (broadcast + unicast both arrive).
-                val tMs = payload.timeBootMs().toLong() and 0xFFFFFFFFL
-                val lastNvf = roverLastNvfTms[senderId] ?: -1L
-                if (tMs <= lastNvf) return
-                roverLastNvfTms[senderId] = tMs
-                val name  = payload.name().trimEnd('\u0000')
+                // Per-name tracking: all names in one batch share the same timestamp, so a
+                // per-rover guard would drop every name after the first in each batch.
+                val tMs  = payload.timeBootMs().toLong() and 0xFFFFFFFFL
+                val name = payload.name().trimEnd('\u0000')
+                val perRover = roverLastNvfTms.getOrPut(senderId) { HashMap() }
+                val lastTms  = perRover[name] ?: -1L
+                if (tMs <= lastTms) return
+                perRover[name] = tMs
                 val value = payload.value()
                 when (name) {
                     "TANK"   -> scope.launch(Dispatchers.Main) {
@@ -622,6 +630,12 @@ class RoverPositionManager(
             // mavlink_bridge sends all 16 SBUS channels in SBUS/MK32 order.
             // We remap to logical/PPM order so channel indices match the hardware PPM map.
             is RcChannels -> {
+                // Discard out-of-order/duplicate packets (sent at 10 Hz; broadcast + unicast
+                // both arrive, so each real update generates two packets with the same timestamp).
+                val tMs = payload.timeBootMs().toLong() and 0xFFFFFFFFL
+                val lastRc = roverLastRcTms[senderId] ?: -1L
+                if (tMs <= lastRc) return
+                roverLastRcTms[senderId] = tMs
                 val raw = intArrayOf(
                     payload.chan1Raw(),  payload.chan2Raw(),  payload.chan3Raw(),
                     payload.chan4Raw(),  payload.chan5Raw(),  payload.chan6Raw(),
