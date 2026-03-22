@@ -94,7 +94,7 @@
 // PPM (1-indexed) = SBUS source (1-indexed)
 //   CH1  = CH3           CH5  = CH11
 //   CH2  = CH1 inverted  CH6  = CH12
-//   CH3  = CH5 inverted  CH7  = CH7  inverted
+//   CH3  = CH5            CH7  = CH7  inverted
 //   CH4  = CH6 inverted  CH8  = CH8  inverted
 //
 // Inversion: 3000 − value  maps 1000↔2000, keeps 1500 at centre.
@@ -104,7 +104,7 @@
 static void apply_ppm_map(const volatile uint16_t *src, volatile uint16_t *dst) {
     dst[0] = src[2];           // CH1 = SBUS CH3
     dst[1] = PPM_INV(src[0]);  // CH2 = SBUS CH1 inverted
-    dst[2] = PPM_INV(src[4]);  // CH3 = SBUS CH5 inverted
+    dst[2] = src[4];            // CH3 = SBUS CH5
     dst[3] = PPM_INV(src[5]);  // CH4 = SBUS CH6 inverted
     dst[4] = src[10];          // CH5 = SBUS CH11
     dst[5] = src[11];          // CH6 = SBUS CH12

@@ -136,7 +136,7 @@ cmake --build build -j4
   |--------|-------------|-----------|
   | CH1    | CH3         |           |
   | CH2    | CH1         | yes       |
-  | CH3    | CH5         | yes       |
+  | CH3    | CH5         |           |
   | CH4    | CH6         | yes       |
   | CH5    | CH11        |           |
   | CH6    | CH12        |           |
