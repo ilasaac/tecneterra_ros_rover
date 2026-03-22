@@ -108,6 +108,9 @@ class RoverPositionManager(
     // Per-rover last GLOBAL_POSITION_INT time_boot_ms — discard out-of-order packets
     private val roverLastPosTms = HashMap<Int, Long>()
 
+    // Per-rover last NAMED_VALUE_FLOAT time_boot_ms — discard out-of-order packets
+    private val roverLastNvfTms = HashMap<Int, Long>()
+
     // Per-rover RC_CHANNELS PPM values — used by checkLinkMismatch
     private val roverPpmChannels = HashMap<Int, IntArray>()
 
@@ -578,6 +581,11 @@ class RoverPositionManager(
 
             // NAMED_VALUE_FLOAT (#251) — custom scalar sensors
             is NamedValueFloat -> {
+                // Discard out-of-order/duplicate packets (broadcast + unicast both arrive).
+                val tMs = payload.timeBootMs().toLong() and 0xFFFFFFFFL
+                val lastNvf = roverLastNvfTms[senderId] ?: -1L
+                if (tMs <= lastNvf) return
+                roverLastNvfTms[senderId] = tMs
                 val name  = payload.name().trimEnd('\u0000')
                 val value = payload.value()
                 when (name) {
