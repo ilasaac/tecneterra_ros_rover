@@ -61,11 +61,14 @@
 #define RELAY_LOW        1250  // below → master manually selected (slave neutral)
 #define RELAY_HIGH       1750  // above → slave manually selected
 
-// PPM speed limit: throttle (CH1=idx0) and spin (CH2=idx1) clamped to ±30%.
-// 30% of 500 µs = 150 µs → hardware PPM stays in [1350, 1650].
+// PPM speed limits (autonomous mode only; SBUS passthrough is unclamped).
+// Throttle (CH1=idx0): ±20% → 20% of 500 µs = 100 µs → [1400, 1600].
+// Spin    (CH2=idx1): ±50% → 50% of 500 µs = 250 µs → [1250, 1750].
 // Other channels and the Jetson serial status are unaffected.
-#define SPEED_LIMIT_MAX  1650U
-#define SPEED_LIMIT_MIN  1350U
+#define THR_LIMIT_MAX  1600U
+#define THR_LIMIT_MIN  1400U
+#define SPIN_LIMIT_MAX 1750U
+#define SPIN_LIMIT_MIN 1250U
 #define EMERGENCY_THRESH 1700
 #define AUTO_THRESH      1700
 
@@ -113,10 +116,13 @@ static void ppm_buf_update(void) {
         uint16_t ch = out_ch[i];
         if (ch < 1000) ch = 1000;
         if (ch > 2000) ch = 2000;
-        // Speed limit: throttle (idx 0) and spin (idx 1) only
-        if (i <= 1) {
-            if (ch > SPEED_LIMIT_MAX) ch = SPEED_LIMIT_MAX;
-            if (ch < SPEED_LIMIT_MIN) ch = SPEED_LIMIT_MIN;
+        // Speed limits: throttle (idx 0) ±20%, spin (idx 1) ±50%
+        if (i == 0) {
+            if (ch > THR_LIMIT_MAX)  ch = THR_LIMIT_MAX;
+            if (ch < THR_LIMIT_MIN)  ch = THR_LIMIT_MIN;
+        } else if (i == 1) {
+            if (ch > SPIN_LIMIT_MAX) ch = SPIN_LIMIT_MAX;
+            if (ch < SPIN_LIMIT_MIN) ch = SPIN_LIMIT_MIN;
         }
         ppm_buf[i * 2]     = PPM_HIGH_COUNT;
         ppm_buf[i * 2 + 1] = (uint32_t)(ch - 302);
