@@ -168,7 +168,7 @@ Inbound MAVLink command handling (`_on_command_long`):
 
 `_on_mission_item` skips `DO_SET_SERVO` items for waypoint publishing (lat=0/lon=0 would navigate to null island); calls `_apply_servo_cmd` instead.
 
-## navigator — Stanley path follower
+## navigator — Stanley / MPC / TTR path follower
 
 Key parameters (in `config/navigator_params.yaml`):
 - `lookahead_distance: 3.0`     metres ahead on segment for heading error θ_e
@@ -196,6 +196,20 @@ Key parameters (in `config/navigator_params.yaml`):
 - `δ` — total steering correction, clamped to ±90°, mapped to PPM via `steer_frac = δ/45`
 
 Speed is held constant at the recorded waypoint speed. No steering-based slowdown.
+
+**TTR controller** (`control_algorithm: 'ttr'`):
+Cascaded dual-PID ported from the ROS1 TTR nav (`Robot::NewGoStraightByPlanD`):
+```
+dis_output   = HightPid.compute(0, cte)           — CTE drives lateral correction
+angle_output = AnglePid.compute(-dis_output, Δhdg) — heading PID with CTE feedforward
+steer_frac   = (angle_output / 25) × max_steering
+```
+- `cte` uses the same `_cte_to_seg` convention (positive = rover LEFT of route)
+- `Δhdg = heading − seg_bearing` (positive = heading right of route)
+- `angle_output > 0` → steer RIGHT → `steer_frac > 0`
+- Speed scales by `lineSpeedFactor = clamp(1 − |cte|/ttr_max_yaw_distance, 0.4, 0.8)`
+- Decelerates within `ttr_target_dece_dis` of the next waypoint
+- PIDs reset at pivot start/end and on large heading errors (align_threshold spin)
 
 **Dual-antenna position usage:**
 - `fix` (rear antenna) + `fix_front` (front antenna) are both subscribed

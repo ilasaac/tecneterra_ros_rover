@@ -114,6 +114,23 @@ def bearing_to(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return (math.degrees(math.atan2(x, y)) + 360) % 360
 
 
+class _PID:
+    """Minimal PID controller — matches TTR PIDController.hpp compute() signature."""
+    def __init__(self, kp: float = 1.0, ki: float = 0.0, kd: float = 0.0):
+        self.kp = kp; self.ki = ki; self.kd = kd
+        self._integral = 0.0; self._prev_error = 0.0
+
+    def compute(self, setpoint: float, feedback: float) -> float:
+        err = setpoint - feedback
+        self._integral += err
+        deriv = err - self._prev_error
+        self._prev_error = err
+        return self.kp * err + self.ki * self._integral + self.kd * deriv
+
+    def clear(self):
+        self._integral = 0.0; self._prev_error = 0.0
+
+
 class NavigatorNode(Node):
 
     def __init__(self):
@@ -150,8 +167,20 @@ class NavigatorNode(Node):
         # between two points closer than this is unreliable with RTK noise, so
         # short segments never trigger pivot detection or chunk splits.
         self.declare_parameter('min_pivot_segment_m',        1.0)
-        # Control algorithm — 'stanley' (default) or 'mpc'
+        # Control algorithm — 'stanley', 'mpc', or 'ttr'
         self.declare_parameter('control_algorithm',          'mpc')
+        # TTR parameters (only used when control_algorithm == 'ttr')
+        # Cascaded dual-PID: HightPid (CTE) feeds into AnglePid (heading+CTE)
+        self.declare_parameter('ttr_angle_kp',               3.0)
+        self.declare_parameter('ttr_angle_ki',               0.0)
+        self.declare_parameter('ttr_angle_kd',               0.1)
+        self.declare_parameter('ttr_hight_kp',               1.5)
+        self.declare_parameter('ttr_hight_ki',               0.0)
+        self.declare_parameter('ttr_hight_kd',               0.0)
+        # CTE at which lineSpeedFactor reaches minimum (0.4×); typical 2–5 m
+        self.declare_parameter('ttr_max_yaw_distance',       3.0)
+        # Distance from waypoint at which deceleration begins
+        self.declare_parameter('ttr_target_dece_dis',        4.0)
         # MPC parameters (only used when control_algorithm == 'mpc')
         self.declare_parameter('mpc_horizon',                10)
         self.declare_parameter('mpc_dt',                     0.2)
@@ -178,6 +207,14 @@ class NavigatorNode(Node):
         self._clearance           = (rover_width / 2.0
                                      + self.get_parameter('obstacle_clearance_m').value)
         self._algo        = self.get_parameter('control_algorithm').value
+        self._ttr_hpid    = _PID(self.get_parameter('ttr_hight_kp').value,
+                                  self.get_parameter('ttr_hight_ki').value,
+                                  self.get_parameter('ttr_hight_kd').value)
+        self._ttr_apid    = _PID(self.get_parameter('ttr_angle_kp').value,
+                                  self.get_parameter('ttr_angle_ki').value,
+                                  self.get_parameter('ttr_angle_kd').value)
+        self._ttr_max_yaw = self.get_parameter('ttr_max_yaw_distance').value
+        self._ttr_dece    = self.get_parameter('ttr_target_dece_dis').value
         self._mpc_N       = int(self.get_parameter('mpc_horizon').value)
         self._mpc_dt      = self.get_parameter('mpc_dt').value
         self._mpc_w_cte   = self.get_parameter('mpc_w_cte').value
@@ -1267,6 +1304,63 @@ class NavigatorNode(Node):
         self._mpc_prev_steers = steers
         return max(-max_s, min(max_s, float(steers[0])))
 
+    # ── TTR controller ────────────────────────────────────────────────────────
+
+    def _ttr_steer(self, flat: float, flon: float,
+                   best_seg: int, dist_to_wp: float,
+                   v_target: float) -> tuple[float, float]:
+        """
+        TTR cascaded dual-PID straight-line controller.
+
+        Port of Robot::NewGoStraightByPlanD():
+          1. dis_output  = HightPid.compute(0, cte)
+             cte > 0 = rover LEFT of route (same as _cte_to_seg convention)
+          2. angle_output = AnglePid.compute(-dis_output, angle_diff)
+             angle_diff = heading − seg_bearing  (positive = heading right of route)
+          3. angle_output > 0 → steer RIGHT (steer_frac > 0 in navigator PPM convention)
+
+        Speed reduced by lineSpeedFactor (proportional to CTE) and by deceleration
+        ramp within ttr_target_dece_dis of the next waypoint.
+
+        Returns (steer_frac, v_mps).
+        """
+        # Segment bearing
+        if best_seg == 0:
+            if self._path_origin_lat is None or not self._path:
+                return 0.0, v_target
+            a_lat, a_lon = self._path_origin_lat, self._path_origin_lon
+        else:
+            a_lat = self._path[best_seg - 1].latitude
+            a_lon = self._path[best_seg - 1].longitude
+        b_lat = self._path[best_seg].latitude
+        b_lon = self._path[best_seg].longitude
+        seg_bearing = bearing_to(a_lat, a_lon, b_lat, b_lon)
+
+        # Heading error: rover heading − segment bearing, wrapped to [−180, 180]
+        angle_diff = ((self._heading - seg_bearing + 180) % 360) - 180
+
+        # CTE (positive = rover LEFT of route — matches _cte_to_seg)
+        cte = self._cte_to_seg(flat, flon, best_seg)
+
+        # Dual PID (TTR NewGoStraightByPlanD)
+        dis_output   = self._ttr_hpid.compute(0.0, cte)
+        angle_output = self._ttr_apid.compute(-dis_output, angle_diff)
+        angle_output = max(-25.0, min(25.0, angle_output))
+
+        # Map to steer_frac: angle_output > 0 → right steer → steer_frac > 0
+        steer_frac = max(-self._max_steer,
+                         min(self._max_steer, (angle_output / 25.0) * self._max_steer))
+
+        # Speed: lineSpeedFactor reduces with CTE magnitude
+        line_factor = max(0.4, min(0.8, 1.0 - abs(cte) / max(self._ttr_max_yaw, 0.1)))
+        v = v_target * line_factor
+
+        # Decelerate near waypoint
+        if dist_to_wp < self._ttr_dece:
+            v *= max(0.3, dist_to_wp / self._ttr_dece)
+
+        return steer_frac, max(self._min_speed, v)
+
     # ── Control loop ──────────────────────────────────────────────────────────
 
     def _control_loop(self):
@@ -1300,6 +1394,7 @@ class NavigatorNode(Node):
             pivot_err = ((self._pivot_target_hdg - self._heading + 180) % 360) - 180
             if abs(pivot_err) < self._hdb:
                 self._pivoting = False
+                self._ttr_apid.clear(); self._ttr_hpid.clear()
                 self.get_logger().info('Pivot complete — continuing')
                 self._advance_path()
             else:
@@ -1372,6 +1467,7 @@ class NavigatorNode(Node):
                 self._pivot_target_hdg = bearing_to(rlat, rlon, nxt_lat, nxt_lon)
                 self._pivoting        = True
                 self._mpc_prev_steers = []   # warm-start stale after stop-and-spin
+                self._ttr_apid.clear(); self._ttr_hpid.clear()
                 self.get_logger().info(
                     f'Waypoint {wp.seq} reached — pivot {turn_angle:.0f}° '
                     f'to {self._pivot_target_hdg:.0f}°')
@@ -1436,21 +1532,23 @@ class NavigatorNode(Node):
         self.xte_pub.publish(xte_msg)
 
         if abs(heading_err) > self._align_thresh:
-            # Large error — spin in place (same for both algorithms)
+            # Large error — spin in place (same for all algorithms)
             spin_dir          = math.copysign(1.0, heading_err)
             steer_ppm         = int(PPM_CENTER - spin_dir * self._max_steer * 500)
             throttle_ppm      = PPM_CENTER
             self._mpc_prev_steers = []   # heading jump → stale warm start
+            self._ttr_apid.clear(); self._ttr_hpid.clear()
         else:
             v_mps        = max(target_spd, self._min_speed)
             throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
 
-            # MPC active for all non-bypass segments — including pivot approach.
-            # The horizon clips at the next pivot; beyond s_clip the reference is
-            # projected along the incoming tangent so it never degenerates when
-            # s_nearest ≈ s_clip.  Once the rover reaches the pivot it stops and
-            # spins before the post-turn segment becomes visible.
-            if self._algo == 'mpc' and not is_bypass:
+            if self._algo == 'ttr':
+                # TTR dual-PID: CTE correction feeds heading correction
+                steer_frac, ttr_v = self._ttr_steer(
+                    flat, flon, best_seg, dist_to_wp, v_mps)
+                throttle_ppm = int(PPM_CENTER + (ttr_v / self._max_speed) * 500)
+            elif self._algo == 'mpc' and not is_bypass:
+                # MPC active for all non-bypass segments — including pivot approach.
                 steer_frac = self._mpc_steer(
                     rlat, rlon, self._heading, s_nearest, v_mps)
             else:

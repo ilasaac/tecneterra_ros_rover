@@ -77,8 +77,17 @@ DEFAULT_NAV: dict = {
     'rover_width_m':             1.0,
     'control_rate':              25.0,
     'max_timeout':               300.0,  # simulation hard stop (seconds)
-    # Control algorithm — 'stanley' or 'mpc'
+    # Control algorithm — 'stanley', 'mpc', or 'ttr'
     'control_algorithm':         'stanley',
+    # TTR dual-PID parameters
+    'ttr_angle_kp':              3.0,
+    'ttr_angle_ki':              0.0,
+    'ttr_angle_kd':              0.1,
+    'ttr_hight_kp':              1.5,
+    'ttr_hight_ki':              0.0,
+    'ttr_hight_kd':              0.0,
+    'ttr_max_yaw_distance':      3.0,
+    'ttr_target_dece_dis':       4.0,
     'mpc_horizon':               5,
     'mpc_dt':                    0.1,
     'mpc_w_cte':                 5.0,
@@ -446,6 +455,23 @@ def _reroute_waypoints(
     return [w for w in new_wps if w.seq != _ORIGIN_SEQ]
 
 
+class _PID:
+    """Minimal PID controller — matches TTR PIDController.hpp."""
+    def __init__(self, kp: float = 1.0, ki: float = 0.0, kd: float = 0.0):
+        self.kp = kp; self.ki = ki; self.kd = kd
+        self._integral = 0.0; self._prev_error = 0.0
+
+    def compute(self, setpoint: float, feedback: float) -> float:
+        err = setpoint - feedback
+        self._integral += err
+        deriv = err - self._prev_error
+        self._prev_error = err
+        return self.kp * err + self.ki * self._integral + self.kd * deriv
+
+    def clear(self):
+        self._integral = 0.0; self._prev_error = 0.0
+
+
 # ── Path navigator (mirrors navigator.py) ────────────────────────────────────
 
 class PathNavigator:
@@ -467,6 +493,12 @@ class PathNavigator:
         self._holding    = False
         self._hold_end   = 0.0
         self._mpc_prev_steers: list[float] = []
+        self._ttr_apid   = _PID(nav.get('ttr_angle_kp', 3.0),
+                                 nav.get('ttr_angle_ki', 0.0),
+                                 nav.get('ttr_angle_kd', 0.1))
+        self._ttr_hpid   = _PID(nav.get('ttr_hight_kp', 1.5),
+                                 nav.get('ttr_hight_ki', 0.0),
+                                 nav.get('ttr_hight_kd', 0.0))
         self._step_info: dict = {}
 
         # Split the full waypoint list into chunks that end at each pivot turn.
@@ -799,6 +831,52 @@ class PathNavigator:
         self._mpc_prev_steers = steers
         return max(-max_s, min(max_s, float(steers[0])))
 
+    # ── TTR controller ─────────────────────────────────────────────────────
+
+    def _ttr_steer(self, flat: float, flon: float,
+                   best_seg: int, dist_to_wp: float,
+                   v_target: float) -> tuple[float, float]:
+        """TTR cascaded dual-PID — mirrors navigator.py._ttr_steer()."""
+        nav       = self._nav
+        max_steer = nav['max_steering']
+        min_spd   = nav['min_speed']
+        max_yaw   = nav.get('ttr_max_yaw_distance', 3.0)
+        dece_dis  = nav.get('ttr_target_dece_dis', 4.0)
+
+        # Segment bearing
+        if best_seg == 0:
+            a_lat, a_lon = self._origin_lat, self._origin_lon
+        else:
+            a_lat, a_lon = self._wps[best_seg - 1].lat, self._wps[best_seg - 1].lon
+        b_lat, b_lon = self._wps[best_seg].lat, self._wps[best_seg].lon
+        seg_bearing  = _bearing_to(a_lat, a_lon, b_lat, b_lon)
+
+        # Heading error (TTR convention): heading − seg_bearing
+        # Must use rover heading from the caller — stored in _step_info by step()
+        heading    = self._step_info.get('_heading', 0.0)
+        angle_diff = ((heading - seg_bearing + 180) % 360) - 180
+
+        # CTE (positive = rover LEFT of route)
+        cte = self._cte_to_seg(flat, flon, best_seg)
+
+        # Dual PID
+        dis_output   = self._ttr_hpid.compute(0.0, cte)
+        angle_output = self._ttr_apid.compute(-dis_output, angle_diff)
+        angle_output = max(-25.0, min(25.0, angle_output))
+
+        steer_frac = max(-max_steer,
+                         min(max_steer, (angle_output / 25.0) * max_steer))
+
+        # Speed: lineSpeedFactor reduces with CTE magnitude
+        line_factor = max(0.4, min(0.8, 1.0 - abs(cte) / max(max_yaw, 0.1)))
+        v = v_target * line_factor
+
+        # Decelerate near waypoint
+        if dist_to_wp < dece_dis:
+            v *= max(0.3, dist_to_wp / dece_dis)
+
+        return steer_frac, max(min_spd, v)
+
     # ── Control step ───────────────────────────────────────────────────────
 
     def step(self, rlat: float, rlon: float,
@@ -841,6 +919,7 @@ class PathNavigator:
             pivot_err = ((self._pivot_hdg - heading + 180) % 360) - 180
             if abs(pivot_err) < hdb:
                 self._pivoting = False
+                self._ttr_apid.clear(); self._ttr_hpid.clear()
                 self._advance()
             else:
                 # Proportional spin: full speed above 45°, linear ramp below.
@@ -908,6 +987,7 @@ class PathNavigator:
                 self._pivot_hdg       = _bearing_to(rlat, rlon, nxt_lat, nxt_lon)
                 self._pivoting        = True
                 self._mpc_prev_steers = []
+                self._ttr_apid.clear(); self._ttr_hpid.clear()
                 return PPM_CENTER, PPM_CENTER, best_seg, False
             else:
                 self._advance()
@@ -936,34 +1016,38 @@ class PathNavigator:
         # Bypass waypoints: zero CTE — heading error to the bypass point is enough.
         cte            = 0.0 if is_bypass else self._cte_to_seg(flat, flon, best_seg)
 
-        self._step_info.update({'heading_err': heading_err, 'cte': cte})
+        self._step_info.update({'heading_err': heading_err, 'cte': cte,
+                                '_heading': heading})
 
         if abs(heading_err) > align_thresh:
             spin_dir              = math.copysign(1.0, heading_err)
             steer_ppm             = int(PPM_CENTER - spin_dir * max_steer * 500)
             self._mpc_prev_steers = []
+            self._ttr_apid.clear(); self._ttr_hpid.clear()
             return PPM_CENTER, steer_ppm, best_seg, False
 
         v_mps        = max(target_spd, min_spd)
         throttle_ppm = int(PPM_CENTER + (v_mps / max_spd) * 500)
 
-        # Use MPC for all non-bypass segments — including the approach to a
-        # pivot waypoint.  The horizon clips at the pivot; beyond s_clip the
-        # reference is projected along the incoming tangent so the reference
-        # never degenerates when s_nearest ≈ s_clip.
-        use_mpc = self._algo == 'mpc' and not is_bypass
-        if use_mpc:
+        if self._algo == 'ttr':
+            steer_frac, ttr_v = self._ttr_steer(
+                flat, flon, best_seg, dist_to_wp, v_mps)
+            throttle_ppm = int(PPM_CENTER + (ttr_v / max_spd) * 500)
+            algo_mode = 'ttr'
+        elif self._algo == 'mpc' and not is_bypass:
             steer_frac = self._mpc_steer(rlat, rlon, heading, s_nearest, v_mps)
+            algo_mode = 'mpc'
         else:
             # Stanley controller: δ = θ_e + arctan(k · e_cte / (v + ε))
             stanley_ang = heading_err + math.degrees(
                 math.atan2(k * cte, max(v_mps, softening)))
             stanley_ang = max(-90.0, min(90.0, stanley_ang))
             steer_frac  = max(-max_steer, min(max_steer, stanley_ang / 45.0))
+            algo_mode = 'stanley'
         self._step_info.update({
             'steer_frac': steer_frac,
-            'v_mps': v_mps,
-            'mode': 'mpc' if use_mpc else 'stanley',
+            'v_mps': v_mps if self._algo != 'ttr' else ttr_v,
+            'mode': algo_mode,
         })
         steer_ppm = int(PPM_CENTER - steer_frac * 500)
 
