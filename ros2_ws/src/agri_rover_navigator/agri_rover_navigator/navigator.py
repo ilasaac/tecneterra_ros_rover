@@ -1436,11 +1436,12 @@ class NavigatorNode(Node):
         channels     = [PPM_CENTER] * 9
         channels[0]  = throttle
         channels[1]  = steering
-        channels[2]  = 1900               # PPM CH3 = arm/enable switch held HIGH
-        channels[4]  = self._servo_ch[0]   # PPM CH5
-        channels[5]  = self._servo_ch[1]   # PPM CH6
-        channels[6]  = self._servo_ch[2]   # PPM CH7
-        channels[7]  = self._servo_ch[3]   # PPM CH8
+        channels[2]  = 1900   # PPM CH3
+        channels[3]  = 1900   # PPM CH4
+        channels[4]  = 1000   # PPM CH5
+        channels[5]  = 1000   # PPM CH6
+        channels[6]  = 1500   # PPM CH7
+        channels[7]  = 1900   # PPM CH8
         msg.channels = channels
         msg.mode     = 'AUTONOMOUS'
         msg.stamp    = self.get_clock().now().to_msg()
