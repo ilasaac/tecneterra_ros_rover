@@ -1436,6 +1436,7 @@ class NavigatorNode(Node):
         channels     = [PPM_CENTER] * 9
         channels[0]  = throttle
         channels[1]  = steering
+        channels[2]  = 1900               # PPM CH3 = arm/enable switch held HIGH
         channels[4]  = self._servo_ch[0]   # PPM CH5
         channels[5]  = self._servo_ch[1]   # PPM CH6
         channels[6]  = self._servo_ch[2]   # PPM CH7
