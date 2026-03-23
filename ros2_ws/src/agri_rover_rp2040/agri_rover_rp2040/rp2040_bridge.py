@@ -182,6 +182,7 @@ class Rp2040BridgeNode(Node):
     def _on_cmd_override(self, msg: RCInput):
         """Forward autonomous command to RP2040 as <J:c0,...,c7>."""
         chs = ','.join(str(c) for c in list(msg.channels[:8]))
+        self.get_logger().info(f'CMD -> <J:{chs}>')
         self._uart_write(f'<J:{chs}>\n')
 
     def _uart_write(self, text: str):
