@@ -137,7 +137,7 @@ class NavigatorNode(Node):
         #   pivot_approach_dist — distance (metres) at which the rover switches from
         #                        path-lookahead to direct-to-waypoint aiming and begins
         #                        slowing to min_speed, ensuring it arrives precisely.
-        self.declare_parameter('pivot_threshold',           60.0)
+        self.declare_parameter('pivot_threshold',           30.0)
         self.declare_parameter('pivot_approach_dist',        2.0)
         # Obstacle avoidance:
         #   rover_width_m       — physical rover width; half of this is the minimum
@@ -146,6 +146,10 @@ class NavigatorNode(Node):
         #   effective clearance  = rover_width_m/2 + obstacle_clearance_m
         self.declare_parameter('rover_width_m',              1.4)
         self.declare_parameter('obstacle_clearance_m',       0.5)
+        # Minimum segment length (metres) for pivot-turn detection.  Bearing
+        # between two points closer than this is unreliable with RTK noise, so
+        # short segments never trigger pivot detection or chunk splits.
+        self.declare_parameter('min_pivot_segment_m',        1.0)
         # Control algorithm — 'stanley' (default) or 'mpc'
         self.declare_parameter('control_algorithm',          'mpc')
         # MPC parameters (only used when control_algorithm == 'mpc')
@@ -169,6 +173,7 @@ class NavigatorNode(Node):
         self._stanley_softening   = self.get_parameter('stanley_softening').value
         self._pivot_threshold     = self.get_parameter('pivot_threshold').value
         self._pivot_approach_dist = self.get_parameter('pivot_approach_dist').value
+        self._min_pivot_seg       = self.get_parameter('min_pivot_segment_m').value
         rover_width               = self.get_parameter('rover_width_m').value
         self._clearance           = (rover_width / 2.0
                                      + self.get_parameter('obstacle_clearance_m').value)
@@ -829,20 +834,36 @@ class NavigatorNode(Node):
             if i in full_bypass:
                 current_bypass.add(local_idx)
 
-            # Compute turn angle at wp[i] if not the last waypoint
+            # Compute turn angle at wp[i] if not the last waypoint.
+            # Skip if either adjacent segment is below min_pivot_segment_m — bearing
+            # on short segments is dominated by GPS noise and must not create chunks.
             if i < n - 1:
+                out_len = haversine(full_path[i].latitude,     full_path[i].longitude,
+                                    full_path[i + 1].latitude, full_path[i + 1].longitude)
                 if i == 0 and origin_lat is not None:
-                    in_brg = bearing_to(origin_lat, origin_lon,
-                                        full_path[0].latitude, full_path[0].longitude)
+                    in_len = haversine(origin_lat, origin_lon,
+                                       full_path[0].latitude, full_path[0].longitude)
                 elif i == 0:
-                    in_brg = bearing_to(full_path[0].latitude, full_path[0].longitude,
-                                        full_path[1].latitude, full_path[1].longitude)
+                    in_len = haversine(full_path[0].latitude, full_path[0].longitude,
+                                       full_path[1].latitude, full_path[1].longitude)
                 else:
-                    in_brg = bearing_to(full_path[i - 1].latitude, full_path[i - 1].longitude,
-                                        full_path[i].latitude,     full_path[i].longitude)
-                out_brg = bearing_to(full_path[i].latitude,     full_path[i].longitude,
-                                     full_path[i + 1].latitude, full_path[i + 1].longitude)
-                ta = abs(((out_brg - in_brg + 180) % 360) - 180)
+                    in_len = haversine(full_path[i - 1].latitude, full_path[i - 1].longitude,
+                                       full_path[i].latitude,     full_path[i].longitude)
+                if in_len >= self._min_pivot_seg and out_len >= self._min_pivot_seg:
+                    if i == 0 and origin_lat is not None:
+                        in_brg = bearing_to(origin_lat, origin_lon,
+                                            full_path[0].latitude, full_path[0].longitude)
+                    elif i == 0:
+                        in_brg = bearing_to(full_path[0].latitude, full_path[0].longitude,
+                                            full_path[1].latitude, full_path[1].longitude)
+                    else:
+                        in_brg = bearing_to(full_path[i - 1].latitude, full_path[i - 1].longitude,
+                                            full_path[i].latitude,     full_path[i].longitude)
+                    out_brg = bearing_to(full_path[i].latitude,     full_path[i].longitude,
+                                         full_path[i + 1].latitude, full_path[i + 1].longitude)
+                    ta = abs(((out_brg - in_brg + 180) % 360) - 180)
+                else:
+                    ta = 0.0
                 if ta >= self._pivot_threshold:
                     # Close current chunk at this pivot wp; next chunk origin = this wp
                     chunks.append((list(current_wps), set(current_bypass),
@@ -920,20 +941,35 @@ class NavigatorNode(Node):
         """
         Absolute heading change at waypoint _path[idx] (degrees, 0–180).
         Returns 0 for the last waypoint (no outgoing segment).
-        Uses path origin as the incoming direction for the first waypoint.
+        Returns 0 when either adjacent segment is shorter than min_pivot_segment_m
+        — bearing between nearly-coincident points is dominated by GPS noise and
+        must not trigger pivot detection (common with closely-recorded waypoints).
         """
         if idx >= len(self._path) - 1:
             return 0.0
-        # Outgoing segment: path[idx] → path[idx+1]
+        # Outgoing segment must be long enough for reliable bearing
+        out_len = haversine(self._path[idx].latitude,     self._path[idx].longitude,
+                            self._path[idx + 1].latitude, self._path[idx + 1].longitude)
+        if out_len < self._min_pivot_seg:
+            return 0.0
+        # Outgoing bearing: path[idx] → path[idx+1]
         hdg_out = bearing_to(self._path[idx].latitude,     self._path[idx].longitude,
                              self._path[idx + 1].latitude, self._path[idx + 1].longitude)
         # Incoming segment
         if idx == 0:
             if self._path_origin_lat is None:
                 return 0.0
+            in_len = haversine(self._path_origin_lat, self._path_origin_lon,
+                               self._path[0].latitude, self._path[0].longitude)
+            if in_len < self._min_pivot_seg:
+                return 0.0
             hdg_in = bearing_to(self._path_origin_lat,      self._path_origin_lon,
                                 self._path[0].latitude,     self._path[0].longitude)
         else:
+            in_len = haversine(self._path[idx - 1].latitude, self._path[idx - 1].longitude,
+                               self._path[idx].latitude,     self._path[idx].longitude)
+            if in_len < self._min_pivot_seg:
+                return 0.0
             hdg_in = bearing_to(self._path[idx - 1].latitude, self._path[idx - 1].longitude,
                                 self._path[idx].latitude,     self._path[idx].longitude)
         return abs(((hdg_out - hdg_in + 180) % 360) - 180)
