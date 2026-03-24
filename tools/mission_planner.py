@@ -38,6 +38,9 @@ DEFAULT_LAT  = 20.727715
 DEFAULT_LON  = -103.566782
 DEFAULT_PORT = 8089
 
+# Unique per-launch token — forces browser cache miss on every server restart
+_SERVER_VER  = str(int(_time.time()))
+
 # ── Mission file storage ───────────────────────────────────────────────────────
 MISSIONS_DIR = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions'))
@@ -255,6 +258,7 @@ tr:hover td{background:#1e1e3a}
 <body>
 <div id="sidebar">
   <div class="toolbar">
+    <span style="font-size:9px;color:#556;margin-right:auto;align-self:center">v=SERVER_VER</span>
     <button class="btn-blue" id="btn-add" onclick="toggleAddMode()">+ Add WP</button>
     <button id="btn-obs" class="btn-red" onclick="toggleObsMode()">&#9632; Obstacle</button>
     <button id="btn-meas" class="btn-blue" onclick="toggleMeasureMode()" title="Measure distance from cursor to planned route">&#8614; Dist</button>
@@ -1486,7 +1490,8 @@ resizeCanvas();
 def _build_page(default_lat: float, default_lon: float) -> str:
     return (_HTML_TEMPLATE
             .replace('START_LAT', str(default_lat))
-            .replace('START_LON', str(default_lon)))
+            .replace('START_LON', str(default_lon))
+            .replace('SERVER_VER', _SERVER_VER))
 
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
@@ -1494,13 +1499,13 @@ def _build_page(default_lat: float, default_lon: float) -> str:
 class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-        if self.path.startswith('/?') or self.path == '/index.html':
-            # Redirect cache-busting URLs back to /
+        if self.path == '/':
+            # Redirect to versioned URL — browser can't serve this from cache
             self.send_response(302)
-            self.send_header('Location', '/')
+            self.send_header('Location', f'/?v={_SERVER_VER}')
             self.end_headers()
             return
-        if self.path == '/':
+        if self.path == f'/?v={_SERVER_VER}':
             body = _build_page(self.server.default_lat,
                                self.server.default_lon).encode()
             self.send_response(200)
