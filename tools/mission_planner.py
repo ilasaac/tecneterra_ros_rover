@@ -73,6 +73,8 @@ def _list_mission_files() -> list[dict]:
 # ── MAVLink passive snooper ────────────────────────────────────────────────────
 _snooped:      dict             = {}   # last captured mission {waypoints, obstacles, rover}
 _snooped_lock: _threading.Lock = _threading.Lock()
+_rover_live:   dict             = {}   # sysid → {lat, lon, hdg, ts}
+_rover_live_lock: _threading.Lock = _threading.Lock()
 
 def _parse_fence_buf(fence_buf: list) -> list:
     """[(lat, lon, n), ...] → [[[lat,lon],...], ...] grouped by vertex count."""
@@ -125,7 +127,16 @@ def _start_snooper():
                 continue
             for msg in (msgs or []):
                 t = msg.get_type()
-                if t == 'MISSION_COUNT':
+                if t == 'GLOBAL_POSITION_INT':
+                    hdg = msg.hdg  # cdeg, 65535=unknown
+                    with _rover_live_lock:
+                        _rover_live[sysid] = {
+                            'lat': msg.lat / 1e7,
+                            'lon': msg.lon / 1e7,
+                            'hdg': hdg / 100.0 if hdg != 65535 else None,
+                            'ts': _time.time(),
+                        }
+                elif t == 'MISSION_COUNT':
                     buf[sysid] = {'count': msg.count, 'nav': {}, 'fence': []}
                 elif t == 'MISSION_ITEM_INT' and sysid in buf:
                     b = buf[sysid]
@@ -431,6 +442,7 @@ let simResult  = null;
 let obstacles  = [];
 let obsMode    = false;
 let obsCurPts  = [];
+let liveRovers = {};   // sysid → {lat, lon, hdg, ts}
 
 // Drag / pan tracking
 let _drag    = null;   // {type:'wp',idx} | {type:'pan',sx,sy,sLat,sLon}
@@ -476,6 +488,7 @@ function redraw() {
   drawWaypoints();
   drawStartMarker();
   drawRover();
+  drawLiveRovers();
   drawMeasureOverlay();
 }
 
@@ -1391,6 +1404,54 @@ function drawRover() {
   ctx.restore();
 }
 
+// ── Live rover overlay ────────────────────────────────────────────
+const ROVER_COLORS = {1: '#ff7700', 2: '#00e5ff'};  // orange=RV1, cyan=RV2
+
+function drawLiveRovers() {
+  const now = Date.now() / 1000;
+  for (const [sid, r] of Object.entries(liveRovers)) {
+    if (now - r.ts > 5) continue;   // stale > 5 s — hide
+    const id = parseInt(sid);
+    const color = ROVER_COLORS[id] || '#aaa';
+    const p = project(r.lat, r.lon);
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    if (r.hdg != null) ctx.rotate(r.hdg * Math.PI / 180);
+    // Chevron arrow (same shape as Android GQC)
+    const dp = 10;
+    ctx.beginPath();
+    ctx.moveTo(0, -dp * 1.4);
+    ctx.lineTo(dp, dp * 0.7);
+    ctx.lineTo(0, dp * 0.2);
+    ctx.lineTo(-dp, dp * 0.7);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.9;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+    // Label
+    ctx.fillStyle = color;
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('RV' + id, p.x + 13, p.y + 4);
+  }
+}
+
+async function pollLiveRovers() {
+  try {
+    const resp = await fetch('/rover_live');
+    const d = await resp.json();
+    liveRovers = d;
+    redraw();
+  } catch(e) {}
+}
+setInterval(pollLiveRovers, 2000);
+pollLiveRovers();
+
 // ── Init ──────────────────────────────────────────────────────────
 resizeCanvas();
 </script>
@@ -1433,6 +1494,11 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == '/snooped_mission':
             with _snooped_lock:
                 data = dict(_snooped)
+            self._json(data)
+
+        elif self.path == '/rover_live':
+            with _rover_live_lock:
+                data = {str(k): v for k, v in _rover_live.items()}
             self._json(data)
 
         else:
