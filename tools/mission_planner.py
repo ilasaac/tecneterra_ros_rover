@@ -179,8 +179,10 @@ def _mavlink_upload(waypoints: list, obstacles: list,
         mav.srcComponent = 0
         def _send(pkt):
             sock.sendto(pkt.pack(mav), (rover_ip, rover_port))
-        _send(mav.mission_count_encode(rover_sysid, 0, len(items),
-                                       mavtype=0))
+        try:
+            _send(mav.mission_count_encode(rover_sysid, 0, len(items), mavtype=0))
+        except TypeError:
+            _send(mav.mission_count_encode(rover_sysid, 0, len(items)))
         _time.sleep(0.15)   # GQC streaming delay
         for seq, item in enumerate(items):
             _send(mav.mission_item_int_encode(
