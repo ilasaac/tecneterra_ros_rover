@@ -704,7 +704,7 @@ class PathNavigator:
             return 0.0, 0
         best_s, best_seg, best_dist = 0.0, self.path_idx, float('inf')
 
-        for seg_k in range(self.path_idx, min(self.path_idx + 2, len(self._wps))):
+        for seg_k in range(self.path_idx, min(self.path_idx + 1, len(self._wps))):
             if seg_k == 0:
                 a_lat, a_lon, s_a = self._origin_lat, self._origin_lon, 0.0
             else:
@@ -738,6 +738,30 @@ class PathNavigator:
                 best_seg  = seg_k
 
         return best_s, best_seg
+
+    def _past_waypoint(self, lat: float, lon: float) -> bool:
+        """True if the rover has passed the current waypoint along the segment."""
+        seg_k = self.path_idx
+        if seg_k >= len(self._wps):
+            return False
+        if seg_k == 0:
+            a_lat, a_lon = self._origin_lat, self._origin_lon
+        else:
+            a_lat, a_lon = self._wps[seg_k - 1].lat, self._wps[seg_k - 1].lon
+        b_lat, b_lon = self._wps[seg_k].lat, self._wps[seg_k].lon
+
+        mid_lat = math.radians((a_lat + b_lat) / 2)
+        cos_lat = math.cos(mid_lat) or 1e-9
+        m_lat, m_lon = 111_320.0, 111_320.0 * cos_lat
+        seg_dy = (b_lat - a_lat) * m_lat
+        seg_dx = (b_lon - a_lon) * m_lon
+        seg_len_sq = seg_dx * seg_dx + seg_dy * seg_dy
+        if seg_len_sq < 0.01:
+            return False
+        rv_dy = (lat - a_lat) * m_lat
+        rv_dx = (lon - a_lon) * m_lon
+        t = (rv_dx * seg_dx + rv_dy * seg_dy) / seg_len_sq
+        return t >= 1.0
 
     def _cte_to_seg(self, lat: float, lon: float, seg_idx: int) -> float:
         if seg_idx == 0:
@@ -1084,7 +1108,11 @@ class PathNavigator:
 
         # Waypoint advance — bypass waypoints require physical proximity (arc-length
         # advance is disabled so short bypass arcs are not immediately skipped).
-        reached = dist_to_wp < accept or (not needs_pivot and not is_bypass and s_nearest > wp_s + accept)
+        # Overshoot: rover passed waypoint along the segment direction.
+        # Prevents getting stuck when the rover slightly misses a waypoint.
+        past_wp = (not needs_pivot and not is_bypass
+                   and self._past_waypoint(rlat, rlon))
+        reached = dist_to_wp < accept or past_wp
         if reached:
             if wp.hold_secs > 0.0:
                 self._holding  = True
@@ -1234,7 +1262,7 @@ def compute_pivot_wps(waypoints: list[SimWaypoint],
 def simulate(waypoints:       list[SimWaypoint],
              start_lat:       float,
              start_lon:       float,
-             start_heading:   float,
+             start_heading:   float | None = None,
              nav_params:      dict | None = None,
              phys_params:     dict | None = None,
              obstacles:       list[list[list[float]]] | None = None,
@@ -1257,6 +1285,17 @@ def simulate(waypoints:       list[SimWaypoint],
     phys  = {**DEFAULT_PHYS, **(phys_params or {})}
     dt    = 1.0 / nav['control_rate']
     bm    = phys['baseline_m']
+
+    # Auto-compute heading: point along the first path segment if not specified
+    if start_heading is None:
+        if len(waypoints) >= 2:
+            start_heading = _bearing_to(waypoints[0].lat, waypoints[0].lon,
+                                        waypoints[1].lat, waypoints[1].lon)
+        elif waypoints:
+            start_heading = _bearing_to(start_lat, start_lon,
+                                        waypoints[0].lat, waypoints[0].lon)
+        else:
+            start_heading = 0.0
 
     # Build expanded polygons and rerouted waypoints if obstacles provided
     expanded_polygons: list[list[tuple[float, float]]] = []
@@ -1648,7 +1687,7 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='Simulate rover mission path')
     ap.add_argument('--lat',         type=float, required=True, help='Start latitude')
     ap.add_argument('--lon',         type=float, required=True, help='Start longitude')
-    ap.add_argument('--heading',     type=float, default=0.0,   help='Start heading (deg N)')
+    ap.add_argument('--heading',     type=float, default=None,   help='Start heading (deg N); auto = bearing to wp[0]')
     ap.add_argument('--wheelbase',   type=float, default=DEFAULT_PHYS['wheelbase'])
     ap.add_argument('--turn-scale',  type=float, default=DEFAULT_PHYS['turn_scale'])
     ap.add_argument('--algo',        type=str,   default=None,

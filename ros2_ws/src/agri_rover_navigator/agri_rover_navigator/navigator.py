@@ -1029,7 +1029,7 @@ class NavigatorNode(Node):
         best_seg  = self._path_idx
         best_dist = float('inf')
 
-        for seg_k in range(self._path_idx, min(self._path_idx + 2, len(self._path))):
+        for seg_k in range(self._path_idx, min(self._path_idx + 1, len(self._path))):
             # Segment endpoints and arc-length bounds
             if seg_k == 0:
                 if self._path_origin_lat is None:
@@ -1081,6 +1081,34 @@ class NavigatorNode(Node):
                 best_seg  = seg_k
 
         return best_s, best_seg
+
+    def _past_waypoint(self, lat: float, lon: float) -> bool:
+        """True if the rover has passed the current waypoint along the segment."""
+        seg_k = self._path_idx
+        if seg_k >= len(self._path):
+            return False
+        if seg_k == 0:
+            if self._path_origin_lat is None:
+                return False
+            a_lat, a_lon = self._path_origin_lat, self._path_origin_lon
+        else:
+            a_lat = self._path[seg_k - 1].latitude
+            a_lon = self._path[seg_k - 1].longitude
+        b_lat = self._path[seg_k].latitude
+        b_lon = self._path[seg_k].longitude
+
+        mid_lat = math.radians((a_lat + b_lat) / 2)
+        cos_lat = math.cos(mid_lat) or 1e-9
+        m_lat, m_lon = 111_320.0, 111_320.0 * cos_lat
+        seg_dy = (b_lat - a_lat) * m_lat
+        seg_dx = (b_lon - a_lon) * m_lon
+        seg_len_sq = seg_dx * seg_dx + seg_dy * seg_dy
+        if seg_len_sq < 0.01:
+            return False
+        rv_dy = (lat - a_lat) * m_lat
+        rv_dx = (lon - a_lon) * m_lon
+        t = (rv_dx * seg_dx + rv_dy * seg_dy) / seg_len_sq
+        return t >= 1.0
 
     def _cte_to_seg(self, lat: float, lon: float, seg_idx: int) -> float:
         """
@@ -1442,10 +1470,15 @@ class NavigatorNode(Node):
         dist_to_wp          = haversine(rlat, rlon, wp.latitude, wp.longitude)
 
         # ── Waypoint advance ─────────────────────────────────────────────────
-        # For pivot waypoints: only proximity triggers advance (arc-length shortcut
-        # disabled) so the rover must physically arrive at the turn point.
-        # For normal waypoints: both proximity and arc-length overshoot trigger.
-        reached = dist_to_wp < accept or (not needs_pivot and not is_bypass and s_nearest > wp_s + accept)
+        # For pivot waypoints: only proximity triggers advance so the rover
+        # must physically arrive at the turn point.
+        # For normal waypoints: proximity OR segment overshoot (rover passed
+        # the waypoint along the segment direction) triggers advance.
+        # Overshoot: rover passed waypoint along the segment direction.
+        # Prevents getting stuck when the rover slightly misses a waypoint.
+        past_wp = (not needs_pivot and not is_bypass
+                   and self._past_waypoint(rlat, rlon))
+        reached = dist_to_wp < accept or past_wp
 
         if reached:
             if not is_bypass and wp.hold_secs > 0.0:

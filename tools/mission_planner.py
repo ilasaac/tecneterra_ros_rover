@@ -1454,7 +1454,7 @@ class _Handler(BaseHTTPRequestHandler):
             start = data.get('start', {})
             start_lat = float(start.get('lat') or wps[0].lat)
             start_lon = float(start.get('lon') or wps[0].lon)
-            start_hdg = float(start.get('heading') or 0)
+            start_hdg = float(start.get('heading')) if start.get('heading') else None
 
             nav_p      = {**DEFAULT_NAV,  **(data.get('nav_params',  {}) or {})}
             phys_p     = {**DEFAULT_PHYS, **(data.get('phys_params', {}) or {})}
