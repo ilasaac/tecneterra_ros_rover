@@ -695,6 +695,7 @@ class PathNavigator:
         self._path_s          = self._compute_arclens()
         self.path_idx         = 0
         self._mpc_prev_steers = []
+        self._spin_target_brg = None
         self._pivoting        = False
         self._holding         = False
         return True
@@ -1180,6 +1181,11 @@ class PathNavigator:
             la_lat, la_lon = self._point_at_s(s_nearest + lookahead)
 
         target_bearing = _bearing_to(rlat, rlon, la_lat, la_lon)
+
+        # Freeze target bearing during spin to prevent GPS antenna arc oscillation
+        if self._spin_target_brg is not None:
+            target_bearing = self._spin_target_brg
+
         heading_err    = ((target_bearing - heading + 180) % 360) - 180
         # Bypass waypoints: zero CTE — heading error to the bypass point is enough.
         # Use path_idx (current target segment) for CTE — not best_seg.
@@ -1193,12 +1199,16 @@ class PathNavigator:
                                 '_heading': heading})
 
         if abs(heading_err) > align_thresh:
+            if self._spin_target_brg is None:
+                self._spin_target_brg = target_bearing
             # Proportional spin: full steer at 90°, half steer at 45°.
             steer_frac            = max(-max_steer, min(max_steer, heading_err / 45.0))
             steer_ppm             = int(PPM_CENTER - steer_frac * 500)
             self._mpc_prev_steers = []
             self._ttr_apid.clear(); self._ttr_hpid.clear()
             return PPM_CENTER, steer_ppm, best_seg, False
+
+        self._spin_target_brg = None  # spin resolved — unfreeze
 
         v_mps        = max(target_spd, min_spd)
         throttle_ppm = int(PPM_CENTER + (v_mps / max_spd) * 500)

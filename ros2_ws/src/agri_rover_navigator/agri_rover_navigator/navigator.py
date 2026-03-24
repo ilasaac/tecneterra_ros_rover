@@ -385,6 +385,7 @@ class NavigatorNode(Node):
         self._path_origin_lon        = None
         self._holding                = False
         self._pivoting               = False
+        self._spin_target_brg        = None
         self._mpc_prev_steers        = []
         self._pending_path_chunks    = []
         self._chunk_end_pivot_target = None
@@ -404,6 +405,7 @@ class NavigatorNode(Node):
             self._path_idx        = 0
             self._holding         = False
             self._pivoting               = False
+            self._spin_target_brg        = None
             self._mpc_prev_steers        = []
             self._pending_path_chunks    = []
             self._chunk_end_pivot_target = None
@@ -1566,6 +1568,14 @@ class NavigatorNode(Node):
                 f'rover=({rlat:.7f},{rlon:.7f})')
 
         target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
+
+        # Freeze target bearing during spin so that the GPS antenna sweeping an
+        # arc as the rover rotates (antenna is not at the physical rotation centre)
+        # does not cause target_bearing to oscillate and produce zig-zag steer.
+        # _spin_target_brg is set on the first spin tick and cleared on exit.
+        if self._spin_target_brg is not None:
+            target_bearing = self._spin_target_brg
+
         heading_err    = ((target_bearing - self._heading + 180) % 360) - 180
 
         # ── CTE: front antenna projected onto current target segment ─────────
@@ -1583,8 +1593,11 @@ class NavigatorNode(Node):
 
         if abs(heading_err) > self._align_thresh:
             # Large error — spin in place (same for all algorithms).
-            # Proportional: full steer at 90°, half steer at 45°.
-            # Avoids bang-bang oscillation at 25 Hz that occurs with sign-only control.
+            # Freeze target bearing on first spin tick so GPS antenna arc
+            # (rover not rotating around antenna position) doesn't cause
+            # heading_err to oscillate and produce zig-zag steering.
+            if self._spin_target_brg is None:
+                self._spin_target_brg = target_bearing
             steer_frac        = max(-self._max_steer,
                                     min(self._max_steer, heading_err / 45.0))
             steer_ppm         = int(PPM_CENTER - steer_frac * 500)
@@ -1592,6 +1605,7 @@ class NavigatorNode(Node):
             self._mpc_prev_steers = []   # heading jump -> stale warm start
             self._ttr_apid.clear(); self._ttr_hpid.clear()
         else:
+            self._spin_target_brg = None  # spin resolved — unfreeze
             v_mps        = max(target_spd, self._min_speed)
             throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
 
