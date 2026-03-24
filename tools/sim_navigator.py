@@ -138,34 +138,41 @@ DEFAULT_PHYS: dict = {
     'baseline_m': 1.0,    # metres — rear-to-front antenna separation
 }
 
-# TTR differential-drive physics defaults (from Robot.cpp)
-# SmoothSpeed is DISABLED by default (high accel cap = instant response).
-# Our ESCs respond to PPM directly — the original SmoothSpeed was a CAN-bus
-# motor controller artifact in the TTR hardware, not a physical constraint.
-# To re-enable: set accel_cap_mms_per_tick=15, decel_divisor=10.
+# Differential-drive physics defaults — tuned from real rover dynamics data.
+#
+# Key measurements (dynamics_collector.py, 2026-03-24):
+#   Max straight-line speed:  2.84 m/s (PPM 1939, steer centered)
+#   Spin-in-place turn rate:  ~21 deg/s (full steer, no throttle)
+#   Circle at speed:          ~16 deg/s @ 2.3 m/s, radius ~8 m
+#   Spin lateral drift:       ~0.4 m/s (skid — not modelled, GPS corrects)
+#
+# steering_scale: the real motor controller applies only ~37% of the
+# theoretical TTR VSpeed differential.  Without this, the model spins
+# at 50 deg/s (2.3x faster than reality) and circles at 2 m radius
+# instead of 8 m.
 DEFAULT_TTR_PHYS: dict = {
-    'track_width_m':          0.9,     # Robot_diameter — track width in metres
-    'max_wheel_mms':          1000,    # max_leftWheel_ default (mm/s per wheel)
-    'accel_cap_mms_per_tick': 9999,    # SmoothSpeed disabled (instant response)
+    'track_width_m':          0.9,     # Robot_diameter — physical track width
+    'max_wheel_mms':          2840,    # measured: 2.84 m/s straight-line max
+    'steering_scale':         0.37,    # real steer authority = 37% of TTR angle model
+    'accel_cap_mms_per_tick': 9999,    # SmoothSpeed disabled (ESC response is fast)
     'decel_divisor':          1,       # SmoothSpeed disabled
-    'angular_diff_limit_mms': 800,     # |leftWheel - rightWheel| limit (mm/s)
-    'smooth_tick_hz':         100,     # original SmoothSpeed tick rate (100 Hz = 10 ms)
+    'angular_diff_limit_mms': 600,     # real max diff ~335 mm/s (spin), with headroom
+    'smooth_tick_hz':         100,     # SmoothSpeed tick rate (100 Hz = 10 ms)
 }
 
 
 class DiffDriveState(RoverState):
-    """Differential-drive rover model matching TTR (Robot.cpp) dynamics.
+    """Differential-drive rover model tuned from real rover dynamics data.
 
     Converts PPM throttle+steer to left/right wheel speeds (mm/s), applies
-    SmoothSpeed (acceleration limiter) and angular velocity limit |L-R| < 800,
-    then integrates position via the track-width kinematic model.
+    steering_scale (real motor authority), angular velocity limit, and
+    integrates position via the track-width kinematic model.
 
-    Key TTR formulas (from Robot.cpp):
-      VSpeed = angle_output * Robot_diameter * 1000 * π / 180   (mm/s differential)
-      leftWheel  = max_wheel * factor + VSpeed
-      rightWheel = max_wheel * factor - VSpeed
-      SmoothSpeed: accel +15 mm/s per 10ms tick, decel |diff|/10 per tick
-      Angular limit: if |L-R| > 800 → scale both down
+    Key formulas:
+      VSpeed = angle_output * track_mm * π / 180 * steering_scale
+      leftWheel  = forward_mms + VSpeed
+      rightWheel = forward_mms - VSpeed
+      omega = (L - R) / track_mm
     """
     def __init__(self, lat: float, lon: float, heading_deg: float = 0.0,
                  ttr_phys: dict | None = None, max_steer: float = 0.8):
@@ -173,6 +180,7 @@ class DiffDriveState(RoverState):
         p = {**DEFAULT_TTR_PHYS, **(ttr_phys or {})}
         self._track_m      = p['track_width_m']
         self._max_wheel     = float(p['max_wheel_mms'])
+        self._steer_scale   = float(p.get('steering_scale', 0.37))
         self._accel_cap     = float(p['accel_cap_mms_per_tick'])
         self._decel_div     = float(p['decel_divisor'])
         self._ang_diff_lim  = float(p['angular_diff_limit_mms'])
@@ -199,8 +207,10 @@ class DiffDriveState(RoverState):
         # Reverse: angle_output = steer_frac * 25 / max_steer, clamped ±25°
         angle_deg = steer_frac * 25.0 / self._max_steer
         angle_deg = max(-25.0, min(25.0, angle_deg))
-        # TTR: VSpeed = angle_output * track_mm * π / 180
-        v_speed_mm = angle_deg * (self._track_m * 1000.0) * math.pi / 180.0
+        # VSpeed = angle_output * track_mm * π / 180 * steering_scale
+        # steering_scale accounts for real motor controller applying only a
+        # fraction of the theoretical differential (measured from dynamics data).
+        v_speed_mm = angle_deg * (self._track_m * 1000.0) * math.pi / 180.0 * self._steer_scale
 
         left_target  = forward_mms + v_speed_mm
         right_target = forward_mms - v_speed_mm
@@ -1349,7 +1359,7 @@ def simulate(waypoints:       list[SimWaypoint],
         tp = {**DEFAULT_TTR_PHYS, **ttr_phys}
         print(f'  physics: track={tp["track_width_m"]}m  '
               f'max_wheel={tp["max_wheel_mms"]}mm/s  '
-              f'accel_cap={tp["accel_cap_mms_per_tick"]}mm/s/tick  '
+              f'steer_scale={tp.get("steering_scale", 0.37)}  '
               f'ang_limit={tp["angular_diff_limit_mms"]}mm/s')
         print(f'  pivot_threshold={nav["pivot_threshold"]}°  '
               f'mpc_horizon={nav.get("mpc_horizon",10)}  '
