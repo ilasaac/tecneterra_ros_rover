@@ -220,9 +220,14 @@ class DiffDriveState(RoverState):
             left  /= scale
             right /= scale
 
-        # --- Clamp to max wheel speed ---
-        left  = max(-self._max_wheel, min(self._max_wheel, left))
-        right = max(-self._max_wheel, min(self._max_wheel, right))
+        # --- Clamp to max wheel speed (proportional) ---
+        # Scale both wheels together to preserve the L/R steering ratio.
+        # Independent clamping kills the differential at high speed.
+        max_abs = max(abs(left), abs(right))
+        if max_abs > self._max_wheel:
+            scale = self._max_wheel / max_abs
+            left  *= scale
+            right *= scale
 
         self._last_left  = left
         self._last_right = right
