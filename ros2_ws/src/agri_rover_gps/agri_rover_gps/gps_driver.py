@@ -124,8 +124,9 @@ class GpsDriverNode(Node):
         ])))
         time.sleep(0.05)
 
-        # UBX-CFG-MSG: GGA (F0 00) rate=1 on UART1 (port index 1), 0 on others
-        ser.write(_build(0x06, 0x01, bytes([0xF0, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00])))
+        # UBX-CFG-MSG: GGA (F0 00) rate=1 on UART1 and USB (indices 1 and 3)
+        # GPS connects via USB on this platform; enable both to be safe.
+        ser.write(_build(0x06, 0x01, bytes([0xF0, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00])))
         time.sleep(0.05)
 
         self.get_logger().info(f'UBX configured: {period_ms} ms ({1000//period_ms} Hz) GGA on UART1')
