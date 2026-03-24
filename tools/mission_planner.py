@@ -305,6 +305,23 @@ tr:hover td{background:#1e1e3a}
     </table>
   </div>
   <div id="stats"></div>
+  <div id="playback" style="display:none;padding:6px 8px;border-top:1px solid #333;background:#0a0a14">
+    <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+      <button id="pb-play" onclick="pbToggle()" style="width:28px;padding:2px;font-size:14px;background:#0f3460;color:#fff;border:none;border-radius:3px;cursor:pointer">&#9654;</button>
+      <input id="pb-slider" type="range" min="0" max="0" value="0" step="1"
+             style="flex:1;height:14px;cursor:pointer" oninput="pbSeek(this.value)">
+      <select id="pb-speed" style="width:48px;background:#0a1020;color:#eee;border:1px solid #446;padding:1px;border-radius:2px;font-size:10px"
+              onchange="pbSetSpeed(this.value)">
+        <option value="0.25">0.25x</option>
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="2">2x</option>
+        <option value="4">4x</option>
+      </select>
+    </div>
+    <div id="pb-time" style="font-size:10px;color:#888;margin-bottom:3px">t=0.00s  frame 0/0</div>
+    <div id="pb-info" style="font-size:11px;color:#ccc;line-height:1.5;font-family:monospace"></div>
+  </div>
 </div>
 <!-- ── Mission generator panel ──────────────────────────────────────── -->
 <div id="gen-panel">
@@ -451,6 +468,7 @@ function redraw() {
   drawPivotMarkers();
   drawWaypoints();
   drawStartMarker();
+  drawRover();
   drawMeasureOverlay();
 }
 
@@ -903,6 +921,7 @@ async function runSimulate() {
       <div><span class="lbl">Obstacles:</span> ${obstacles.length}</div>
       <div style="font-size:10px;color:#666;margin-top:4px">Path: green=on-track \u2192 red=high XTE<br>Orange \u21bb = pivot &nbsp; Purple \u21bb = bypass pivot &nbsp; White dashed = reroute</div>`;
     status(`Done. XTE rms=${d.rms_xte.toFixed(3)}m max=${d.max_xte.toFixed(3)}m`);
+    pbInit(d.debug_trace || []);
   } catch(e) {
     statsEl.innerHTML = `<span style="color:#e74c3c">Error: ${e}</span>`;
     status('Simulation failed.', '#e74c3c');
@@ -1228,6 +1247,134 @@ async function importSnooped() {
   status(`Imported from RV${d.rover}: ${waypoints.length} wps, ${obstacles.length} obstacles.`);
 }
 
+// ── Playback / rover debug ─────────────────────────────────────────
+let pbTrace = [];       // debug_trace frames from simulate response
+let pbIdx   = 0;        // current frame index
+let pbTimer = null;     // setInterval id
+let pbRate  = 1;        // playback speed multiplier
+let pbPlaying = false;
+
+function pbInit(trace) {
+  pbTrace = trace || [];
+  pbIdx = 0;
+  pbPlaying = false;
+  if (pbTimer) { clearInterval(pbTimer); pbTimer = null; }
+  const panel = document.getElementById('playback');
+  if (!pbTrace.length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  const slider = document.getElementById('pb-slider');
+  slider.max = pbTrace.length - 1;
+  slider.value = 0;
+  document.getElementById('pb-play').innerHTML = '&#9654;';
+  pbUpdateInfo();
+  redraw();
+}
+
+function pbToggle() {
+  if (!pbTrace.length) return;
+  pbPlaying = !pbPlaying;
+  document.getElementById('pb-play').innerHTML = pbPlaying ? '&#9646;&#9646;' : '&#9654;';
+  if (pbPlaying) {
+    const fps = 10;
+    if (pbTimer) clearInterval(pbTimer);
+    pbTimer = setInterval(() => {
+      pbIdx += Math.max(1, Math.round(pbRate));
+      if (pbIdx >= pbTrace.length) { pbIdx = pbTrace.length - 1; pbToggle(); return; }
+      document.getElementById('pb-slider').value = pbIdx;
+      pbUpdateInfo();
+      redraw();
+    }, 1000 / fps);
+  } else {
+    if (pbTimer) { clearInterval(pbTimer); pbTimer = null; }
+  }
+}
+
+function pbSeek(v) {
+  pbIdx = parseInt(v);
+  pbUpdateInfo();
+  redraw();
+}
+
+function pbSetSpeed(v) { pbRate = parseFloat(v); }
+
+function pbUpdateInfo() {
+  if (!pbTrace.length) return;
+  const f = pbTrace[Math.min(pbIdx, pbTrace.length - 1)];
+  document.getElementById('pb-time').textContent =
+    `t=${f.t.toFixed(2)}s  frame ${pbIdx+1}/${pbTrace.length}`;
+  const info = document.getElementById('pb-info');
+  const modeColor = f.m === 'ttr' ? '#e67e22' : (f.m === 'mpc' ? '#9b59b6' : '#2ecc71');
+  info.innerHTML =
+    `<span style="color:${modeColor}"><b>${f.m || (f.pv ? 'PIVOT' : '—')}</b></span>` +
+    ` &nbsp;WP: <b>${f.wp}</b>  dist: ${f.dw.toFixed(2)}m` +
+    `<br>hdg: <b>${f.h.toFixed(1)}&deg;</b>  hdg_err: <span style="color:${Math.abs(f.he)>10?'#e74c3c':'#2ecc71'}">${f.he>0?'+':''}${f.he.toFixed(1)}&deg;</span>` +
+    `  CTE: <span style="color:${Math.abs(f.cte)>0.3?'#e74c3c':'#2ecc71'}">${f.cte>0?'+':''}${f.cte.toFixed(3)}m</span>` +
+    `<br>steer: <span style="color:#3498db">${f.sf>0?'+':''}${f.sf.toFixed(3)}</span>` +
+    `  spd: ${f.v.toFixed(2)}m/s` +
+    `  PPM: T=${f.tp} S=${f.sp}` +
+    (f.pv ? ' <b style="color:#e67e22">PIVOT</b>' : '');
+}
+
+function drawRover() {
+  if (!pbTrace.length) return;
+  const f = pbTrace[Math.min(pbIdx, pbTrace.length - 1)];
+  const rear   = project(f.rl, f.ro);
+  const front  = project(f.fl, f.fo);
+  const center = project(f.cl, f.co);
+
+  // Line connecting antennas
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(rear.x, rear.y); ctx.lineTo(front.x, front.y); ctx.stroke();
+
+  // Heading arrow from center
+  const hRad = f.h * Math.PI / 180;
+  const arrowLen = 20;
+  const ax = center.x + Math.sin(hRad) * arrowLen;
+  const ay = center.y - Math.cos(hRad) * arrowLen;
+  ctx.strokeStyle = '#f1c40f';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(center.x, center.y); ctx.lineTo(ax, ay); ctx.stroke();
+  // Arrowhead
+  const aRad = 0.4;
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(ax - 6*Math.sin(hRad-aRad), ay + 6*Math.cos(hRad-aRad));
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(ax - 6*Math.sin(hRad+aRad), ay + 6*Math.cos(hRad+aRad));
+  ctx.stroke();
+
+  // Rear antenna (red)
+  ctx.fillStyle = '#e74c3c';
+  ctx.beginPath(); ctx.arc(rear.x, rear.y, 5, 0, 2*Math.PI); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = '9px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('R', rear.x + 7, rear.y + 3);
+
+  // Front antenna (cyan)
+  ctx.fillStyle = '#00bcd4';
+  ctx.beginPath(); ctx.arc(front.x, front.y, 5, 0, 2*Math.PI); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.fillText('F', front.x + 7, front.y + 3);
+
+  // Center (yellow)
+  ctx.fillStyle = '#f1c40f';
+  ctx.beginPath(); ctx.arc(center.x, center.y, 3, 0, 2*Math.PI); ctx.fill();
+
+  // CTE bar visualization: small perpendicular line from center showing CTE magnitude
+  if (f.cte !== 0) {
+    const perpRad = hRad + (f.cte > 0 ? -Math.PI/2 : Math.PI/2);
+    const cteScale = Math.min(Math.abs(f.cte) * 50, 30);  // pixels, capped
+    const cx2 = center.x + Math.sin(perpRad) * cteScale;
+    const cy2 = center.y - Math.cos(perpRad) * cteScale;
+    ctx.strokeStyle = Math.abs(f.cte) > 0.3 ? '#e74c3c' : '#f39c12';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(center.x, center.y); ctx.lineTo(cx2, cy2); ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 // ── Init ──────────────────────────────────────────────────────────
 resizeCanvas();
 </script>
@@ -1334,6 +1481,7 @@ class _Handler(BaseHTTPRequestHandler):
                 'obstacle_polygons': result.obstacle_polygons,
                 'pivot_wps':         pivot_wps,
                 'algorithm':         nav_p.get('control_algorithm', 'stanley'),
+                'debug_trace':       result.debug_trace,
             })
 
         elif self.path == '/save_mission':

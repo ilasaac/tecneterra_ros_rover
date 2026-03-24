@@ -270,6 +270,7 @@ class SimResult:
     rerouted_wps:       list   # [[lat,lon], ...] effective waypoints after rerouting
                                # (includes bypass points; same as original when no obstacles)
     step_log:           list   = field(default_factory=list)  # debug info per step (verbose mode)
+    debug_trace:        list   = field(default_factory=list)  # decimated per-step pose+controller data for playback
 
 
 # ── Math helpers ──────────────────────────────────────────────────────────────
@@ -1311,6 +1312,15 @@ def simulate(waypoints:       list[SimWaypoint],
                                                   rover.heading_deg, t_mono)
         info = dict(path_n._step_info)
         info['step'] = step
+        info['rear_lat'] = rover.lat
+        info['rear_lon'] = rover.lon
+        info['front_lat'] = flat
+        info['front_lon'] = flon
+        info['center_lat'] = rlat
+        info['center_lon'] = rlon
+        info['heading'] = rover.heading_deg
+        info['throttle_ppm'] = thr
+        info['steer_ppm'] = steer
         step_log_data.append(info)
 
         if verbose and step % max(1, int(nav['control_rate'])) == 0:
@@ -1395,7 +1405,44 @@ def simulate(waypoints:       list[SimWaypoint],
         obstacle_polygons = [list(poly) for poly in expanded_polygons],
         rerouted_wps      = [[wp.lat, wp.lon] for wp in effective_wps],
         step_log          = step_log_data,
+        debug_trace       = _build_debug_trace(step_log_data, nav['control_rate']),
     )
+
+
+def _build_debug_trace(step_log: list[dict], control_rate: float,
+                       target_fps: float = 10.0) -> list[dict]:
+    """Decimate step_log to ~target_fps and extract pose+controller fields."""
+    if not step_log:
+        return []
+    every = max(1, int(control_rate / target_fps))
+    trace = []
+    for i, s in enumerate(step_log):
+        if i % every != 0 and i != len(step_log) - 1:
+            continue
+        trace.append({
+            'i':    s.get('step', i),
+            't':    round(s.get('t', 0), 2),
+            # Positions (7 decimal places ≈ 1cm)
+            'rl':   round(s.get('rear_lat', 0), 7),
+            'ro':   round(s.get('rear_lon', 0), 7),
+            'fl':   round(s.get('front_lat', 0), 7),
+            'fo':   round(s.get('front_lon', 0), 7),
+            'cl':   round(s.get('center_lat', 0), 7),
+            'co':   round(s.get('center_lon', 0), 7),
+            'h':    round(s.get('heading', 0), 1),
+            # Controller state
+            'he':   round(s.get('heading_err', 0), 2),
+            'cte':  round(s.get('cte', 0), 3),
+            'sf':   round(s.get('steer_frac', 0), 3),
+            'v':    round(s.get('v_mps', 0), 2),
+            'dw':   round(s.get('dist_to_wp', 0), 2),
+            'wp':   s.get('wp_idx', 0),
+            'm':    s.get('mode', ''),
+            'pv':   1 if s.get('pivoting') else 0,
+            'tp':   s.get('throttle_ppm', 1500),
+            'sp':   s.get('steer_ppm', 1500),
+        })
+    return trace
 
 
 # ── HTML result export ────────────────────────────────────────────────────────
