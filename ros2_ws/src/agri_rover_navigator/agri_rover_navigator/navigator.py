@@ -168,7 +168,7 @@ class NavigatorNode(Node):
         # short segments never trigger pivot detection or chunk splits.
         self.declare_parameter('min_pivot_segment_m',        1.0)
         # Control algorithm — 'stanley', 'mpc', or 'ttr'
-        self.declare_parameter('control_algorithm',          'mpc')
+        self.declare_parameter('control_algorithm',          'stanley')
         # TTR parameters (only used when control_algorithm == 'ttr')
         # Cascaded dual-PID: HightPid (CTE) feeds into AnglePid (heading+CTE)
         self.declare_parameter('ttr_angle_kp',               3.0)
