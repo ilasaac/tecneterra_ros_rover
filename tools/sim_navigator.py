@@ -1099,7 +1099,21 @@ class PathNavigator:
                 return PPM_CENTER, PPM_CENTER, best_seg, False
             else:
                 self._advance()
-                return PPM_CENTER, PPM_CENTER, best_seg, self.path_idx >= len(self._wps)
+                if self.path_idx >= len(self._wps):
+                    return PPM_CENTER, PPM_CENTER, best_seg, True
+                # Don't stop — fall through to the controller so the rover
+                # seamlessly continues toward the next waypoint.  Returning
+                # neutral here caused SmoothSpeed to kill momentum, making
+                # the rover stall for several steps after every advance.
+                # Refresh state for the new target waypoint.
+                wp         = self._wps[self.path_idx]
+                is_bypass  = wp.is_bypass
+                accept     = wp.acceptance_radius if wp.acceptance_radius > 0 else default_accept
+                dist_to_wp = _haversine(rlat, rlon, wp.lat, wp.lon)
+                s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
+                wp_s       = self._path_s[self.path_idx]
+                turn_angle = self._turn_angle_at(self.path_idx)
+                needs_pivot = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
 
         # Lookahead target
         target_spd = wp.speed if wp.speed > 0 else max_spd
