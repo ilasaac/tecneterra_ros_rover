@@ -158,20 +158,23 @@ def _mavlink_upload(waypoints: list, obstacles: list,
         from pymavlink.dialects.v20 import ardupilotmega as _mav_def
     except ImportError:
         return {'ok': False, 'message': 'pymavlink not installed'}
-    # Build item list: fence vertices first, then nav waypoints
-    items = []
-    for poly in (obstacles or []):
-        n = len(poly)
-        for v in poly:
-            items.append({'cmd': 5003, 'p1': float(n), 'p2': 0.0, 'p3': 0.0, 'p4': 0.0,
-                          'lat': float(v[0]), 'lon': float(v[1])})
-    for wp in waypoints:
-        items.append({'cmd': 16, 'p1': 0.0,
-                      'p2': float(wp.get('acceptance_radius') or DEFAULT_NAV['default_acceptance_radius']),
-                      'p3': 0.0, 'p4': float(wp.get('speed') or 0.0),
-                      'lat': float(wp['lat']), 'lon': float(wp['lon'])})
-    if not items:
-        return {'ok': False, 'message': 'No items to upload'}
+    try:
+        # Build item list: fence vertices first, then nav waypoints
+        items = []
+        for poly in (obstacles or []):
+            n = len(poly)
+            for v in poly:
+                items.append({'cmd': 5003, 'p1': float(n), 'p2': 0.0, 'p3': 0.0, 'p4': 0.0,
+                              'lat': float(v[0]), 'lon': float(v[1])})
+        for wp in waypoints:
+            items.append({'cmd': 16, 'p1': 0.0,
+                          'p2': float(wp.get('acceptance_radius') or DEFAULT_NAV['default_acceptance_radius']),
+                          'p3': 0.0, 'p4': float(wp.get('speed') or 0.0),
+                          'lat': float(wp['lat']), 'lon': float(wp['lon'])})
+        if not items:
+            return {'ok': False, 'message': 'No items to upload'}
+    except Exception as e:
+        return {'ok': False, 'message': f'Build error: {e}'}
     try:
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
         mav  = _mav_def.MAVLink(None)
@@ -1079,12 +1082,16 @@ async function uploadRover(roverId) {
   if (!rover_ip) { status(`Enter RV${roverId} IP.`, '#e74c3c'); return; }
   status(`Uploading to RV${roverId}...`, '#f39c12');
   if (obsMode) obsFinish();
-  const resp = await fetch('/upload_rover', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port: 14550, rover_sysid: roverId}),
-  });
-  const d = await resp.json();
-  status(d.message, d.ok ? '#27ae60' : '#e74c3c');
+  try {
+    const resp = await fetch('/upload_rover', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port: 14550, rover_sysid: roverId}),
+    });
+    const d = await resp.json();
+    status(d.message, d.ok ? '#27ae60' : '#e74c3c');
+  } catch(e) {
+    status(`Upload failed: ${e.message}`, '#e74c3c');
+  }
 }
 
 async function pollSnooped() {
@@ -1504,17 +1511,21 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({'ok': True, 'name': name})
 
         elif self.path == '/upload_rover':
-            data      = json.loads(raw)
-            rover_ip  = data.get('rover_ip', '192.168.100.19')
-            rover_port = int(data.get('rover_port', 14550))
-            rover_sysid = int(data.get('rover_sysid', 1))
-            wps = data.get('waypoints', [])
-            obs = data.get('obstacles', [])
-            print(f'[upload] → RV{rover_sysid} @ {rover_ip}:{rover_port}  '
-                  f'wps={len(wps)} obs={len(obs)}', flush=True)
-            result = _mavlink_upload(wps, obs, rover_ip, rover_port, rover_sysid)
-            print(f'[upload] {result["message"]}', flush=True)
-            self._json(result)
+            try:
+                data      = json.loads(raw)
+                rover_ip  = data.get('rover_ip', '192.168.100.19')
+                rover_port = int(data.get('rover_port', 14550))
+                rover_sysid = int(data.get('rover_sysid', 1))
+                wps = data.get('waypoints', [])
+                obs = data.get('obstacles', [])
+                print(f'[upload] → RV{rover_sysid} @ {rover_ip}:{rover_port}  '
+                      f'wps={len(wps)} obs={len(obs)}', flush=True)
+                result = _mavlink_upload(wps, obs, rover_ip, rover_port, rover_sysid)
+                print(f'[upload] {result["message"]}', flush=True)
+                self._json(result)
+            except Exception as e:
+                print(f'[upload] handler error: {e}', flush=True)
+                self._json({'ok': False, 'message': f'Server error: {e}'})
 
         elif self.path == '/export_csv':
             data = json.loads(raw)
