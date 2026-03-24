@@ -704,7 +704,7 @@ class PathNavigator:
             return 0.0, 0
         best_s, best_seg, best_dist = 0.0, self.path_idx, float('inf')
 
-        for seg_k in range(self.path_idx, len(self._wps)):
+        for seg_k in range(self.path_idx, min(self.path_idx + 1, len(self._wps))):
             if seg_k == 0:
                 a_lat, a_lon, s_a = self._origin_lat, self._origin_lon, 0.0
             else:
