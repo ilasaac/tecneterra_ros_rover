@@ -1108,7 +1108,7 @@ class PathNavigator:
                 # Refresh state for the new target waypoint.
                 wp         = self._wps[self.path_idx]
                 is_bypass  = wp.is_bypass
-                accept     = wp.acceptance_radius if wp.acceptance_radius > 0 else default_accept
+                accept     = wp.acceptance_radius if wp.acceptance_radius > 0 else accept_r
                 dist_to_wp = _haversine(rlat, rlon, wp.lat, wp.lon)
                 s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
                 wp_s       = self._path_s[self.path_idx]
