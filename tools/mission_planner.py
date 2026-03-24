@@ -318,6 +318,8 @@ tr:hover td{background:#1e1e3a}
         <option value="2">2x</option>
         <option value="4">4x</option>
       </select>
+      <button onclick="pbDownload()" title="Download debug trace JSON"
+              style="padding:2px 5px;font-size:10px;background:#1a3050;color:#8cf;border:1px solid #446;border-radius:3px;cursor:pointer">&#x2B73;</button>
     </div>
     <div id="pb-time" style="font-size:10px;color:#888;margin-bottom:3px">t=0.00s  frame 0/0</div>
     <div id="pb-info" style="font-size:11px;color:#ccc;line-height:1.5;font-family:monospace"></div>
@@ -1297,6 +1299,16 @@ function pbSeek(v) {
 
 function pbSetSpeed(v) { pbRate = parseFloat(v); }
 
+function pbDownload() {
+  if (!pbTrace.length) return;
+  const blob = new Blob([JSON.stringify(pbTrace, null, 1)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'sim_debug_trace.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 function pbUpdateInfo() {
   if (!pbTrace.length) return;
   const f = pbTrace[Math.min(pbIdx, pbTrace.length - 1)];
@@ -1312,6 +1324,7 @@ function pbUpdateInfo() {
     `<br>steer: <span style="color:#3498db">${f.sf>0?'+':''}${f.sf.toFixed(3)}</span>` +
     `  spd: ${f.v.toFixed(2)}m/s` +
     `  PPM: T=${f.tp} S=${f.sp}` +
+    `  seg: ${f.cs!=null?f.cs:'?'}` + (f.cs !== f.bs ? `<span style="color:#e67e22">/${f.bs}</span>` : '') +
     (f.pv ? ' <b style="color:#e67e22">PIVOT</b>' : '');
 }
 

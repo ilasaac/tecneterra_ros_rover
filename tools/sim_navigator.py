@@ -1362,11 +1362,12 @@ def simulate(waypoints:       list[SimWaypoint],
             si = info
             s_clip_str = f'{si.get("s_clip", float("inf")):.1f}m' if si.get('s_clip', float('inf')) < 1e6 else '    inf'
             print(f'  {step:>5}  {t_mono:>5.1f}  '
-                  f'{si.get("wp_idx", 0):>3}  '
-                  f'{si.get("dist_to_wp", 0):>6.2f}  '
-                  f'{si.get("heading_err", 0):>+8.2f}  '
-                  f'{si.get("cte", 0):>+7.3f}  '
-                  f'{si.get("steer_frac", 0):>+6.3f}  '
+                  f'wp{si.get("wp_idx", 0):>2}  '
+                  f'd={si.get("dist_to_wp", 0):>5.2f}  '
+                  f'he={si.get("heading_err", 0):>+7.2f}  '
+                  f'cte={si.get("cte", 0):>+6.3f}  '
+                  f'sf={si.get("steer_frac", 0):>+5.3f}  '
+                  f'seg={si.get("cte_seg", "?")}/{si.get("best_seg", "?")}  '
                   f'{si.get("mode", "?"):>7}  '
                   f'{s_clip_str:>8}')
 
@@ -1472,6 +1473,8 @@ def _build_debug_trace(step_log: list[dict], control_rate: float,
             'v':    round(s.get('v_mps', 0), 2),
             'dw':   round(s.get('dist_to_wp', 0), 2),
             'wp':   s.get('wp_idx', 0),
+            'cs':   s.get('cte_seg', 0),
+            'bs':   s.get('best_seg', 0),
             'm':    s.get('mode', ''),
             'pv':   1 if s.get('pivoting') else 0,
             'tp':   s.get('throttle_ppm', 1500),
@@ -1658,6 +1661,8 @@ if __name__ == '__main__':
     ap.add_argument('--html-out',    type=str,   default=None, metavar='FILE',
                     help='Write simulation result to a Leaflet HTML file')
     ap.add_argument('--debug', action='store_true', help='Print per-step controller state')
+    ap.add_argument('--dump',  type=str, default=None, metavar='FILE',
+                    help='Dump full step-log as JSON (for sharing debug data)')
     ap.add_argument('waypoints',     help='CSV file with lat,lon[,speed,hold_secs] columns')
     args = ap.parse_args()
 
@@ -1691,6 +1696,12 @@ if __name__ == '__main__':
     print(f'Path pts : {len(result.path)}')
     if result.obstacle_polygons:
         print(f'Obstacles: {len(result.obstacle_polygons)} polygon(s) (expanded)')
+
+    if args.dump:
+        import json
+        with open(args.dump, 'w') as f:
+            json.dump(result.step_log, f)
+        print(f'Step log : {args.dump}  ({len(result.step_log)} entries)')
 
     if args.html_out:
         _write_html_result(result, wps, args.lat, args.lon,
