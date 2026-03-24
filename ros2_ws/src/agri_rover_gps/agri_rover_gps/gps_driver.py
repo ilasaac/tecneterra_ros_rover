@@ -63,6 +63,7 @@ class GpsDriverNode(Node):
         baud           = self.get_parameter('baud').value
         self._heading_source = self.get_parameter('heading_source').value
         publish_rate   = self.get_parameter('publish_rate').value
+        self._publish_rate   = publish_rate
 
         # ── Publishers ───────────────────────────────────────────────────────
         self.fix_pub       = self.create_publisher(NavSatFix, 'fix',        10)
@@ -94,6 +95,41 @@ class GpsDriverNode(Node):
             + (f', secondary={secondary_port}' if self._heading_source == 'baseline' else '')
         )
 
+    # ── UBX configuration ────────────────────────────────────────────────────
+
+    def _ubx_configure(self, ser: 'serial.Serial') -> None:
+        """Configure u-blox GPS output rate via UBX binary protocol.
+
+        Sends two commands:
+          UBX-CFG-RATE — sets navigation solution period (e.g. 40 ms = 25 Hz)
+          UBX-CFG-MSG  — sets GGA sentence output rate to 1 (every nav solution)
+
+        Non-u-blox receivers silently ignore the bytes.  No ACK is awaited.
+        """
+        def _build(cls: int, mid: int, payload: bytes) -> bytes:
+            body = bytes([cls, mid, len(payload) & 0xFF, (len(payload) >> 8) & 0xFF]) + payload
+            ck_a = ck_b = 0
+            for b in body:
+                ck_a = (ck_a + b) & 0xFF
+                ck_b = (ck_b + ck_a) & 0xFF
+            return bytes([0xB5, 0x62]) + body + bytes([ck_a, ck_b])
+
+        period_ms = max(25, int(round(1000.0 / self._publish_rate)))
+
+        # UBX-CFG-RATE: measRate=period_ms, navRate=1, timeRef=GPS(1)
+        ser.write(_build(0x06, 0x08, bytes([
+            period_ms & 0xFF, (period_ms >> 8) & 0xFF,
+            0x01, 0x00,
+            0x01, 0x00,
+        ])))
+        time.sleep(0.05)
+
+        # UBX-CFG-MSG: GGA (F0 00) rate=1 on UART1 (port index 1), 0 on others
+        ser.write(_build(0x06, 0x01, bytes([0xF0, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00])))
+        time.sleep(0.05)
+
+        self.get_logger().info(f'UBX configured: {period_ms} ms ({1000//period_ms} Hz) GGA on UART1')
+
     # ── Serial reader thread ──────────────────────────────────────────────────
 
     def _start_reader(self, port: str, baud: int, is_primary: bool):
@@ -107,6 +143,7 @@ class GpsDriverNode(Node):
                     time.sleep(5.0)
             if ser is None:
                 return
+            self._ubx_configure(ser)
             self.get_logger().info(f'GPS port {port} opened')
             while rclpy.ok():
                 try:
