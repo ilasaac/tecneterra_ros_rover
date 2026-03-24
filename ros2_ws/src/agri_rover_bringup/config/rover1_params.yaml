@@ -50,7 +50,7 @@
     gps_timeout:               2.0
     heading_deadband:          3.0
     align_threshold:           30.0
-    stanley_k:                 1.5
+    stanley_k:                 0.3
     stanley_softening:         0.3
     pivot_threshold:           25.0
     pivot_approach_dist:       4.0
@@ -74,3 +74,5 @@
     mpc_w_steer:               0.1
     mpc_w_dsteer:              0.05
     wheelbase_m:               0.6
+    enable_diag_log:           true
+    diag_log_path:             '/tmp/navigator_diag.csv'
