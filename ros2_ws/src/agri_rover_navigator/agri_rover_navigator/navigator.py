@@ -1663,6 +1663,5 @@ def main(args=None):
     finally:
         if node._diag_file is not None:
             node._diag_file.close()
-    finally:
         node.destroy_node()
         rclpy.shutdown()
