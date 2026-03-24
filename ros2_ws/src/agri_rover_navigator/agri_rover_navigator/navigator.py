@@ -1336,7 +1336,8 @@ class NavigatorNode(Node):
 
     def _ttr_steer(self, flat: float, flon: float,
                    best_seg: int, dist_to_wp: float,
-                   v_target: float) -> tuple[float, float]:
+                   v_target: float,
+                   heading_err: float = 0.0) -> tuple[float, float]:
         """
         TTR cascaded dual-PID straight-line controller.
 
@@ -1344,28 +1345,19 @@ class NavigatorNode(Node):
           1. dis_output  = HightPid.compute(0, cte)
              cte > 0 = rover LEFT of route (same as _cte_to_seg convention)
           2. angle_output = AnglePid.compute(-dis_output, angle_diff)
-             angle_diff = heading − seg_bearing  (positive = heading right of route)
+             angle_diff = heading − target  (positive = heading right of route)
           3. angle_output > 0 → steer RIGHT (steer_frac > 0 in navigator PPM convention)
 
-        Speed reduced by lineSpeedFactor (proportional to CTE) and by deceleration
-        ramp within ttr_target_dece_dis of the next waypoint.
+        Uses lookahead-based heading_err (from step()) instead of segment bearing.
+        This gives TTR curve anticipation on short segments where heading ≈ seg_bearing.
 
         Returns (steer_frac, v_mps).
         """
-        # Segment bearing
-        if best_seg == 0:
-            if self._path_origin_lat is None or not self._path:
-                return 0.0, v_target
-            a_lat, a_lon = self._path_origin_lat, self._path_origin_lon
-        else:
-            a_lat = self._path[best_seg - 1].latitude
-            a_lon = self._path[best_seg - 1].longitude
-        b_lat = self._path[best_seg].latitude
-        b_lon = self._path[best_seg].longitude
-        seg_bearing = bearing_to(a_lat, a_lon, b_lat, b_lon)
-
-        # Heading error: rover heading − segment bearing, wrapped to [−180, 180]
-        angle_diff = ((self._heading - seg_bearing + 180) % 360) - 180
+        # Heading error: use lookahead-based heading_err from the control loop.
+        # heading_err = target_bearing - heading (positive = need left turn).
+        # TTR convention: angle_diff = heading - target (positive = heading right).
+        # So angle_diff = -heading_err.
+        angle_diff = -heading_err
 
         # CTE (positive = rover LEFT of route — matches _cte_to_seg)
         cte = self._cte_to_seg(flat, flon, best_seg)
@@ -1580,7 +1572,7 @@ class NavigatorNode(Node):
             if self._algo == 'ttr':
                 # TTR dual-PID: CTE correction feeds heading correction
                 steer_frac, ttr_v = self._ttr_steer(
-                    flat, flon, cte_seg, dist_to_wp, v_mps)
+                    flat, flon, cte_seg, dist_to_wp, v_mps, heading_err)
                 throttle_ppm = int(PPM_CENTER + (ttr_v / self._max_speed) * 500)
             elif self._algo == 'mpc' and not is_bypass:
                 # MPC active for all non-bypass segments — including pivot approach.

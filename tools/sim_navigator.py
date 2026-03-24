@@ -976,7 +976,8 @@ class PathNavigator:
 
     def _ttr_steer(self, flat: float, flon: float,
                    best_seg: int, dist_to_wp: float,
-                   v_target: float) -> tuple[float, float]:
+                   v_target: float,
+                   heading_err: float = 0.0) -> tuple[float, float]:
         """TTR cascaded dual-PID — mirrors navigator.py._ttr_steer()."""
         nav       = self._nav
         max_steer = nav['max_steering']
@@ -984,18 +985,11 @@ class PathNavigator:
         max_yaw   = nav.get('ttr_max_yaw_distance', 3.0)
         dece_dis  = nav.get('ttr_target_dece_dis', 4.0)
 
-        # Segment bearing
-        if best_seg == 0:
-            a_lat, a_lon = self._origin_lat, self._origin_lon
-        else:
-            a_lat, a_lon = self._wps[best_seg - 1].lat, self._wps[best_seg - 1].lon
-        b_lat, b_lon = self._wps[best_seg].lat, self._wps[best_seg].lon
-        seg_bearing  = _bearing_to(a_lat, a_lon, b_lat, b_lon)
-
-        # Heading error (TTR convention): heading − seg_bearing
-        # Must use rover heading from the caller — stored in _step_info by step()
-        heading    = self._step_info.get('_heading', 0.0)
-        angle_diff = ((heading - seg_bearing + 180) % 360) - 180
+        # Heading error: use lookahead-based heading_err from step().
+        # heading_err = target_bearing - heading (positive = need left turn).
+        # TTR convention: angle_diff = heading - target (positive = heading right).
+        # So angle_diff = -heading_err.
+        angle_diff = -heading_err
 
         # CTE (positive = rover LEFT of route)
         cte = self._cte_to_seg(flat, flon, best_seg)
@@ -1197,7 +1191,7 @@ class PathNavigator:
 
         if self._algo == 'ttr':
             steer_frac, ttr_v = self._ttr_steer(
-                flat, flon, cte_seg, dist_to_wp, v_mps)
+                flat, flon, cte_seg, dist_to_wp, v_mps, heading_err)
             throttle_ppm = int(PPM_CENTER + (ttr_v / max_spd) * 500)
             algo_mode = 'ttr'
         elif self._algo == 'mpc' and not is_bypass:

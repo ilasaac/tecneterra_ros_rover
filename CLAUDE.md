@@ -38,7 +38,8 @@ ros_agri_rover/
     ├── sim_navigator.py         ← SIL: Stanley+MPC+TTR+pivot+obstacle; reads rover1_params.yaml; --algo flag overrides; TTR uses DiffDriveState (track-width kinematics + SmoothSpeed + angular limit from Robot.cpp); diagnostics → tools/obstacle_debug.log
     ├── mission_planner.py       ← web mission editor + SIL (HTTP :8089); Gen button: Grid/Zigzag/Scatter/Spiral
     ├── monitor.py               ← terminal dashboard + Leaflet map (HTTP :8088); auto-fit, localStorage zoom, 5s refresh
-    └── mission_uploader.py      ← CSV waypoints → MAVLink mission upload
+    ├── mission_uploader.py      ← CSV waypoints → MAVLink mission upload
+    └── dynamics_collector.py    ← manual-drive data logger for model tuning (PPM + GPS → CSV)
 ```
 
 ---

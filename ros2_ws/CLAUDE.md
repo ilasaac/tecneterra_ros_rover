@@ -205,7 +205,7 @@ angle_output = AnglePid.compute(-dis_output, Δhdg) — heading PID with CTE fee
 steer_frac   = (angle_output / 25) × max_steering
 ```
 - `cte` uses the same `_cte_to_seg` convention (positive = rover LEFT of route)
-- `Δhdg = heading − seg_bearing` (positive = heading right of route)
+- `Δhdg = −heading_err` where `heading_err = target_bearing − heading` (lookahead-based, positive = heading right of route). Uses the same lookahead point as Stanley/MPC for curve anticipation on short segments.
 - `angle_output > 0` → steer RIGHT → `steer_frac > 0`
 - Speed scales by `lineSpeedFactor = clamp(1 − |cte|/ttr_max_yaw_distance, 0.4, 0.8)`
 - Decelerates within `ttr_target_dece_dis` of the next waypoint
