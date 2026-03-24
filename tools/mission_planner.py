@@ -252,12 +252,19 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-orange" onclick="toggleGenPanel()">&#9881; Gen</button>
     <input type="file" id="file-import" accept=".csv" style="display:none" onchange="importCSV(event)">
   </div>
-  <div style="padding:3px 6px;background:#0d0d1a;border-bottom:1px solid #333;display:flex;align-items:center;gap:4px">
+  <div style="padding:3px 6px;background:#0d0d1a;border-bottom:1px solid #333;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
     <span style="color:#888;font-size:10px">All spd:</span>
     <input id="bulk-speed" type="number" value="1.0" min="0" max="1.5" step="0.1"
            style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px">
     <span style="color:#888;font-size:10px">m/s</span>
     <button onclick="applyBulkSpeed()" style="padding:2px 7px;font-size:11px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer">&#10003;</button>
+    <span style="color:#888;font-size:10px;margin-left:6px">Algo:</span>
+    <select id="algo-select" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px">
+      <option value="">YAML default</option>
+      <option value="stanley">Stanley</option>
+      <option value="mpc">MPC</option>
+      <option value="ttr">TTR</option>
+    </select>
   </div>
   <div id="status-bar">Click "+ Add WP" then click the canvas to place waypoints.</div>
   <div class="section">
@@ -873,16 +880,20 @@ async function runSimulate() {
   const startHdg = parseFloat(document.getElementById('s-hdg').value) || 0;
 
   try {
+    const algoSel = document.getElementById('algo-select').value;
+    const navParams = algoSel ? {control_algorithm: algoSel} : {};
     const resp = await fetch('/simulate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({waypoints, start: {lat: startLat, lon: startLon, heading: startHdg}, obstacles}),
+      body: JSON.stringify({waypoints, start: {lat: startLat, lon: startLon, heading: startHdg}, obstacles, nav_params: navParams}),
     });
     const d = await resp.json();
     simResult = d;
     fitAll();   // auto-center view on full path + waypoints after every simulation
     const dur = (d.total_steps / 25).toFixed(1);
+    const algoName = algoSel || d.algorithm || 'yaml default';
     statsEl.innerHTML = `
+      <div><span class="lbl">Algorithm:</span> <b style="color:#3498db">${algoName}</b></div>
       <div><span class="lbl">Complete:</span> ${d.complete ? '<b style="color:#2ecc71">\u2713 Yes</b>' : '<b style="color:#e74c3c">\u2717 Timeout</b>'}</div>
       <div><span class="lbl">Duration:</span> ${dur} s (${d.total_steps} steps)</div>
       <div><span class="lbl">WP reached:</span> ${(d.waypoints_reached||[]).length}/${waypoints.length}</div>
@@ -1322,6 +1333,7 @@ class _Handler(BaseHTTPRequestHandler):
                 'rerouted_wps':      result.rerouted_wps,
                 'obstacle_polygons': result.obstacle_polygons,
                 'pivot_wps':         pivot_wps,
+                'algorithm':         nav_p.get('control_algorithm', 'stanley'),
             })
 
         elif self.path == '/save_mission':
