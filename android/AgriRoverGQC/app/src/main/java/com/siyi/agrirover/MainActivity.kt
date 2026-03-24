@@ -40,6 +40,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val roverPositions  = HashMap<Int, LatLng>()
     private val roverModes      = HashMap<Int, AppMode>()
     private val roverArmed      = HashMap<Int, Boolean>()
+    // Cached icon state — only rebuild bitmap when armed/auto/selected actually changes
+    private val roverIconKeys   = HashMap<Int, Triple<Boolean, Boolean, Boolean>>()
     private val roverNavStatus  = HashMap<Int, String>()   // "NA" | "MSL" | "ARM"
     private val roverGpsFix    = HashMap<Int, Int>()       // GPS_RAW_INT fixType (0–6); 6=RTK_FIX
     private val roverPpmChannels = HashMap<Int, IntArray>()   // latest RC_CHANNELS per rover
@@ -658,57 +660,93 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         if (isFollowingRover && sysId == selectedRoverId)
             map.animateCamera(CameraUpdateFactory.newLatLng(pos))
 
-        if (!roverMarkers.containsKey(sysId)) {
-            val marker = map.addMarker(
-                MarkerOptions().position(pos).anchor(0.5f, 0.5f).flat(true)
-            )
-            if (marker != null) roverMarkers[sysId] = marker
-        }
-
         val isAuto     = roverModes[sysId] == AppMode.AUTO
         val isArmed    = roverArmed[sysId] ?: false
         val isSelected = sysId == selectedRoverId
+        val iconKey    = Triple(isAuto, isArmed, isSelected)
+
+        if (!roverMarkers.containsKey(sysId)) {
+            val bmp = createRoverBitmap(sysId, isAuto, isArmed, isSelected)
+            val marker = map.addMarker(
+                MarkerOptions()
+                    .position(pos)
+                    .anchor(0.5f, 0.75f)   // anchor at back of arrow
+                    .flat(true)
+                    .zIndex(1f)            // mission overlays sit above at zIndex 2+
+                    .icon(BitmapDescriptorFactory.fromBitmap(bmp))
+            )
+            if (marker != null) {
+                roverMarkers[sysId]  = marker
+                roverIconKeys[sysId] = iconKey
+            }
+        }
+
         roverMarkers[sysId]?.apply {
-            position  = pos
-            rotation  = hdg
-            setIcon(BitmapDescriptorFactory.fromBitmap(
-                createRoverBitmap(sysId, isAuto, isArmed, isSelected)))
+            position = pos
+            rotation = hdg
+            // Only rebuild the bitmap when state changes — prevents flicker on every GPS tick
+            if (roverIconKeys[sysId] != iconKey) {
+                roverIconKeys[sysId] = iconKey
+                setIcon(BitmapDescriptorFactory.fromBitmap(
+                    createRoverBitmap(sysId, isAuto, isArmed, isSelected)))
+            }
         }
     }
 
     /**
-     * Rover icon:
-     *   Body colour  — Red = Rover 1 / Blue = Rover 2 (white ring = selected)
-     *   Centre dot   — Green = MANUAL & disarmed / Orange = armed manual / Yellow = AUTO
+     * Navigation-arrow rover icon (Google Maps style).
+     *   Body colour  — Red = RV1 / Blue = RV2
+     *   Status dot   — Green = disarmed manual / Orange = armed / Yellow = AUTO
+     *   White outline when this rover is selected
+     * Tip points UP (North) in the bitmap; Map.flat + rotation handles heading.
+     * Anchored at (0.5, 0.75) — back of the chevron body.
      */
     private fun createRoverBitmap(sysId: Int, isAuto: Boolean,
                                   isArmed: Boolean, isSelected: Boolean): Bitmap {
-        val drawable = ContextCompat.getDrawable(this, R.drawable.ic_rover)!!
-        drawable.setTint(if (sysId == 1) Color.RED else Color.BLUE)
-
-        val w = (drawable.intrinsicWidth  * 2.5).toInt()
-        val h = (drawable.intrinsicHeight * 2.5).toInt()
+        val dp = resources.displayMetrics.density
+        val w  = (22 * dp + 0.5f).toInt()
+        val h  = (30 * dp + 0.5f).toInt()
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        drawable.setBounds(0, 0, w, h)
-        drawable.draw(canvas)
 
-        val dotColor = when {
+        val bodyColor = if (sysId == 1) Color.parseColor("#F44336")
+                        else             Color.parseColor("#2196F3")
+        val dotColor  = when {
             isAuto  -> Color.YELLOW
             isArmed -> Color.parseColor("#FF8C00")
-            else    -> Color.GREEN
+            else    -> Color.parseColor("#4CAF50")
         }
-        canvas.drawCircle(w / 2f, h / 2f, w / 6f,
-            Paint().apply { color = dotColor; isAntiAlias = true })
 
+        // Chevron arrow: tip at top, concave notch at base
+        val path = Path().apply {
+            moveTo(w / 2f,        0f           )   // tip — heading direction
+            lineTo(w.toFloat(),   h * 0.85f    )   // bottom-right wing
+            lineTo(w / 2f,        h * 0.55f    )   // inner notch
+            lineTo(0f,            h * 0.85f    )   // bottom-left wing
+            close()
+        }
+        canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = bodyColor })
+
+        // Thin drop-shadow for depth
+        canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color       = Color.argb(60, 0, 0, 0)
+            style       = Paint.Style.STROKE
+            strokeWidth = (1.5f * dp).coerceAtLeast(1.5f)
+        })
+
+        // White outline when selected
         if (isSelected) {
-            canvas.drawCircle(w / 2f, h / 2f, w / 2.2f, Paint().apply {
+            canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color       = Color.WHITE
                 style       = Paint.Style.STROKE
-                strokeWidth = 5f
-                isAntiAlias = true
+                strokeWidth = (2.5f * dp).coerceAtLeast(2f)
             })
         }
+
+        // Status dot at the notch
+        canvas.drawCircle(w / 2f, h * 0.7f, w * 0.13f,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = dotColor })
+
         return bitmap
     }
 
@@ -768,13 +806,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val passed = (0..min(nextWaypointIndex, routePoints.size - 1))
                     .map { routePoints[it] }
                 routeOverlays.add(map.addPolyline(
-                    PolylineOptions().addAll(passed).width(8f).color(Color.parseColor("#4CAF50"))))
+                    PolylineOptions().addAll(passed).width(8f).color(Color.parseColor("#4CAF50")).zIndex(2f)))
             }
             if (nextWaypointIndex < routePoints.size) {
                 val pending = (max(0, nextWaypointIndex - 1) until routePoints.size)
                     .map { routePoints[it] }
                 routeOverlays.add(map.addPolyline(
-                    PolylineOptions().addAll(pending).width(8f).color(Color.parseColor("#F44336"))))
+                    PolylineOptions().addAll(pending).width(8f).color(Color.parseColor("#F44336")).zIndex(2f)))
             }
             routePoints.forEachIndexed { i, pt ->
                 val dotColor = when {
@@ -784,7 +822,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
                 val sizeDp   = if (i == 0) 12 else 7
                 map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
-                    .icon(createDotBitmap(dotColor, sizeDp)).flat(true))
+                    .icon(createDotBitmap(dotColor, sizeDp)).flat(true).zIndex(2f))
                     ?.also { routeOverlays.add(it) }
             }
         }
@@ -814,13 +852,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val walked = (0..min(walkedIdx, points.size - 1)).map { points[it] }
                 overlays.add(map.addPolyline(
                     PolylineOptions().addAll(walked).width(8f)
-                        .color(Color.argb(200, 160, 160, 160))))
+                        .color(Color.argb(200, 160, 160, 160)).zIndex(2f)))
             }
             // Pending portion — rover color; starts one point before walkedIdx to avoid a gap
             if (walkedIdx < points.size) {
                 val pending = (max(0, walkedIdx - 1) until points.size).map { points[it] }
                 overlays.add(map.addPolyline(
-                    PolylineOptions().addAll(pending).width(8f).color(pendingColor)))
+                    PolylineOptions().addAll(pending).width(8f).color(pendingColor).zIndex(2f)))
             }
             // Waypoint dots — skip already-passed waypoints (rover decides via WP_ACT)
             points.forEachIndexed { i, pt ->
@@ -828,7 +866,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val dotColor = if (i == 0) Color.parseColor("#FFD600") else pendingColor
                 val sizeDp   = if (i == 0) 12 else 7
                 map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
-                    .icon(createDotBitmap(dotColor, sizeDp)).flat(true))
+                    .icon(createDotBitmap(dotColor, sizeDp)).flat(true).zIndex(2f))
                     ?.also { overlays.add(it) }
             }
         }
@@ -895,7 +933,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     .map { LatLng(it.first, it.second) }
                 val color = if (segBypass) roverColor else plannedColor
                 overlays.add(map.addPolyline(
-                    PolylineOptions().addAll(pts).width(6f).color(color).pattern(pattern)
+                    PolylineOptions().addAll(pts).width(6f).color(color).pattern(pattern).zIndex(2f)
                 ))
                 if (i < path.size) {
                     segStart  = i - 1   // overlap by 1 pt so segments connect
