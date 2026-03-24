@@ -1520,11 +1520,13 @@ class NavigatorNode(Node):
         target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
         heading_err    = ((target_bearing - self._heading + 180) % 360) - 180
 
-        # ── Stanley CTE: front antenna projected onto best_seg ───────────────
+        # ── CTE: front antenna projected onto current target segment ─────────
+        # Use _path_idx (current target segment) — not best_seg.  On near-straight
+        # paths _nearest_on_path can snap best_seg to a far-ahead collinear segment,
+        # destabilising the PID (especially TTR's cascaded dual-PID).
         # Bypass waypoints: zero CTE — heading error to the bypass point is enough.
-        # Using best_seg (from _nearest_on_path) for CTE while is_bypass would pick
-        # a wrong segment and add spurious correction opposing the detour.
-        cte = 0.0 if is_bypass else self._cte_to_seg(flat, flon, best_seg)
+        cte_seg = self._path_idx
+        cte = 0.0 if is_bypass else self._cte_to_seg(flat, flon, cte_seg)
 
         # XTE telemetry
         xte_msg      = Float32()
@@ -1545,7 +1547,7 @@ class NavigatorNode(Node):
             if self._algo == 'ttr':
                 # TTR dual-PID: CTE correction feeds heading correction
                 steer_frac, ttr_v = self._ttr_steer(
-                    flat, flon, best_seg, dist_to_wp, v_mps)
+                    flat, flon, cte_seg, dist_to_wp, v_mps)
                 throttle_ppm = int(PPM_CENTER + (ttr_v / self._max_speed) * 500)
             elif self._algo == 'mpc' and not is_bypass:
                 # MPC active for all non-bypass segments — including pivot approach.

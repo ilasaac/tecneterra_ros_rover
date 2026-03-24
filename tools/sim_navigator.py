@@ -1142,9 +1142,14 @@ class PathNavigator:
         target_bearing = _bearing_to(rlat, rlon, la_lat, la_lon)
         heading_err    = ((target_bearing - heading + 180) % 360) - 180
         # Bypass waypoints: zero CTE — heading error to the bypass point is enough.
-        cte            = 0.0 if is_bypass else self._cte_to_seg(flat, flon, best_seg)
+        # Use path_idx (current target segment) for CTE — not best_seg.
+        # On near-straight paths _nearest_on_path can snap best_seg to a
+        # far-ahead collinear segment, destabilising the PID.
+        cte_seg        = self.path_idx
+        cte            = 0.0 if is_bypass else self._cte_to_seg(flat, flon, cte_seg)
 
         self._step_info.update({'heading_err': heading_err, 'cte': cte,
+                                'cte_seg': cte_seg, 'best_seg': best_seg,
                                 '_heading': heading})
 
         if abs(heading_err) > align_thresh:
@@ -1159,7 +1164,7 @@ class PathNavigator:
 
         if self._algo == 'ttr':
             steer_frac, ttr_v = self._ttr_steer(
-                flat, flon, best_seg, dist_to_wp, v_mps)
+                flat, flon, cte_seg, dist_to_wp, v_mps)
             throttle_ppm = int(PPM_CENTER + (ttr_v / max_spd) * 500)
             algo_mode = 'ttr'
         elif self._algo == 'mpc' and not is_bypass:
