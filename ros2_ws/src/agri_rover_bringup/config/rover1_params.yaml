@@ -42,14 +42,14 @@
 /rv1/navigator:
   ros__parameters:
     lookahead_distance:        2.0
-    default_acceptance_radius: 0.1
+    default_acceptance_radius: 0.5
     max_speed:                 1.5
     min_speed:                 0.3
     max_steering:              0.8
     control_rate:              25.0   # Hz — must match GPS hardware NMEA output rate
     gps_timeout:               2.0
     heading_deadband:          3.0
-    align_threshold:           30.0
+    align_threshold:           60.0
     stanley_k:                 0.3
     stanley_softening:         0.3
     pivot_threshold:           25.0
