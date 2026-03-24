@@ -946,11 +946,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         // Yellow start marker — always on top of polyline
         val startPt = LatLng(path[0].first, path[0].second)
-        overlays.add(map.addMarker(
+        map.addMarker(
             MarkerOptions().position(startPt).anchor(0.5f, 0.5f)
                 .icon(createDotBitmap(Color.parseColor("#FFD600"), 14))
                 .flat(true).zIndex(3f)
-        ))
+        )?.also { overlays.add(it) }
     }
 
     /** Redraw the in-progress obstacle draft as a closed polyline. */
