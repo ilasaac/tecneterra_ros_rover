@@ -1263,23 +1263,20 @@ def simulate(waypoints:       list[SimWaypoint],
          f'expanded={len(expanded_polygons)} '
          f'wps {len(waypoints)}->{len(effective_wps)}')
 
-    if nav['control_algorithm'] == 'ttr':
-        ttr_phys = {k: phys[k] for k in DEFAULT_TTR_PHYS if k in phys}
-        rover = DiffDriveState(start_lat, start_lon, start_heading,
-                               ttr_phys=ttr_phys,
-                               max_steer=nav.get('max_steering', 0.8))
-    else:
-        rover = RoverState(start_lat, start_lon, start_heading)
+    ttr_phys = {k: phys[k] for k in DEFAULT_TTR_PHYS if k in phys}
+    rover = DiffDriveState(start_lat, start_lon, start_heading,
+                           ttr_phys=ttr_phys,
+                           max_steer=nav.get('max_steering', 0.8))
     path_n = PathNavigator(effective_wps, start_lat, start_lon, nav)
 
     if verbose:
         print(f'\n{"─"*60}')
         print(f'Mission analysis  ({len(effective_wps)} waypoints, algo={nav["control_algorithm"]})')
-        if nav['control_algorithm'] == 'ttr':
-            print(f'  TTR physics: track={DEFAULT_TTR_PHYS["track_width_m"]}m  '
-                  f'max_wheel={DEFAULT_TTR_PHYS["max_wheel_mms"]}mm/s  '
-                  f'accel_cap={DEFAULT_TTR_PHYS["accel_cap_mms_per_tick"]}mm/s/tick  '
-                  f'ang_limit={DEFAULT_TTR_PHYS["angular_diff_limit_mms"]}mm/s')
+        tp = {**DEFAULT_TTR_PHYS, **ttr_phys}
+        print(f'  physics: track={tp["track_width_m"]}m  '
+              f'max_wheel={tp["max_wheel_mms"]}mm/s  '
+              f'accel_cap={tp["accel_cap_mms_per_tick"]}mm/s/tick  '
+              f'ang_limit={tp["angular_diff_limit_mms"]}mm/s')
         print(f'  pivot_threshold={nav["pivot_threshold"]}°  '
               f'mpc_horizon={nav.get("mpc_horizon",10)}  '
               f'mpc_dt={nav.get("mpc_dt",0.2)}  '
