@@ -139,11 +139,15 @@ DEFAULT_PHYS: dict = {
 }
 
 # TTR differential-drive physics defaults (from Robot.cpp)
+# SmoothSpeed is DISABLED by default (high accel cap = instant response).
+# Our ESCs respond to PPM directly — the original SmoothSpeed was a CAN-bus
+# motor controller artifact in the TTR hardware, not a physical constraint.
+# To re-enable: set accel_cap_mms_per_tick=15, decel_divisor=10.
 DEFAULT_TTR_PHYS: dict = {
     'track_width_m':          0.9,     # Robot_diameter — track width in metres
     'max_wheel_mms':          1000,    # max_leftWheel_ default (mm/s per wheel)
-    'accel_cap_mms_per_tick': 15,      # SmoothSpeed: max accel per 10 ms tick (mm/s)
-    'decel_divisor':          10,      # SmoothSpeed: decel = |diff| / divisor per tick
+    'accel_cap_mms_per_tick': 9999,    # SmoothSpeed disabled (instant response)
+    'decel_divisor':          1,       # SmoothSpeed disabled
     'angular_diff_limit_mms': 800,     # |leftWheel - rightWheel| limit (mm/s)
     'smooth_tick_hz':         100,     # original SmoothSpeed tick rate (100 Hz = 10 ms)
 }
