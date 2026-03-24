@@ -1582,11 +1582,14 @@ class NavigatorNode(Node):
         self.xte_pub.publish(xte_msg)
 
         if abs(heading_err) > self._align_thresh:
-            # Large error — spin in place (same for all algorithms)
-            spin_dir          = math.copysign(1.0, heading_err)
-            steer_ppm         = int(PPM_CENTER - spin_dir * self._max_steer * 500)
+            # Large error — spin in place (same for all algorithms).
+            # Proportional: full steer at 90°, half steer at 45°.
+            # Avoids bang-bang oscillation at 25 Hz that occurs with sign-only control.
+            steer_frac        = max(-self._max_steer,
+                                    min(self._max_steer, heading_err / 45.0))
+            steer_ppm         = int(PPM_CENTER - steer_frac * 500)
             throttle_ppm      = PPM_CENTER
-            self._mpc_prev_steers = []   # heading jump → stale warm start
+            self._mpc_prev_steers = []   # heading jump -> stale warm start
             self._ttr_apid.clear(); self._ttr_hpid.clear()
         else:
             v_mps        = max(target_spd, self._min_speed)

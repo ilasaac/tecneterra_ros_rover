@@ -1193,8 +1193,9 @@ class PathNavigator:
                                 '_heading': heading})
 
         if abs(heading_err) > align_thresh:
-            spin_dir              = math.copysign(1.0, heading_err)
-            steer_ppm             = int(PPM_CENTER - spin_dir * max_steer * 500)
+            # Proportional spin: full steer at 90°, half steer at 45°.
+            steer_frac            = max(-max_steer, min(max_steer, heading_err / 45.0))
+            steer_ppm             = int(PPM_CENTER - steer_frac * 500)
             self._mpc_prev_steers = []
             self._ttr_apid.clear(); self._ttr_hpid.clear()
             return PPM_CENTER, steer_ppm, best_seg, False
