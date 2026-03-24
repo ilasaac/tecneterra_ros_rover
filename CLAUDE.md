@@ -35,7 +35,7 @@ ros_agri_rover/
     ├── nmea_wifi_rx.py          ← UDP NMEA → PTY virtual serial ports
     ├── rtk_forwarder.py         ← NTRIP/E610 RTCM3 → u-blox serial
     ├── start_rover1_sim.sh / start_rover2_sim.sh ← single-command sim launchers
-    ├── sim_navigator.py         ← SIL: Stanley+MPC+TTR+pivot+obstacle; reads rover1_params.yaml; standalone CLI or importable; diagnostics → tools/obstacle_debug.log
+    ├── sim_navigator.py         ← SIL: Stanley+MPC+TTR+pivot+obstacle; reads rover1_params.yaml; --algo flag overrides; TTR uses DiffDriveState (track-width kinematics + SmoothSpeed + angular limit from Robot.cpp); diagnostics → tools/obstacle_debug.log
     ├── mission_planner.py       ← web mission editor + SIL (HTTP :8089); Gen button: Grid/Zigzag/Scatter/Spiral
     ├── monitor.py               ← terminal dashboard + Leaflet map (HTTP :8088); auto-fit, localStorage zoom, 5s refresh
     └── mission_uploader.py      ← CSV waypoints → MAVLink mission upload

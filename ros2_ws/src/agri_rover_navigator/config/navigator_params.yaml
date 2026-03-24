@@ -67,6 +67,7 @@ navigator:
     #             is not installed.
     #   ttr     — cascaded dual-PID (CTE → heading); ported from ROS1 TTR nav.
     #             Speed reduces with CTE magnitude and decelerates near waypoints.
+    #             SIL sim uses DiffDriveState (track-width kinematics from Robot.cpp).
     control_algorithm: 'mpc'
 
     # TTR tuning (only active when control_algorithm: 'ttr')

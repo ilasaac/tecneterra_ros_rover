@@ -342,6 +342,13 @@ sentence = f'${body}*{checksum(body)}\r\n'
 - PPM timeout: if no ppm_decoder data for >2 s, simulator freezes rovers at current position (uses neutral 1500).
 - Physics model is **skid/differential steer** — `omega = turn_scale * 2 * steer * max_speed / wheelbase` (independent of forward speed, allows in-place spinning).
 - `turn_scale` (0.0–1.0, default 0.1): scales max turn rate. Pass `--turn-scale` in `tools/simulator.py` or set in `simulator_params.yaml`.
+- **TTR differential-drive model** (`sim_navigator.py`, `DiffDriveState`): when `control_algorithm: ttr`, the SIL simulator uses a physics model ported from TTR Robot.cpp. Key properties:
+  - Track width 0.9 m (`Robot_diameter`), max wheel speed 1000 mm/s (`max_leftWheel_`)
+  - PPM steer → `angle_output` (°) → `VSpeed = angle * track_mm * π/180` mm/s differential
+  - `leftWheel = forward + VSpeed`, `rightWheel = forward - VSpeed`
+  - SmoothSpeed: accel capped at +15 mm/s per 10 ms tick; decel = `|diff|/10` per tick
+  - Angular limit: if `|L−R| > 800 mm/s` → both wheels scaled down proportionally
+  - `--algo ttr --track-width 0.9` CLI override in `sim_navigator.py`
 
 ## colcon tips
 

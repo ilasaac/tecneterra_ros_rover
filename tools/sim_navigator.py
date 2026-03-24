@@ -138,6 +138,111 @@ DEFAULT_PHYS: dict = {
     'baseline_m': 1.0,    # metres — rear-to-front antenna separation
 }
 
+# TTR differential-drive physics defaults (from Robot.cpp)
+DEFAULT_TTR_PHYS: dict = {
+    'track_width_m':          0.9,     # Robot_diameter — track width in metres
+    'max_wheel_mms':          1000,    # max_leftWheel_ default (mm/s per wheel)
+    'accel_cap_mms_per_tick': 15,      # SmoothSpeed: max accel per 10 ms tick (mm/s)
+    'decel_divisor':          10,      # SmoothSpeed: decel = |diff| / divisor per tick
+    'angular_diff_limit_mms': 800,     # |leftWheel - rightWheel| limit (mm/s)
+    'smooth_tick_hz':         100,     # original SmoothSpeed tick rate (100 Hz = 10 ms)
+}
+
+
+class DiffDriveState(RoverState):
+    """Differential-drive rover model matching TTR (Robot.cpp) dynamics.
+
+    Converts PPM throttle+steer to left/right wheel speeds (mm/s), applies
+    SmoothSpeed (acceleration limiter) and angular velocity limit |L-R| < 800,
+    then integrates position via the track-width kinematic model.
+
+    Key TTR formulas (from Robot.cpp):
+      VSpeed = angle_output * Robot_diameter * 1000 * π / 180   (mm/s differential)
+      leftWheel  = max_wheel * factor + VSpeed
+      rightWheel = max_wheel * factor - VSpeed
+      SmoothSpeed: accel +15 mm/s per 10ms tick, decel |diff|/10 per tick
+      Angular limit: if |L-R| > 800 → scale both down
+    """
+    def __init__(self, lat: float, lon: float, heading_deg: float = 0.0,
+                 ttr_phys: dict | None = None, max_steer: float = 0.8):
+        super().__init__(lat, lon, heading_deg)
+        p = {**DEFAULT_TTR_PHYS, **(ttr_phys or {})}
+        self._track_m      = p['track_width_m']
+        self._max_wheel     = float(p['max_wheel_mms'])
+        self._accel_cap     = float(p['accel_cap_mms_per_tick'])
+        self._decel_div     = float(p['decel_divisor'])
+        self._ang_diff_lim  = float(p['angular_diff_limit_mms'])
+        self._smooth_hz     = float(p['smooth_tick_hz'])
+        self._max_steer     = max_steer   # navigator max_steering param
+        self._last_left     = 0.0
+        self._last_right    = 0.0
+
+    def update(self, throttle: int, steering: int,
+               max_speed: float, wheelbase: float, dt: float,
+               turn_scale: float = 0.1, steer_deadband: float = 0.05):
+        # --- PPM → target wheel speeds (mm/s) ---
+        # Forward component: throttle maps to base wheel speed
+        forward_mms = (throttle - 1500) / 500.0 * self._max_wheel
+
+        # Steering: recover angle_output (degrees) from PPM via TTR formula
+        # Navigator: steer_ppm = 1500 - steer_frac * 500
+        # _ttr_steer: steer_frac = (angle_output / 25) * max_steer
+        steer_frac = (1500 - steering) / 500.0
+        if abs(steer_frac) < steer_deadband:
+            steer_frac = 0.0
+        # Reverse: angle_output = steer_frac * 25 / max_steer, clamped ±25°
+        angle_deg = steer_frac * 25.0 / self._max_steer
+        angle_deg = max(-25.0, min(25.0, angle_deg))
+        # TTR: VSpeed = angle_output * track_mm * π / 180
+        v_speed_mm = angle_deg * (self._track_m * 1000.0) * math.pi / 180.0
+
+        left_target  = forward_mms + v_speed_mm
+        right_target = forward_mms - v_speed_mm
+
+        # --- SmoothSpeed (acceleration limiter) ---
+        # Original runs at smooth_hz (100 Hz). Scale caps to our dt.
+        ticks = dt * self._smooth_hz
+        accel_cap = self._accel_cap * ticks
+
+        left  = self._smooth_one(self._last_left,  left_target,  accel_cap, ticks)
+        right = self._smooth_one(self._last_right, right_target, accel_cap, ticks)
+
+        # --- Angular velocity limit ---
+        diff = abs(left - right)
+        if diff > self._ang_diff_lim:
+            scale = diff / self._ang_diff_lim
+            left  /= scale
+            right /= scale
+
+        # --- Clamp to max wheel speed ---
+        left  = max(-self._max_wheel, min(self._max_wheel, left))
+        right = max(-self._max_wheel, min(self._max_wheel, right))
+
+        self._last_left  = left
+        self._last_right = right
+
+        # --- Kinematics: differential drive ---
+        speed_mps = (left + right) / 2000.0           # mm/s → m/s
+        # omega = (L - R) / track_mm; L>R → turns right → positive heading
+        omega = (left - right) / (self._track_m * 1000.0)
+
+        self.heading_rad += omega * dt
+        lat_rad = math.radians(self.lat)
+        cos_lat = math.cos(lat_rad) or 1e-9
+        self.lat      += (speed_mps * math.cos(self.heading_rad) * dt) / 111320.0
+        self.lon      += (speed_mps * math.sin(self.heading_rad) * dt) / (111320.0 * cos_lat)
+        self.speed_mps = speed_mps
+
+    def _smooth_one(self, last: float, target: float, accel_cap: float,
+                    ticks: float) -> float:
+        """SmoothSpeed per-wheel: cap acceleration, gradual deceleration."""
+        if last < target - accel_cap:
+            return last + accel_cap
+        elif last > target + accel_cap:
+            decel_per_tick = abs(target - last) / self._decel_div
+            return last - decel_per_tick * ticks
+        return target
+
 # ── Data classes ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -1158,12 +1263,23 @@ def simulate(waypoints:       list[SimWaypoint],
          f'expanded={len(expanded_polygons)} '
          f'wps {len(waypoints)}->{len(effective_wps)}')
 
-    rover  = RoverState(start_lat, start_lon, start_heading)
+    if nav['control_algorithm'] == 'ttr':
+        ttr_phys = {k: phys[k] for k in DEFAULT_TTR_PHYS if k in phys}
+        rover = DiffDriveState(start_lat, start_lon, start_heading,
+                               ttr_phys=ttr_phys,
+                               max_steer=nav.get('max_steering', 0.8))
+    else:
+        rover = RoverState(start_lat, start_lon, start_heading)
     path_n = PathNavigator(effective_wps, start_lat, start_lon, nav)
 
     if verbose:
         print(f'\n{"─"*60}')
         print(f'Mission analysis  ({len(effective_wps)} waypoints, algo={nav["control_algorithm"]})')
+        if nav['control_algorithm'] == 'ttr':
+            print(f'  TTR physics: track={DEFAULT_TTR_PHYS["track_width_m"]}m  '
+                  f'max_wheel={DEFAULT_TTR_PHYS["max_wheel_mms"]}mm/s  '
+                  f'accel_cap={DEFAULT_TTR_PHYS["accel_cap_mms_per_tick"]}mm/s/tick  '
+                  f'ang_limit={DEFAULT_TTR_PHYS["angular_diff_limit_mms"]}mm/s')
         print(f'  pivot_threshold={nav["pivot_threshold"]}°  '
               f'mpc_horizon={nav.get("mpc_horizon",10)}  '
               f'mpc_dt={nav.get("mpc_dt",0.2)}  '
@@ -1453,6 +1569,11 @@ if __name__ == '__main__':
     ap.add_argument('--heading',     type=float, default=0.0,   help='Start heading (deg N)')
     ap.add_argument('--wheelbase',   type=float, default=DEFAULT_PHYS['wheelbase'])
     ap.add_argument('--turn-scale',  type=float, default=DEFAULT_PHYS['turn_scale'])
+    ap.add_argument('--algo',        type=str,   default=None,
+                    choices=['stanley', 'mpc', 'ttr'],
+                    help='Control algorithm (default: from rover1_params.yaml)')
+    ap.add_argument('--track-width', type=float, default=DEFAULT_TTR_PHYS['track_width_m'],
+                    help='TTR track width in metres (default: 0.9)')
     ap.add_argument('--obstacles',   type=str,   default=None,
                     help='JSON file with obstacle polygons [[[lat,lon],...],...]')
     ap.add_argument('--html-out',    type=str,   default=None, metavar='FILE',
@@ -1468,13 +1589,20 @@ if __name__ == '__main__':
     if obstacles:
         print(f'Loaded {len(obstacles)} obstacle polygon(s)')
 
+    nav_overrides = {}
+    if args.algo:
+        nav_overrides['control_algorithm'] = args.algo
+
     result = simulate(wps, args.lat, args.lon, args.heading,
-                      nav_params={},
+                      nav_params=nav_overrides,
                       phys_params={'wheelbase': args.wheelbase,
-                                   'turn_scale': args.turn_scale},
+                                   'turn_scale': args.turn_scale,
+                                   'track_width_m': args.track_width},
                       obstacles=obstacles,
                       verbose=args.debug)
 
+    active_algo = nav_overrides.get('control_algorithm', DEFAULT_NAV['control_algorithm'])
+    print(f'Algorithm: {active_algo}')
     print(f'Complete : {result.complete}  ({result.total_steps} steps, '
           f'{result.total_steps / DEFAULT_NAV["control_rate"]:.1f} s simulated)')
     print(f'Reached  : {len(result.waypoints_reached)}/{len(wps)} waypoints')
