@@ -391,17 +391,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         // START — arm then set AUTO mode
         btnStart.setOnClickListener {
-            val missionStart = roverMissions[selectedRoverId]?.firstOrNull()
-            val roverPos     = roverPositions[selectedRoverId]
-            if (missionStart == null) {
-                Toast.makeText(this, "No mission uploaded", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            if (roverNavStatus[selectedRoverId] == "NA") {
+            // Primary gate: rover telemetry must confirm mission is loaded.
+            // This allows missions uploaded from mission_planner.py (not just GQC).
+            if (roverNavStatus[selectedRoverId].let { it == null || it == "NA" }) {
                 Toast.makeText(this, "No mission loaded on rover", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            if (roverPos == null || distanceMeters(roverPos, missionStart) > 0.5) {
+            // Distance check only when we have the start position from a local upload.
+            val missionStart = roverMissions[selectedRoverId]?.firstOrNull()
+            val roverPos     = roverPositions[selectedRoverId]
+            if (missionStart != null && (roverPos == null || distanceMeters(roverPos, missionStart) > 0.5)) {
                 AlertDialog.Builder(this)
                     .setTitle("Too far from start")
                     .setMessage("Move the rover manually to the starting position")
