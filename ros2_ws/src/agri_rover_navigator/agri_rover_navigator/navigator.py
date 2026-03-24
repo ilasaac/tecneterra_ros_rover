@@ -69,8 +69,10 @@ Services:
 
 from __future__ import annotations
 
+import csv
 import json
 import math
+import os
 import time
 
 try:
@@ -243,6 +245,23 @@ class NavigatorNode(Node):
         self._path_origin_lon: float | None          = None
         self._path_idx:        int                   = 0
         self._log_tick:        int                   = 0   # for throttling periodic logs
+
+        # ── Diagnostic CSV logger ─────────────────────────────────────────────
+        self.declare_parameter('enable_diag_log', False)
+        self.declare_parameter('diag_log_path',   '/tmp/navigator_diag.csv')
+        self._diag_file   = None
+        self._diag_writer = None
+        if self.get_parameter('enable_diag_log').value:
+            path = self.get_parameter('diag_log_path').value
+            self._diag_file   = open(path, 'w', newline='')
+            self._diag_writer = csv.writer(self._diag_file)
+            self._diag_writer.writerow([
+                't', 'lat', 'lon', 'heading',
+                'target_brg', 'hdg_err', 'cte',
+                'steer_frac', 'steer_ppm', 'throttle_ppm',
+                'speed_tgt', 'dist_to_wp', 'wp_idx', 'algo',
+            ])
+            self.get_logger().info(f'Diagnostic log: {path}')
 
         # Obstacle avoidance state
         # _path_original: clean copy of received mission waypoints (without bypass points).
@@ -1592,6 +1611,24 @@ class NavigatorNode(Node):
                                   min(self._max_steer, stanley_ang / 45.0))
             steer_ppm = int(PPM_CENTER - steer_frac * 500)
 
+        if self._diag_writer is not None:
+            sf = (PPM_CENTER - steer_ppm) / 500.0
+            self._diag_writer.writerow([
+                round(time.time(), 4),
+                round(rlat, 8), round(rlon, 8),
+                round(self._heading, 2),
+                round(target_bearing, 2),
+                round(heading_err, 2),
+                round(cte, 4),
+                round(sf, 4),
+                steer_ppm, throttle_ppm,
+                round(target_spd, 3),
+                round(dist_to_wp, 3),
+                self._path_idx,
+                self._algo,
+            ])
+            self._diag_file.flush()
+
         self._publish_cmd(throttle_ppm, steer_ppm)
 
     # ── Output helpers ────────────────────────────────────────────────────────
@@ -1623,6 +1660,9 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    finally:
+        if node._diag_file is not None:
+            node._diag_file.close()
     finally:
         node.destroy_node()
         rclpy.shutdown()

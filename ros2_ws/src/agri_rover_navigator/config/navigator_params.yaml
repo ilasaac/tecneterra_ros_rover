@@ -100,3 +100,9 @@ navigator:
     mpc_w_steer:   0.1
     mpc_w_dsteer:  0.05
     wheelbase_m:   0.6
+
+    # ── Diagnostic CSV logger ───────────────────────────────────────────────
+    # Set enable_diag_log: true to write a per-tick CSV for controller analysis.
+    # Copy the file out of the container: docker cp agri_rover_rv1:/tmp/navigator_diag.csv .
+    enable_diag_log: false
+    diag_log_path:   '/tmp/navigator_diag.csv'
