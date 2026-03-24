@@ -62,13 +62,11 @@
 #define RELAY_HIGH       1750  // above → slave manually selected
 
 // PPM speed limits (autonomous mode only; SBUS passthrough is unclamped).
-// Throttle (CH1=idx0): ±20% → 20% of 500 µs = 100 µs → [1400, 1600].
-// Spin    (CH2=idx1): ±50% → 50% of 500 µs = 250 µs → [1250, 1750].
-// Other channels and the Jetson serial status are unaffected.
-#define THR_LIMIT_MAX  1600U
-#define THR_LIMIT_MIN  1400U
-#define SPIN_LIMIT_MAX 1750U
-#define SPIN_LIMIT_MIN 1250U
+// Full range: [1000, 2000] — Jetson sends real PPM values.
+#define THR_LIMIT_MAX  2000U
+#define THR_LIMIT_MIN  1000U
+#define SPIN_LIMIT_MAX 2000U
+#define SPIN_LIMIT_MIN 1000U
 #define EMERGENCY_THRESH 1700
 #define AUTO_THRESH      1700
 
