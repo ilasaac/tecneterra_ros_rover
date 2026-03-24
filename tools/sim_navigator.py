@@ -181,8 +181,10 @@ class DiffDriveState(RoverState):
                max_speed: float, wheelbase: float, dt: float,
                turn_scale: float = 0.1, steer_deadband: float = 0.05):
         # --- PPM → target wheel speeds (mm/s) ---
-        # Forward component: throttle maps to base wheel speed
-        forward_mms = (throttle - 1500) / 500.0 * self._max_wheel
+        # Forward: decode PPM using max_speed (same scale the controller used
+        # to encode), then convert to mm/s for the wheel-level math.
+        # max_wheel clamp at the end enforces the physical wheel speed limit.
+        forward_mms = (throttle - 1500) / 500.0 * max_speed * 1000.0
 
         # Steering: recover angle_output (degrees) from PPM via TTR formula
         # Navigator: steer_ppm = 1500 - steer_frac * 500
