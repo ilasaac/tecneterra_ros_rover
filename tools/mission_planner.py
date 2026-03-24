@@ -179,12 +179,13 @@ def _mavlink_upload(waypoints: list, obstacles: list,
             n = len(poly)
             for v in poly:
                 items.append({'cmd': 5003, 'p1': float(n), 'p2': 0.0, 'p3': 0.0, 'p4': 0.0,
-                              'lat': float(v[0]), 'lon': float(v[1])})
+                              'lat': float(v[0]), 'lon': float(v[1]), 'z': 0.0})
         for wp in waypoints:
             items.append({'cmd': 16, 'p1': 0.0,
                           'p2': float(wp.get('acceptance_radius') or DEFAULT_NAV['default_acceptance_radius']),
-                          'p3': 0.0, 'p4': float(wp.get('speed') or 0.0),
-                          'lat': float(wp['lat']), 'lon': float(wp['lon'])})
+                          'p3': 0.0, 'p4': 0.0,
+                          'lat': float(wp['lat']), 'lon': float(wp['lon']),
+                          'z': float(wp.get('speed') or 0.0)})
         if not items:
             return {'ok': False, 'message': 'No items to upload'}
     except Exception as e:
@@ -205,7 +206,7 @@ def _mavlink_upload(waypoints: list, obstacles: list,
                 item['cmd'],
                 0, 1,          # current=0, autocontinue=1
                 item['p1'], item['p2'], item['p3'], item['p4'],
-                int(item['lat'] * 1e7), int(item['lon'] * 1e7), 0,
+                int(item['lat'] * 1e7), int(item['lon'] * 1e7), item['z'],
             ))
             _time.sleep(0.02)
         sock.close()
