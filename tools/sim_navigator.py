@@ -1034,10 +1034,9 @@ class PathNavigator:
                 self._ttr_apid.clear(); self._ttr_hpid.clear()
                 self._advance()
                 if self.path_idx >= len(self._wps):
-                    return PPM_CENTER, PPM_CENTER, self.path_idx, True
+                    if not self._load_next_chunk():
+                        return PPM_CENTER, PPM_CENTER, 0, True
                 # Fall through to controller — don't return neutral.
-                # SmoothSpeed wheels are at 0 after the spin; a neutral frame
-                # would delay acceleration by ~5 steps (0.2 s visible stall).
             else:
                 # Proportional spin: full speed above 45°, linear ramp below.
                 # Prevents overshoot oscillation caused by the 9°/step rate at
@@ -1108,11 +1107,10 @@ class PathNavigator:
             else:
                 self._advance()
                 if self.path_idx >= len(self._wps):
-                    return PPM_CENTER, PPM_CENTER, best_seg, True
+                    if not self._load_next_chunk():
+                        return PPM_CENTER, PPM_CENTER, best_seg, True
                 # Don't stop — fall through to the controller so the rover
-                # seamlessly continues toward the next waypoint.  Returning
-                # neutral here caused SmoothSpeed to kill momentum, making
-                # the rover stall for several steps after every advance.
+                # seamlessly continues toward the next waypoint.
                 # Refresh state for the new target waypoint.
                 wp         = self._wps[self.path_idx]
                 is_bypass  = wp.is_bypass
