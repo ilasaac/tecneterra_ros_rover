@@ -1494,13 +1494,21 @@ def _build_page(default_lat: float, default_lon: float) -> str:
 class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-        if self.path in ('/', '/index.html'):
+        if self.path.startswith('/?') or self.path == '/index.html':
+            # Redirect cache-busting URLs back to /
+            self.send_response(302)
+            self.send_header('Location', '/')
+            self.end_headers()
+            return
+        if self.path == '/':
             body = _build_page(self.server.default_lat,
                                self.server.default_lon).encode()
             self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
-            self.send_header('Cache-Control', 'no-cache, no-store')
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Expires', '0')
             self.end_headers()
             self.wfile.write(body)
 
