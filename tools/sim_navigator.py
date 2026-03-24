@@ -1029,6 +1029,11 @@ class PathNavigator:
                 self._pivoting = False
                 self._ttr_apid.clear(); self._ttr_hpid.clear()
                 self._advance()
+                if self.path_idx >= len(self._wps):
+                    return PPM_CENTER, PPM_CENTER, self.path_idx, True
+                # Fall through to controller — don't return neutral.
+                # SmoothSpeed wheels are at 0 after the spin; a neutral frame
+                # would delay acceleration by ~5 steps (0.2 s visible stall).
             else:
                 # Proportional spin: full speed above 45°, linear ramp below.
                 # Prevents overshoot oscillation caused by the 9°/step rate at
@@ -1036,7 +1041,6 @@ class PathNavigator:
                 steer_frac = max(-max_steer, min(max_steer, pivot_err / 45.0))
                 steer_ppm  = int(PPM_CENTER - steer_frac * 500)
                 return PPM_CENTER, steer_ppm, self.path_idx, False
-            return PPM_CENTER, PPM_CENTER, self.path_idx, False
 
         wp          = self._wps[self.path_idx]
         accept      = wp.acceptance_radius if wp.acceptance_radius > 0 else accept_r
