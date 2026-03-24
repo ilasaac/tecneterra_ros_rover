@@ -287,12 +287,15 @@ tr:hover td{background:#1e1e3a}
   <div class="section" style="background:#1a0d2e">
     <div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
       <label style="color:#b7a">&#128225;</label>
-      <button id="btn-rv1" class="btn-blue btn-active" style="padding:3px 8px;font-size:11px" onclick="selectRover(1)">RV1</button>
-      <button id="btn-rv2" class="btn-blue" style="padding:3px 8px;font-size:11px" onclick="selectRover(2)">RV2</button>
-      <input id="r-ip" size="14" placeholder="192.168.100.19" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;flex:1">
+      <input id="r-ip-rv1" size="13" value="192.168.100.19" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;flex:1">
+      <button class="btn-green" style="padding:3px 9px;font-size:11px" onclick="uploadRover(1)">&#9650; RV1</button>
+    </div>
+    <div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
+      <label style="color:#b7a">&#128225;</label>
+      <input id="r-ip-rv2" size="13" value="192.168.100.20" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;flex:1">
+      <button class="btn-blue" style="padding:3px 9px;font-size:11px" onclick="uploadRover(2)">&#9650; RV2</button>
     </div>
     <div style="display:flex;gap:3px;align-items:center">
-      <button class="btn-green" style="padding:3px 9px;font-size:11px" onclick="uploadRover()">&#9650; Upload</button>
       <button id="btn-net" class="btn-orange" style="padding:3px 9px;font-size:11px" onclick="importSnooped()">&#8595; Net</button>
       <span id="snoop-status" style="font-size:10px;color:#888;margin-left:4px">no network mission</span>
     </div>
@@ -609,11 +612,11 @@ function drawWaypoints() {
   waypoints.forEach((wp, i) => {
     const p = project(wp.lat, wp.lon);
     ctx.beginPath(); ctx.arc(p.x, p.y, 11, 0, Math.PI * 2);
-    ctx.fillStyle   = 'rgba(26,122,58,0.6)';
+    ctx.fillStyle   = i === 0 ? 'rgba(255,214,0,0.85)' : 'rgba(26,122,58,0.6)';
     ctx.strokeStyle = 'rgba(255,255,255,0.7)';
     ctx.lineWidth   = 1.5;
     ctx.fill(); ctx.stroke();
-    ctx.fillStyle    = '#fff';
+    ctx.fillStyle    = i === 0 ? '#000' : '#fff';
     ctx.font         = 'bold 10px sans-serif';
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
@@ -1065,33 +1068,20 @@ async function refreshMissionList() {
 refreshMissionList();
 
 // ── Rover upload / network import ─────────────────────────────────
-let selectedRover = 1;
-const roverIPs = {1: '192.168.100.19', 2: '192.168.100.20'};
-
-function selectRover(n) {
-  selectedRover = n;
-  document.getElementById('btn-rv1').classList.toggle('btn-active', n === 1);
-  document.getElementById('btn-rv2').classList.toggle('btn-active', n === 2);
-  document.getElementById('r-ip').value = roverIPs[n] || '';
-}
-document.getElementById('r-ip').value = roverIPs[1];
-
-async function uploadRover() {
+async function uploadRover(roverId) {
   // Auto-load from dropdown if canvas is empty and a mission is selected
   if (!waypoints.length) {
     const sel = document.getElementById('m-select');
-    if (sel.value) {
-      await loadMission();
-    }
+    if (sel.value) { await loadMission(); }
     if (!waypoints.length) { status('No waypoints to upload.', '#e74c3c'); return; }
   }
-  const rover_ip = document.getElementById('r-ip').value.trim();
-  if (!rover_ip) { status('Enter rover IP.', '#e74c3c'); return; }
-  status(`Uploading to RV${selectedRover}...`, '#f39c12');
+  const rover_ip = document.getElementById(`r-ip-rv${roverId}`).value.trim();
+  if (!rover_ip) { status(`Enter RV${roverId} IP.`, '#e74c3c'); return; }
+  status(`Uploading to RV${roverId}...`, '#f39c12');
   if (obsMode) obsFinish();
   const resp = await fetch('/upload_rover', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port: 14550, rover_sysid: selectedRover}),
+    body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port: 14550, rover_sysid: roverId}),
   });
   const d = await resp.json();
   status(d.message, d.ok ? '#27ae60' : '#e74c3c');
