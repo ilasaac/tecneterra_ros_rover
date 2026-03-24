@@ -1518,7 +1518,7 @@ class _Handler(BaseHTTPRequestHandler):
                 rover_sysid = int(data.get('rover_sysid', 1))
                 wps = data.get('waypoints', [])
                 obs = data.get('obstacles', [])
-                print(f'[upload] → RV{rover_sysid} @ {rover_ip}:{rover_port}  '
+                print(f'[upload] -> RV{rover_sysid} @ {rover_ip}:{rover_port}  '
                       f'wps={len(wps)} obs={len(obs)}', flush=True)
                 result = _mavlink_upload(wps, obs, rover_ip, rover_port, rover_sysid)
                 print(f'[upload] {result["message"]}', flush=True)
