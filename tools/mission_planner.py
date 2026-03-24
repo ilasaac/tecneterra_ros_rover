@@ -1077,7 +1077,14 @@ function selectRover(n) {
 document.getElementById('r-ip').value = roverIPs[1];
 
 async function uploadRover() {
-  if (!waypoints.length) { status('No waypoints to upload.', '#e74c3c'); return; }
+  // Auto-load from dropdown if canvas is empty and a mission is selected
+  if (!waypoints.length) {
+    const sel = document.getElementById('m-select');
+    if (sel.value) {
+      await loadMission();
+    }
+    if (!waypoints.length) { status('No waypoints to upload.', '#e74c3c'); return; }
+  }
   const rover_ip = document.getElementById('r-ip').value.trim();
   if (!rover_ip) { status('Enter rover IP.', '#e74c3c'); return; }
   status(`Uploading to RV${selectedRover}...`, '#f39c12');
