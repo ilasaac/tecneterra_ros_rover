@@ -625,19 +625,42 @@ function drawPivotMarkers() {
 }
 
 function drawWaypoints() {
+  // Draw waypoints 1..N first so waypoint 0 is always on top
   waypoints.forEach((wp, i) => {
+    if (i === 0) return;
     const p = project(wp.lat, wp.lon);
-    ctx.beginPath(); ctx.arc(p.x, p.y, 11, 0, Math.PI * 2);
-    ctx.fillStyle   = i === 0 ? 'rgba(255,214,0,0.85)' : 'rgba(26,122,58,0.6)';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+    ctx.fillStyle   = 'rgba(26,122,58,0.6)';
     ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    ctx.lineWidth   = 1.5;
+    ctx.lineWidth   = 1;
     ctx.fill(); ctx.stroke();
-    ctx.fillStyle    = i === 0 ? '#000' : '#fff';
-    ctx.font         = 'bold 10px sans-serif';
+    ctx.fillStyle    = '#fff';
+    ctx.font         = 'bold 9px sans-serif';
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(String(i), p.x, p.y);
   });
+  // Draw waypoint 0 last — larger, yellow, always on top
+  if (waypoints.length > 0) {
+    const wp0 = waypoints[0];
+    const p = project(wp0.lat, wp0.lon);
+    // Outer ring
+    ctx.beginPath(); ctx.arc(p.x, p.y, 17, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,214,0,0.9)';
+    ctx.lineWidth   = 2;
+    ctx.stroke();
+    // Filled circle
+    ctx.beginPath(); ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
+    ctx.fillStyle   = 'rgba(255,214,0,0.95)';
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth   = 1.5;
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle    = '#000';
+    ctx.font         = 'bold 10px sans-serif';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('S', p.x, p.y);
+  }
 }
 
 // Keep s-lat/s-lon in sync with WP[0] so sim always starts at the mission origin.

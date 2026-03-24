@@ -397,8 +397,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 Toast.makeText(this, "No mission loaded on rover", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            // Distance check only when we have the start position from a local upload.
+            // Distance check: prefer local upload positions; fall back to TUNNEL rerouted path
+            // so external uploads (e.g. mission_planner.py) are also gated on proximity.
             val missionStart = roverMissions[selectedRoverId]?.firstOrNull()
+                ?: roverReroutedPaths[selectedRoverId]?.firstOrNull()
+                    ?.let { (lat, lon, _) -> LatLng(lat, lon) }
             val roverPos     = roverPositions[selectedRoverId]
             if (missionStart != null && (roverPos == null || distanceMeters(roverPos, missionStart) > 0.5)) {
                 AlertDialog.Builder(this)
