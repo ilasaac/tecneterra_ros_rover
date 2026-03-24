@@ -1118,8 +1118,11 @@ class PathNavigator:
         # Waypoint advance — bypass waypoints require physical proximity (arc-length
         # advance is disabled so short bypass arcs are not immediately skipped).
         # Overshoot: rover passed waypoint along the segment direction.
-        # Prevents getting stuck when the rover slightly misses a waypoint.
+        # Proximity guard: _past_waypoint only fires when rover is already close —
+        # prevents TTR/MPC lookahead from corner-cutting past dense waypoints and
+        # cascading through multiple advances (t>=1 fires while still far away).
         past_wp = (not needs_pivot and not is_bypass
+                   and dist_to_wp < accept * 4.0
                    and self._past_waypoint(rlat, rlon))
         reached = dist_to_wp < accept or past_wp
         if reached:

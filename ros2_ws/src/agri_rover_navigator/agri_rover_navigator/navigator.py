@@ -1468,7 +1468,11 @@ class NavigatorNode(Node):
         # the waypoint along the segment direction) triggers advance.
         # Overshoot: rover passed waypoint along the segment direction.
         # Prevents getting stuck when the rover slightly misses a waypoint.
+        # Proximity guard: only fire when rover is already close — prevents
+        # TTR/MPC lookahead corner-cutting from cascading waypoint advances on
+        # dense missions (t>=1 while still far away from the waypoint).
         past_wp = (not needs_pivot and not is_bypass
+                   and dist_to_wp < accept * 4.0
                    and self._past_waypoint(rlat, rlon))
         reached = dist_to_wp < accept or past_wp
 
