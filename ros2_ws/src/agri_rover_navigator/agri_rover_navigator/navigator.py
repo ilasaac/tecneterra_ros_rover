@@ -1029,7 +1029,7 @@ class NavigatorNode(Node):
         best_seg  = self._path_idx
         best_dist = float('inf')
 
-        for seg_k in range(self._path_idx, min(self._path_idx + 1, len(self._path))):
+        for seg_k in range(self._path_idx, min(self._path_idx + 2, len(self._path))):
             # Segment endpoints and arc-length bounds
             if seg_k == 0:
                 if self._path_origin_lat is None:
