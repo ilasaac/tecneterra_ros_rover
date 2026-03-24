@@ -1264,8 +1264,16 @@ def simulate(waypoints:       list[SimWaypoint],
          f'expanded={len(expanded_polygons)} '
          f'wps {len(waypoints)}->{len(effective_wps)}')
 
+    # Place rear antenna so that the rover *centre* lands on (start_lat, start_lon).
+    # Centre = rear + baseline/2 along heading → rear = centre − baseline/2 along heading.
+    hdg_rad  = math.radians(start_heading)
+    half_bm  = bm / 2.0
+    cos_lat0 = math.cos(math.radians(start_lat)) or 1e-9
+    rear_lat = start_lat - (half_bm * math.cos(hdg_rad)) / 111_320.0
+    rear_lon = start_lon - (half_bm * math.sin(hdg_rad)) / (111_320.0 * cos_lat0)
+
     ttr_phys = {k: phys[k] for k in DEFAULT_TTR_PHYS if k in phys}
-    rover = DiffDriveState(start_lat, start_lon, start_heading,
+    rover = DiffDriveState(rear_lat, rear_lon, start_heading,
                            ttr_phys=ttr_phys,
                            max_steer=nav.get('max_steering', 0.8))
     path_n = PathNavigator(effective_wps, start_lat, start_lon, nav)
