@@ -100,10 +100,11 @@ class GpsDriverNode(Node):
     def _ubx_configure(self, ser: 'serial.Serial') -> None:
         """Configure u-blox GPS output rate via UBX binary protocol.
 
-        Sends two commands:
-          UBX-CFG-RATE — sets navigation solution period (e.g. 40 ms = 25 Hz)
-          UBX-CFG-MSG  — sets GGA sentence output rate to 1 (every nav solution)
+        Tries two approaches:
+          1. Legacy CFG-RATE + CFG-MSG  (u-blox M8 and older)
+          2. CFG-VALSET                 (u-blox F9P / X20P / generation 9+)
 
+        Both are sent; the module applies whichever it understands.
         Non-u-blox receivers silently ignore the bytes.  No ACK is awaited.
         """
         def _build(cls: int, mid: int, payload: bytes) -> bytes:
@@ -116,20 +117,39 @@ class GpsDriverNode(Node):
 
         period_ms = max(25, int(round(1000.0 / self._publish_rate)))
 
-        # UBX-CFG-RATE: measRate=period_ms, navRate=1, timeRef=GPS(1)
+        # ── Legacy (M8 and older) ────────────────────────────────────────────
+        # CFG-RATE: measRate=period_ms, navRate=1, timeRef=GPS
         ser.write(_build(0x06, 0x08, bytes([
             period_ms & 0xFF, (period_ms >> 8) & 0xFF,
             0x01, 0x00,
             0x01, 0x00,
         ])))
         time.sleep(0.05)
-
-        # UBX-CFG-MSG: GGA (F0 00) rate=1 on UART1 and USB (indices 1 and 3)
-        # GPS connects via USB on this platform; enable both to be safe.
+        # CFG-MSG: GGA on UART1 (idx 1) and USB (idx 3) at rate 1
         ser.write(_build(0x06, 0x01, bytes([0xF0, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00])))
         time.sleep(0.05)
 
-        self.get_logger().info(f'UBX configured: {period_ms} ms ({1000//period_ms} Hz) GGA on UART1')
+        # ── CFG-VALSET (F9P / X20P / generation 9+) ─────────────────────────
+        # Key IDs (little-endian 32-bit):
+        #   CFG-RATE-MEAS              0x30210001  U2  measurement period ms
+        #   CFG-MSGOUT-NMEA_ID_GGA_UART1  0x20910029  U1  GGA rate on UART1
+        #   CFG-MSGOUT-NMEA_ID_GGA_USB    0x2091002B  U1  GGA rate on USB
+        def _key(k: int) -> bytes:
+            return k.to_bytes(4, 'little')
+
+        valset_payload = (
+            bytes([0x00, 0x01, 0x00, 0x00])           # version=0, layer=RAM, reserved
+            + _key(0x30210001) + period_ms.to_bytes(2, 'little')  # CFG-RATE-MEAS
+            + _key(0x20910029) + bytes([0x01])         # GGA on UART1
+            + _key(0x2091002B) + bytes([0x01])         # GGA on USB
+        )
+        ser.write(_build(0x06, 0x8A, valset_payload))
+        time.sleep(0.05)
+
+        self.get_logger().info(
+            f'UBX configured: {period_ms} ms ({1000 // period_ms} Hz) '
+            f'GGA on UART1+USB (legacy + VALSET)'
+        )
 
     # ── Serial reader thread ──────────────────────────────────────────────────
 
