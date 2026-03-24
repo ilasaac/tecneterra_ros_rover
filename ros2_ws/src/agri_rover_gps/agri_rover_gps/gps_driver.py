@@ -146,9 +146,26 @@ class GpsDriverNode(Node):
         ser.write(_build(0x06, 0x8A, valset_payload))
         time.sleep(0.05)
 
+        # ── PUBX,40 — disable unused NMEA sentences (all u-blox generations) ─
+        # GSV (satellite info) outputs 3-4 sentences per fix and is the main
+        # source of serial congestion at 25 Hz.  GGA is all the navigator needs.
+        def _pubx40(msg_id: str, rate: int = 0) -> bytes:
+            body = f'PUBX,40,{msg_id},{rate},{rate},{rate},{rate},{rate},0'
+            ck = 0
+            for c in body:
+                ck ^= ord(c)
+            return f'${body}*{ck:02X}\r\n'.encode()
+
+        for sentence in ('GLL', 'GSA', 'GSV', 'RMC', 'GNS', 'GRS', 'GST'):
+            ser.write(_pubx40(sentence, 0))   # disable
+            time.sleep(0.02)
+        # Keep VTG enabled (rate=1) — used by gps_driver when heading_source='vtg'
+        ser.write(_pubx40('VTG', 1))
+        time.sleep(0.02)
+
         self.get_logger().info(
             f'UBX configured: {period_ms} ms ({1000 // period_ms} Hz) '
-            f'GGA on UART1+USB (legacy + VALSET)'
+            f'GGA+VTG only (legacy + VALSET + PUBX,40)'
         )
 
     # ── Serial reader thread ──────────────────────────────────────────────────
