@@ -162,7 +162,7 @@ DEFAULT_TTR_PHYS: dict = {
     # centre) along the rover heading direction.  Positive = rotation centre is
     # ahead of the rear antenna.  When non-zero, spinning causes the GPS antenna
     # to sweep an arc, replicating the off-centre rotation seen on real hardware.
-    'rotation_center_offset_m': 0.0,  # set to real measured value (e.g. 0.4)
+    'rotation_center_offset_m': 0.35, # measured from navigator_diag spin arcs (range 0.30-0.40 m)
 }
 
 
