@@ -139,6 +139,8 @@ class RoverPositionManager(
 
     // Missions being uploaded, keyed by target system ID
     private val pendingMissions = HashMap<Int, List<MissionItemInt>>()
+    // Active upload coroutine per rover — cancelled before a new upload starts
+    private val uploadJobs = HashMap<Int, Job>()
 
     // TUNNEL rerouted-path reassembly: sysId → map of chunkIdx → byte content
     private data class TunnelAssembly(val total: Int, val chunks: HashMap<Int, ByteArray>)
@@ -300,7 +302,8 @@ class RoverPositionManager(
 
     /** Upload a mission to a specific rover using the MAVLink mission upload protocol. */
     fun uploadMission(sysId: Int, waypoints: List<Pair<Double, Double>>) {
-        scope.launch {
+        uploadJobs[sysId]?.cancel()
+        uploadJobs[sysId] = scope.launch {
             val items = waypoints.mapIndexed { index, (lat, lon) ->
                 MissionItemInt.builder()
                     .targetSystem(sysId).targetComponent(1)
@@ -329,7 +332,8 @@ class RoverPositionManager(
      * waypoint, following standard MAVLink mission DO-command sequencing.
      */
     fun uploadRecordedMission(sysId: Int, actions: List<MissionAction>) {
-        scope.launch {
+        uploadJobs[sysId]?.cancel()
+        uploadJobs[sysId] = scope.launch {
             var seq = 0
             val items = actions.map { action ->
                 when (action) {
@@ -375,7 +379,8 @@ class RoverPositionManager(
         actions: List<MissionAction>,
         obstacles: List<List<Pair<Double, Double>>>,
     ) {
-        scope.launch {
+        uploadJobs[sysId]?.cancel()
+        uploadJobs[sysId] = scope.launch {
             val items = mutableListOf<MissionItemInt>()
 
             // Fence items first (cmd=5003)

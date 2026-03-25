@@ -138,6 +138,8 @@ class MavlinkBridgeNode(Node):
         self._mission_src         = None            # (srcSys, srcComp)
         self._mission_expect_seq  = None            # int or None
         self._mission_last_req_t  = 0.0
+        self._mission_retry_count = 0               # consecutive retries for same seq
+        self._mission_retry_at_seq = None           # seq being counted
 
         # ── Subscriptions ────────────────────────────────────────────────────
         self.create_subscription(NavSatFix,    'fix',          self._cb_fix,      10)
@@ -464,6 +466,8 @@ class MavlinkBridgeNode(Node):
                         self._mission_src        = (msg.get_srcSystem(), msg.get_srcComponent())
                         self._mission_expect_seq = 0
                         self._mission_last_req_t = time.monotonic()
+                    self._mission_retry_count  = 0
+                    self._mission_retry_at_seq = None
                     self.get_logger().info(
                         f'Mission upload started: {msg.count} items '
                         f'from sysid={msg.get_srcSystem()}')
@@ -553,11 +557,33 @@ class MavlinkBridgeNode(Node):
         With streaming upload GQC pushes items proactively so this fires only on
         genuine packet loss.  250 ms is long enough to cover one DTIM period on slow
         WiFi but short enough that a lost item doesn't stall the upload for long.
+        Aborts after 20 consecutive retries for the same seq (stuck state, e.g. from
+        a second upload interrupting the first).
         """
         with self._mission_lock:
-            seq = self._mission_expect_seq
+            seq     = self._mission_expect_seq
             elapsed = time.monotonic() - self._mission_last_req_t
         if seq is None or elapsed < 0.25:
+            return
+        if seq == self._mission_retry_at_seq:
+            self._mission_retry_count += 1
+        else:
+            self._mission_retry_count  = 1
+            self._mission_retry_at_seq = seq
+        if self._mission_retry_count > 20:
+            self.get_logger().error(
+                f'Mission upload aborted — seq={seq} not received after '
+                f'{self._mission_retry_count} retries (~10 s); start a fresh upload')
+            with self._mission_lock:
+                self._mission_expect_seq = None
+                self._mission_src        = None
+            self._mission_retry_count  = 0
+            self._mission_retry_at_seq = None
+            try:
+                stxt = self._mav.mav.statustext_encode(3, b'Mission upload aborted, retry')
+                self._send(stxt)
+            except Exception:
+                pass
             return
         self.get_logger().info(f'Retrying MISSION_REQUEST_INT seq={seq} ({elapsed*1000:.0f}ms)')
         self._send_mission_request(seq)
