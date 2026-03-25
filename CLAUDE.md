@@ -92,6 +92,17 @@ ros_agri_rover/
 | mission      | agri_rover_interfaces/MissionWaypoint | mavlink_bridge              | navigator                 |
 | mission_fence| std_msgs/String (JSON)                | mavlink_bridge              | navigator                 |
 
+**Cross-namespace topics (inter-rover proximity, absolute paths — no /rvN/ prefix):**
+
+| Topic       | Type              | Direction                 | Purpose                                  |
+|-------------|-------------------|---------------------------|------------------------------------------|
+| /rv1/fix    | NavSatFix         | rv2/navigator subscribes  | RV2 monitors RV1 position for proximity  |
+| /rv2/fix    | NavSatFix         | rv1/navigator subscribes  | RV1 monitors RV2 position for proximity  |
+| /rv1/heading| Float32           | rv2/navigator subscribes  | RV2 needs RV1 orientation for bbox       |
+| /rv2/heading| Float32           | rv1/navigator subscribes  | RV1 needs RV2 orientation for bbox       |
+| /rv1/mode   | String            | rv2/navigator publishes   | RV2 sends MANUAL to stop RV1 on e-stop   |
+| /rv2/mode   | String            | rv1/navigator publishes   | RV1 sends MANUAL to stop RV2 on e-stop   |
+
 ---
 
 ## MAVLink & network constants

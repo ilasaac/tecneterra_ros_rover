@@ -134,6 +134,91 @@ def bearing_to(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return (math.degrees(math.atan2(x, y)) + 360) % 360
 
 
+# ── Proximity-safety geometry helpers ─────────────────────────────────────────
+
+def _prox_corners(rear_lat: float, rear_lon: float, heading_deg: float,
+                  baseline_m: float, front_ov: float, rear_ov: float, half_w: float,
+                  ref_lat: float, ref_lon: float) -> list[tuple[float, float]]:
+    """
+    Return the 4 bounding-box corners of a rover in flat-earth XY (X=East, Y=North).
+
+    rear_lat/lon  — rear (primary) GPS antenna position
+    heading_deg   — rover heading (0=North, 90=East)
+    baseline_m    — distance between rear and front antennas (≈ 1.0 m)
+    front_ov      — how far the rover body extends FORWARD of the front antenna
+    rear_ov       — how far the rover body extends REARWARD of the rear antenna
+    half_w        — half the rover physical width
+    ref_lat/lon   — flat-earth origin (shared between the two rovers)
+
+    Returns [FL, FR, RL, RR] in counter-clockwise winding order.
+    """
+    cos_ref = math.cos(math.radians(ref_lat)) or 1e-9
+    rx = (rear_lon - ref_lon) * 111_320.0 * cos_ref   # East metres from ref
+    ry = (rear_lat - ref_lat) * 111_320.0              # North metres from ref
+    h  = math.radians(heading_deg)
+    fw = (math.sin(h),  math.cos(h))   # forward unit vector (E, N)
+    rt = (math.cos(h), -math.sin(h))   # right   unit vector (E, N)
+    # Forward end (baseline + front overhang ahead of rear antenna)
+    fwd_off = baseline_m + front_ov
+    return [
+        (rx + fwd_off * fw[0] +  half_w * rt[0], ry + fwd_off * fw[1] +  half_w * rt[1]),  # FL
+        (rx + fwd_off * fw[0] -  half_w * rt[0], ry + fwd_off * fw[1] -  half_w * rt[1]),  # FR
+        (rx - rear_ov * fw[0] -  half_w * rt[0], ry - rear_ov * fw[1] -  half_w * rt[1]),  # RR
+        (rx - rear_ov * fw[0] +  half_w * rt[0], ry - rear_ov * fw[1] +  half_w * rt[1]),  # RL
+    ]
+
+
+def _seg_dist_sq(px: float, py: float,
+                 ax: float, ay: float, bx: float, by: float) -> float:
+    """Squared distance from point P to line segment A–B."""
+    dx, dy = bx - ax, by - ay
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx*dx + dy*dy + 1e-12)))
+    return (px - ax - t*dx)**2 + (py - ay - t*dy)**2
+
+
+def _rects_clearance(ca: list[tuple[float, float]],
+                     cb: list[tuple[float, float]]) -> float:
+    """
+    Minimum clearance (metres) between two convex quadrilaterals.
+    Returns 0.0 if they overlap.  Corners must be in consistent winding order.
+    """
+    def _inside(px: float, py: float, corners: list) -> bool:
+        """True if point is inside a convex polygon (CCW winding)."""
+        n, sign = len(corners), None
+        for i in range(n):
+            ax, ay = corners[i]
+            bx, by = corners[(i + 1) % n]
+            cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+            if abs(cross) < 1e-9:
+                continue
+            s = cross > 0
+            if sign is None:
+                sign = s
+            elif sign != s:
+                return False
+        return True
+
+    # Overlap → clearance is 0
+    for x, y in ca:
+        if _inside(x, y, cb):
+            return 0.0
+    for x, y in cb:
+        if _inside(x, y, ca):
+            return 0.0
+
+    # Minimum corner-to-edge distance
+    min_dsq = float('inf')
+    n = len(cb)
+    for px, py in ca:
+        for i in range(n):
+            min_dsq = min(min_dsq, _seg_dist_sq(px, py, *cb[i], *cb[(i + 1) % n]))
+    n = len(ca)
+    for px, py in cb:
+        for i in range(n):
+            min_dsq = min(min_dsq, _seg_dist_sq(px, py, *ca[i], *ca[(i + 1) % n]))
+    return math.sqrt(min_dsq)
+
+
 class _PID:
     """Minimal PID controller — matches TTR PIDController.hpp compute() signature."""
     def __init__(self, kp: float = 1.0, ki: float = 0.0, kd: float = 0.0):
@@ -236,6 +321,26 @@ class NavigatorNode(Node):
         self.declare_parameter('mpc_w_dsteer',               0.05)
         self.declare_parameter('wheelbase_m',                0.6)
 
+        # ── Inter-rover proximity safety ──────────────────────────────────────
+        # peer_rover_ns: absolute ROS2 namespace of the other rover (e.g. '/rv2').
+        #   Leave empty '' to disable proximity safety (single-rover mode).
+        # rover_front_corner_dist_m: straight-line distance from the FRONT antenna
+        #   to each front corner of the rover body (metres).  With a 1m-wide rover
+        #   and 0.6m corner distance, the front overhang = sqrt(0.6²−0.5²) ≈ 0.33m.
+        # rover_rear_corner_dist_m: same for the REAR antenna to rear corners.
+        #   With 1.0m corner distance, rear overhang = sqrt(1.0²−0.5²) ≈ 0.87m.
+        # rover_half_width_m: half the physical width of the rover body (metres).
+        # proximity_slow_m:  inter-rover body clearance (m) below which SLAVE halves speed.
+        # proximity_halt_m:  clearance below which SLAVE halts.
+        # proximity_estop_m: clearance below which BOTH rovers halt and disarm.
+        self.declare_parameter('peer_rover_ns',             '')
+        self.declare_parameter('rover_front_corner_dist_m', 0.6)
+        self.declare_parameter('rover_rear_corner_dist_m',  1.0)
+        self.declare_parameter('rover_half_width_m',        0.5)
+        self.declare_parameter('proximity_slow_m',          1.5)
+        self.declare_parameter('proximity_halt_m',          1.0)
+        self.declare_parameter('proximity_estop_m',         0.5)
+
         self._lookahead           = self.get_parameter('lookahead_distance').value
         self._accept_r            = self.get_parameter('default_acceptance_radius').value
         self._max_speed           = self.get_parameter('max_speed').value
@@ -275,6 +380,20 @@ class NavigatorNode(Node):
         self._mpc_w_dstr  = self.get_parameter('mpc_w_dsteer').value
         self._mpc_wb      = max(self.get_parameter('wheelbase_m').value, 0.1)
 
+        # Proximity safety — derived geometry
+        _half_w  = self.get_parameter('rover_half_width_m').value
+        _fcd     = self.get_parameter('rover_front_corner_dist_m').value
+        _rcd     = self.get_parameter('rover_rear_corner_dist_m').value
+        self._prox_half_w   = _half_w
+        self._prox_front_ov = math.sqrt(max(0.0, _fcd**2 - _half_w**2))
+        self._prox_rear_ov  = math.sqrt(max(0.0, _rcd**2 - _half_w**2))
+        self._prox_slow_m   = self.get_parameter('proximity_slow_m').value
+        self._prox_halt_m   = self.get_parameter('proximity_halt_m').value
+        self._prox_estop_m  = self.get_parameter('proximity_estop_m').value
+        self.get_logger().info(
+            f'Rover bounding box: front_ov={self._prox_front_ov:.3f} m, '
+            f'rear_ov={self._prox_rear_ov:.3f} m, half_w={self._prox_half_w:.3f} m')
+
         # ── State ────────────────────────────────────────────────────────────
         self._fix:       NavSatFix | None = None
         self._fix_front: NavSatFix | None = None   # front (secondary) antenna
@@ -283,6 +402,12 @@ class NavigatorNode(Node):
         self._mode:      str              = 'MANUAL'
         self._armed:     bool             = False
         self._paused:    bool             = False
+
+        # Inter-rover proximity state
+        self._peer_fix:       NavSatFix | None = None
+        self._peer_heading:   float            = 0.0
+        self._peer_fix_time:  float            = 0.0
+        self._prox_level:     str              = 'ok'   # 'ok'|'slow'|'halt'|'estop'
 
         # Full-path state — replaces single-segment prev/active_wp/deque.
         # _path[i]  : i-th waypoint in mission order (may include bypass waypoints)
@@ -378,6 +503,18 @@ class NavigatorNode(Node):
         self.create_subscription(RCInput,         'servo_state',   self._cb_servo_state,  10)
         self.create_subscription(Bool,            'mission_clear', self._cb_mission_clear, 10)
         self.create_subscription(String,          'mission_fence', self._cb_mission_fence, 10)
+
+        # ── Inter-rover proximity subscriptions (cross-namespace, absolute paths) ──
+        peer_ns = self.get_parameter('peer_rover_ns').value
+        self._peer_ns = peer_ns
+        if peer_ns:
+            self.create_subscription(NavSatFix, f'{peer_ns}/fix',     self._cb_peer_fix,     10)
+            self.create_subscription(Float32,   f'{peer_ns}/heading', self._cb_peer_heading, 10)
+            self._peer_estop_mode_pub = self.create_publisher(String, f'{peer_ns}/mode', 10)
+            self.get_logger().info(f'Proximity safety enabled: peer={peer_ns}')
+        else:
+            self._peer_estop_mode_pub = None
+            self._peer_ns = ''
 
         # ── Publishers ───────────────────────────────────────────────────────
         self.cmd_pub          = self.create_publisher(RCInput,  'cmd_override',    10)
@@ -498,6 +635,74 @@ class NavigatorNode(Node):
             val = msg.channels[i + 4] if i + 4 < len(msg.channels) else 0
             if val != 0:
                 self._servo_ch[i] = val
+
+    # ── Inter-rover proximity callbacks ───────────────────────────────────────
+
+    def _cb_peer_fix(self, msg: NavSatFix):
+        self._peer_fix      = msg
+        self._peer_fix_time = time.time()
+
+    def _cb_peer_heading(self, msg: Float32):
+        self._peer_heading = msg.data
+
+    def _compute_proximity(self):
+        """Compute inter-rover bounding-box clearance and update _prox_level."""
+        if self._peer_fix is None or self._fix is None:
+            self._prox_level = 'ok'
+            return
+        if time.time() - self._peer_fix_time > self._gps_timeout:
+            # Peer GPS stale — treat as safe (avoid false e-stops)
+            self._prox_level = 'ok'
+            return
+
+        ref_lat, ref_lon = self._fix.latitude, self._fix.longitude
+
+        # Rover antenna baseline — compute from actual GPS if available
+        if self._fix_front and self._fix_front.latitude != 0.0:
+            my_baseline = haversine(self._fix.latitude, self._fix.longitude,
+                                    self._fix_front.latitude, self._fix_front.longitude)
+        else:
+            my_baseline = 1.0   # default 1 m antenna separation
+
+        my_corners   = _prox_corners(
+            self._fix.latitude, self._fix.longitude, self._heading,
+            my_baseline, self._prox_front_ov, self._prox_rear_ov, self._prox_half_w,
+            ref_lat, ref_lon)
+        peer_corners = _prox_corners(
+            self._peer_fix.latitude, self._peer_fix.longitude, self._peer_heading,
+            1.0,   # assume same hardware; peer publishes its own heading
+            self._prox_front_ov, self._prox_rear_ov, self._prox_half_w,
+            ref_lat, ref_lon)
+
+        clearance  = _rects_clearance(my_corners, peer_corners)
+        prev_level = self._prox_level
+
+        if clearance < self._prox_estop_m:
+            new_level = 'estop'
+        elif clearance < self._prox_halt_m:
+            new_level = 'halt'
+        elif clearance < self._prox_slow_m:
+            new_level = 'slow'
+        else:
+            new_level = 'ok'
+
+        if new_level != prev_level:
+            self.get_logger().warn(
+                f'Proximity: clearance={clearance:.2f} m  level={new_level} '
+                f'(slow≤{self._prox_slow_m} halt≤{self._prox_halt_m} '
+                f'estop≤{self._prox_estop_m})')
+
+        self._prox_level = new_level
+
+        # E-stop: signal peer to stop (fires only on transition to estop)
+        if new_level == 'estop' and prev_level != 'estop':
+            self.get_logger().error(
+                f'PROXIMITY E-STOP: clearance {clearance:.2f} m < {self._prox_estop_m} m '
+                f'— halting and signalling peer {self._peer_ns}')
+            if self._peer_estop_mode_pub is not None:
+                m = String()
+                m.data = 'MANUAL'
+                self._peer_estop_mode_pub.publish(m)
 
     # ── Mission callbacks ─────────────────────────────────────────────────────
 
@@ -1795,6 +2000,13 @@ class NavigatorNode(Node):
             self._publish_halt()
             return
 
+        # ── Inter-rover proximity safety ──────────────────────────────────────
+        if self._peer_ns:
+            self._compute_proximity()
+            if self._prox_level in ('halt', 'estop'):
+                self._publish_halt()
+                return
+
         # ── Lazy path_origin — synthesise if GPS was not ready at mission upload ─
         # If seq=0 arrived before the first GPS fix, _path_origin_lat is None.
         # This breaks _past_waypoint() and _nearest_on_path() for segment 0,
@@ -2104,6 +2316,10 @@ class NavigatorNode(Node):
     # ── Output helpers ────────────────────────────────────────────────────────
 
     def _publish_cmd(self, throttle: int, steering: int):
+        # Apply proximity speed reduction before sending
+        if self._prox_level == 'slow' and throttle > PPM_CENTER:
+            throttle = PPM_CENTER + (throttle - PPM_CENTER) // 2
+
         msg          = RCInput()
         channels     = [PPM_CENTER] * 9
         channels[0]  = throttle

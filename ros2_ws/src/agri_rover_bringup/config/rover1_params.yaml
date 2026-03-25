@@ -86,5 +86,13 @@
     mpc_w_steer:               0.1
     mpc_w_dsteer:              0.05
     wheelbase_m:               0.6
+    # Inter-rover proximity safety — RV1 monitors RV2
+    peer_rover_ns:             '/rv2'
+    rover_front_corner_dist_m: 0.6    # diagonal from front antenna to front corner
+    rover_rear_corner_dist_m:  1.0    # diagonal from rear antenna to rear corner
+    rover_half_width_m:        0.5    # half the rover body width
+    proximity_slow_m:          1.5    # half-speed when body clearance < 1.5 m
+    proximity_halt_m:          1.0    # halt when body clearance < 1.0 m
+    proximity_estop_m:         0.5    # e-stop both rovers when clearance < 0.5 m
     enable_diag_log:           true
     diag_log_path:             '/tmp/navigator_diag.csv'

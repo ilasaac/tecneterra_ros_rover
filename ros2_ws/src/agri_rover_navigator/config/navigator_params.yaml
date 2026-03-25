@@ -138,6 +138,26 @@ navigator:
     mpc_w_dsteer:  0.05
     wheelbase_m:   0.6
 
+    # ── Inter-rover proximity safety ────────────────────────────────────────
+    # peer_rover_ns: absolute ROS2 namespace of the other rover ('/rv2' or '/rv1').
+    #   Leave empty '' to disable proximity safety in single-rover mode.
+    # rover geometry — used to compute bounding-box clearance between the two rovers:
+    #   rover_front_corner_dist_m: diagonal distance from the front GPS antenna to each
+    #     front corner of the rover body. With 0.5 m half-width: front_ov=sqrt(0.6²-0.5²)≈0.33m.
+    #   rover_rear_corner_dist_m: same for rear GPS antenna to each rear corner.
+    #     With 0.5 m half-width: rear_ov=sqrt(1.0²-0.5²)≈0.87m.
+    #   rover_half_width_m: half the physical rover width (metres).
+    # proximity_slow_m:  body clearance (m) below which this rover halves its speed.
+    # proximity_halt_m:  body clearance (m) below which this rover halts.
+    # proximity_estop_m: body clearance (m) below which BOTH rovers halt (signal peer via ROS).
+    peer_rover_ns:             ''     # set to '/rv2' on RV1, '/rv1' on RV2
+    rover_front_corner_dist_m: 0.6
+    rover_rear_corner_dist_m:  1.0
+    rover_half_width_m:        0.5
+    proximity_slow_m:          1.5
+    proximity_halt_m:          1.0
+    proximity_estop_m:         0.5
+
     # ── Diagnostic CSV logger ───────────────────────────────────────────────
     # Set enable_diag_log: true to write a per-tick CSV for controller analysis.
     # Copy the file out of the container: docker cp agri_rover_rv1:/tmp/navigator_diag.csv .

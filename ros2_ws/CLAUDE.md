@@ -277,6 +277,21 @@ Servo channels (PPM CH5-CH8):
 - `_reroute_path()` is a no-op while the rover is actively navigating (`_mode == AUTONOMOUS` and `_armed` and `_path_idx > 0`).
 - Parameter `obstacle_clearance_m` (default 0.5 m) and `rover_width_m` (default 1.0 m) in `rover1/2_params.yaml`. Effective clearance = `rover_width_m / 2 + obstacle_clearance_m`.
 
+**Inter-rover proximity safety:**
+- Enabled by setting `peer_rover_ns: '/rv2'` (on RV1) or `'/rv1'` (on RV2). Leave `''` to disable (single-rover mode).
+- Each navigator subscribes to `{peer_ns}/fix` (NavSatFix) and `{peer_ns}/heading` (Float32) — **absolute topic paths** (cross-namespace).
+- Bounding box computed from flat-earth geometry using `_prox_corners()`: rear GPS antenna + heading + overhang distances → 4 corners [FL, FR, RR, RL].
+  - `rover_front_corner_dist_m` (0.6 m): diagonal from front antenna to each front corner. Front overhang = `sqrt(0.6² − 0.5²) ≈ 0.33 m`.
+  - `rover_rear_corner_dist_m` (1.0 m): diagonal from rear antenna to each rear corner. Rear overhang = `sqrt(1.0² − 0.5²) ≈ 0.87 m`.
+  - `rover_half_width_m` (0.5 m): half the physical rover width.
+- Clearance computed by `_rects_clearance()`: minimum corner-to-edge distance between the two convex quads (returns 0.0 if overlapping).
+- Three levels (checked at every 25 Hz control tick):
+  - `slow` (clearance < `proximity_slow_m` = 1.5 m): throttle above neutral is halved in `_publish_cmd()`.
+  - `halt` (clearance < `proximity_halt_m` = 1.0 m): `_publish_halt()` + return from control loop.
+  - `estop` (clearance < `proximity_estop_m` = 0.5 m): same as halt + publish `'MANUAL'` to `{peer_ns}/mode` topic to stop the peer navigator.
+- Stale peer GPS (> `gps_timeout` seconds) → level resets to `'ok'` (avoids false e-stops if peer is offline).
+- Both rovers run symmetric code. Both must have `peer_rover_ns` set; both independently detect the proximity condition.
+
 ## gps_driver — NMEA parsing
 
 Reads two serial ports in background threads. Publishes on every new primary GGA sentence (event-driven), up to `publish_rate` Hz (default 25 Hz). Timer fires at `publish_rate` but skips if no new primary GGA has arrived — so the navigator's gps_timeout still fires correctly if the GPS goes silent.

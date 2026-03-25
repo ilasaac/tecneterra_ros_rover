@@ -63,3 +63,11 @@
     mpc_w_steer:               0.1
     mpc_w_dsteer:              0.05
     wheelbase_m:               0.6
+    # Inter-rover proximity safety — RV2 monitors RV1
+    peer_rover_ns:             '/rv1'
+    rover_front_corner_dist_m: 0.6
+    rover_rear_corner_dist_m:  1.0
+    rover_half_width_m:        0.5
+    proximity_slow_m:          1.5
+    proximity_halt_m:          1.0
+    proximity_estop_m:         0.5
