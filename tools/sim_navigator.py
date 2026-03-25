@@ -651,6 +651,7 @@ class PathNavigator:
         self._afs_phase:        str   = 'straight'  # 'straight' | 'approach' | 'spin'
         self._afs_closest_dist: float = float('inf')
         self._afs_spin_hdg:     float = 0.0
+        self._afs_wp0_advanced: bool  = False
         self._ttr_apid   = _PID(nav.get('ttr_angle_kp', 3.0),
                                  nav.get('ttr_angle_ki', 0.0),
                                  nav.get('ttr_angle_kd', 0.1))
@@ -1066,6 +1067,15 @@ class PathNavigator:
 
         Returns (throttle_ppm, steer_ppm, done).
         """
+        # Rover starts at origin ≈ wp0. Mark wp0 as already reached on the first
+        # AFS tick so the rover immediately targets wp1 instead of circling wp0.
+        if self.path_idx == 0 and not self._afs_wp0_advanced:
+            self._afs_wp0_advanced = True
+            self._advance()
+            if self.path_idx >= len(self._wps):
+                return PPM_CENTER, PPM_CENTER, True
+            return PPM_CENTER, PPM_CENTER, False
+
         nav              = self._nav
         max_spd          = nav['max_speed']
         min_spd          = nav['min_speed']
