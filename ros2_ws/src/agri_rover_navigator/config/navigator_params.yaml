@@ -98,11 +98,14 @@ navigator:
     #   value at which your motors reliably move.  E.g. 1550 = 50 µs above neutral.
     afs_min_throttle_ppm: 1550
 
-    # afs_min_steer_ppm_delta: minimum |steer_ppm − 1500| during active turning
-    #   (spin, align-spin, and approach phases).  Prevents the rover stalling when
-    #   heading error is small but non-zero and proportional output barely moves the
-    #   motors.  E.g. 50 = steer PPM always ≥ 1550 or ≤ 1450 when steering.
-    afs_min_steer_ppm_delta: 50
+    # afs_min_steer_ppm_delta: minimum |steer_ppm − 1500| during active turning.
+    #   Applied only when |heading_err| > afs_steer_coast_angle, so proportional
+    #   control decays to zero near the target and avoids overshoot.
+    afs_min_steer_ppm_delta: 150
+
+    # afs_steer_coast_angle: |heading_err| (°) below which the steer floor is NOT
+    #   applied.  Lets the rover coast to alignment naturally near target.
+    afs_steer_coast_angle: 15.0
 
     # TTR tuning (only active when control_algorithm: 'ttr')
     #   ttr_angle_kp/ki/kd     — heading+CTE PID gains (AnglePid)

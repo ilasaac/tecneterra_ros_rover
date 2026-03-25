@@ -84,7 +84,8 @@ DEFAULT_NAV: dict = {
     'afs_cte_alarm_m':           3.0,
     'afs_approach_dist_m':       5.0,
     'afs_min_throttle_ppm':      1550,
-    'afs_min_steer_ppm_delta':     50,
+    'afs_min_steer_ppm_delta':    150,
+    'afs_steer_coast_angle':      15.0,
     # TTR dual-PID parameters
     'ttr_angle_kp':              3.0,
     'ttr_angle_ki':              0.0,
@@ -1090,7 +1091,8 @@ class PathNavigator:
         cte_alarm           = nav.get('afs_cte_alarm_m',         3.0)
         approach_dist       = nav.get('afs_approach_dist_m',     5.0)
         min_throttle_ppm    = nav.get('afs_min_throttle_ppm',    1550)
-        min_steer_ppm_delta = nav.get('afs_min_steer_ppm_delta',   50)
+        min_steer_ppm_delta = nav.get('afs_min_steer_ppm_delta',  150)
+        coast_angle         = nav.get('afs_steer_coast_angle',    15.0)
         k                = nav['stanley_k']
         softening        = nav['stanley_softening']
         lookahead        = nav['lookahead_distance']
@@ -1133,7 +1135,7 @@ class PathNavigator:
             else:
                 steer_frac = max(-max_steer, min(max_steer, pivot_err / 45.0))
                 steer_ppm  = int(PPM_CENTER - steer_frac * 500)
-                if steer_ppm != PPM_CENTER:
+                if steer_ppm != PPM_CENTER and abs(pivot_err) > coast_angle:
                     sign = 1 if steer_ppm > PPM_CENTER else -1
                     steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
                 return PPM_CENTER, steer_ppm, False
@@ -1158,7 +1160,7 @@ class PathNavigator:
             steer_frac  = max(-max_steer, min(max_steer, heading_err / 45.0))
             thr = max(min_throttle_ppm, int(PPM_CENTER + (min_spd / max_spd) * 500))
             steer_ppm = int(PPM_CENTER - steer_frac * 500)
-            if steer_ppm != PPM_CENTER:
+            if steer_ppm != PPM_CENTER and abs(heading_err) > coast_angle:
                 sign = 1 if steer_ppm > PPM_CENTER else -1
                 steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
             return thr, steer_ppm, False
@@ -1176,7 +1178,7 @@ class PathNavigator:
                 steer_frac  = max(-max_steer, min(max_steer, heading_err / 45.0))
                 thr = max(min_throttle_ppm, int(PPM_CENTER + (min_spd / max_spd) * 500))
                 steer_ppm = int(PPM_CENTER - steer_frac * 500)
-                if steer_ppm != PPM_CENTER:
+                if steer_ppm != PPM_CENTER and abs(heading_err) > coast_angle:
                     sign = 1 if steer_ppm > PPM_CENTER else -1
                     steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
                 return thr, steer_ppm, False
@@ -1232,12 +1234,13 @@ class PathNavigator:
             steer_frac = max(-max_steer, min(max_steer, heading_err / 45.0))
             self._ttr_apid.clear(); self._ttr_hpid.clear()
             steer_ppm  = int(PPM_CENTER - steer_frac * 500)
-            if steer_ppm != PPM_CENTER:
+            if steer_ppm != PPM_CENTER and abs(heading_err) > coast_angle:
                 sign = 1 if steer_ppm > PPM_CENTER else -1
                 steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
             return PPM_CENTER, steer_ppm, False
 
-        self._spin_target_brg = None
+        if self._spin_target_brg is not None and abs(heading_err) < hdb:
+            self._spin_target_brg = None
 
         stanley_ang = heading_err + math.degrees(
             math.atan2(k * cte, max(v_mps, softening)))

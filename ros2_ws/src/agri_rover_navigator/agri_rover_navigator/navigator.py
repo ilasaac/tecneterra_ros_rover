@@ -110,6 +110,7 @@ _PARAM_META: dict = {
     'default_acceptance_radius': ('_accept_r',            0.05,  2.0),
     'afs_min_throttle_ppm':      ('_min_throttle_ppm',   1500, 1900),
     'afs_min_steer_ppm_delta':   ('_min_steer_ppm_delta',    0,  400),
+    'afs_steer_coast_angle':     ('_afs_steer_coast',       0.0, 60.0),
 }
 
 
@@ -209,6 +210,11 @@ class NavigatorNode(Node):
         #                             heading error is small but non-zero.
         self.declare_parameter('afs_min_throttle_ppm',    1550)
         self.declare_parameter('afs_min_steer_ppm_delta',   50)
+        #   afs_steer_coast_angle   — |heading_error| (degrees) below which the steer floor
+        #                             is NOT applied.  Allows proportional control to decay
+        #                             to zero near the target, preventing overshoot when
+        #                             afs_min_steer_ppm_delta is tuned high for stiction.
+        self.declare_parameter('afs_steer_coast_angle',   15.0)
         # TTR parameters (only used when control_algorithm == 'ttr')
         # Cascaded dual-PID: HightPid (CTE) feeds into AnglePid (heading+CTE)
         self.declare_parameter('ttr_angle_kp',               3.0)
@@ -252,6 +258,7 @@ class NavigatorNode(Node):
         self._afs_approach_dist   = self.get_parameter('afs_approach_dist_m').value
         self._min_throttle_ppm    = self.get_parameter('afs_min_throttle_ppm').value
         self._min_steer_ppm_delta = self.get_parameter('afs_min_steer_ppm_delta').value
+        self._afs_steer_coast     = self.get_parameter('afs_steer_coast_angle').value
         self._ttr_hpid    = _PID(self.get_parameter('ttr_hight_kp').value,
                                   self.get_parameter('ttr_hight_ki').value,
                                   self.get_parameter('ttr_hight_kd').value)
@@ -1613,7 +1620,7 @@ class NavigatorNode(Node):
             else:
                 steer_frac = max(-self._max_steer, min(self._max_steer, pivot_err / 45.0))
                 steer_ppm  = int(PPM_CENTER - steer_frac * 500)
-                if steer_ppm != PPM_CENTER:
+                if steer_ppm != PPM_CENTER and abs(pivot_err) > self._afs_steer_coast:
                     sign = 1 if steer_ppm > PPM_CENTER else -1
                     steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), self._min_steer_ppm_delta)
                 return PPM_CENTER, steer_ppm
@@ -1647,7 +1654,7 @@ class NavigatorNode(Node):
             steer_frac  = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
             thr = max(self._min_throttle_ppm, int(PPM_CENTER + (self._min_speed / self._max_speed) * 500))
             steer_ppm = int(PPM_CENTER - steer_frac * 500)
-            if steer_ppm != PPM_CENTER:
+            if steer_ppm != PPM_CENTER and abs(heading_err) > self._afs_steer_coast:
                 sign = 1 if steer_ppm > PPM_CENTER else -1
                 steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), self._min_steer_ppm_delta)
             return thr, steer_ppm
@@ -1671,7 +1678,7 @@ class NavigatorNode(Node):
                 steer_frac  = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
                 thr = max(self._min_throttle_ppm, int(PPM_CENTER + (self._min_speed / self._max_speed) * 500))
                 steer_ppm = int(PPM_CENTER - steer_frac * 500)
-                if steer_ppm != PPM_CENTER:
+                if steer_ppm != PPM_CENTER and abs(heading_err) > self._afs_steer_coast:
                     sign = 1 if steer_ppm > PPM_CENTER else -1
                     steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), self._min_steer_ppm_delta)
                 return thr, steer_ppm
@@ -1737,12 +1744,13 @@ class NavigatorNode(Node):
             self._ttr_apid.clear()
             self._ttr_hpid.clear()
             steer_ppm  = int(PPM_CENTER - steer_frac * 500)
-            if steer_ppm != PPM_CENTER:
+            if steer_ppm != PPM_CENTER and abs(heading_err) > self._afs_steer_coast:
                 sign = 1 if steer_ppm > PPM_CENTER else -1
                 steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), self._min_steer_ppm_delta)
             return PPM_CENTER, steer_ppm
 
-        self._spin_target_brg = None
+        if self._spin_target_brg is not None and abs(heading_err) < self._hdb:
+            self._spin_target_brg = None
 
         # Stanley steering (AFS uses Stanley for the path-following component)
         stanley_ang = heading_err + math.degrees(
@@ -1844,11 +1852,15 @@ class NavigatorNode(Node):
                 self._advance_path()
             else:
                 # Proportional spin: full speed above 45°, linear ramp below.
-                # Prevents overshoot oscillation — at 25 Hz full steer gives
-                # ~9°/step which exceeds the 3° deadband and causes hunting.
+                # Apply floor only above coast angle so motors overcome stiction
+                # without forcing an overshoot past the 3° deadband.
                 steer_frac = max(-self._max_steer,
                                  min(self._max_steer, pivot_err / 45.0))
                 steer_ppm  = int(PPM_CENTER - steer_frac * 500)
+                if steer_ppm != PPM_CENTER and abs(pivot_err) > self._afs_steer_coast:
+                    sign = 1 if steer_ppm > PPM_CENTER else -1
+                    steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
+                                                        self._min_steer_ppm_delta)
                 self._publish_cmd(PPM_CENTER, steer_ppm)
             return
 
@@ -2002,14 +2014,24 @@ class NavigatorNode(Node):
             # heading_err to oscillate and produce zig-zag steering.
             if self._spin_target_brg is None:
                 self._spin_target_brg = target_bearing
-            steer_frac        = max(-self._max_steer,
-                                    min(self._max_steer, heading_err / 45.0))
-            steer_ppm         = int(PPM_CENTER - steer_frac * 500)
+            steer_frac   = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
+            steer_ppm    = int(PPM_CENTER - steer_frac * 500)
+            # Apply steer floor only above coast angle — lets proportional decay to zero
+            # near target so motors don't force an overshoot past the deadband.
+            if steer_ppm != PPM_CENTER and abs(heading_err) > self._afs_steer_coast:
+                sign = 1 if steer_ppm > PPM_CENTER else -1
+                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
+                                                    self._min_steer_ppm_delta)
             throttle_ppm      = PPM_CENTER
-            self._mpc_prev_steers = []   # heading jump -> stale warm start
+            self._mpc_prev_steers = []   # heading jump → stale warm start
             self._ttr_apid.clear(); self._ttr_hpid.clear()
         else:
-            self._spin_target_brg = None  # spin resolved — unfreeze
+            # Release frozen bearing only once within heading deadband (3°).
+            # Releasing at align_thresh (60°) means a drifted GPS centre on the next
+            # tick can produce a fresh bearing that triggers another full spin —
+            # the multi-spin oscillation seen at mission start.
+            if self._spin_target_brg is not None and abs(heading_err) < self._hdb:
+                self._spin_target_brg = None
             v_mps        = max(target_spd, self._min_speed)
             throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
 

@@ -65,6 +65,7 @@ _MAVLINK_PARAMS: dict[str, str] = {
     'ACCEPT_RAD':   'default_acceptance_radius',
     'AFS_MIN_THR':  'afs_min_throttle_ppm',
     'AFS_MIN_STR':  'afs_min_steer_ppm_delta',
+    'AFS_COAST_ANG': 'afs_steer_coast_angle',
 }
 _MAVLINK_PARAM_LIST: list[str] = list(_MAVLINK_PARAMS.keys())  # stable ordered list
 

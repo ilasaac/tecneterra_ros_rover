@@ -72,6 +72,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         Triple("ACCEPT_RAD",   "Acceptance Radius",   "m"),
         Triple("AFS_MIN_THR",  "AFS Min Throttle",    "µs"),
         Triple("AFS_MIN_STR",  "AFS Min Steer Δ",     "µs"),
+        Triple("AFS_COAST_ANG", "AFS Coast Angle",    "°"),
     )
 
     // UI Elements
