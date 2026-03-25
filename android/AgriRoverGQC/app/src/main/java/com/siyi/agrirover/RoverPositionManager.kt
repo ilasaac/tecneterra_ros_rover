@@ -76,6 +76,11 @@ class RoverPositionManager(
     private val onNavStatus:        (Int, String) -> Unit,
     /** Called when SBUS_OK or RF_OK named float is received. type="SBUS"|"RF", ok=true/false */
     private val onLinkStatus:       (Int, String, Boolean) -> Unit,
+    /**
+     * Called when a mission download from a rover completes (triggered by PATH_VER change).
+     * waypoints: ordered list of (lat, lon) pairs for all nav waypoints in the current mission.
+     */
+    private val onMissionDownloaded: (Int, List<Pair<Double, Double>>) -> Unit,
 ) {
     private val PORT        = 14550
     private val MASTER_SYSID = 1
@@ -132,6 +137,11 @@ class RoverPositionManager(
     // TUNNEL rerouted-path reassembly: sysId → map of chunkIdx → byte content
     private data class TunnelAssembly(val total: Int, val chunks: HashMap<Int, ByteArray>)
     private val tunnelBuf = HashMap<Int, TunnelAssembly>()
+
+    // Mission download state (rover → GQC, triggered by PATH_VER change)
+    private val roverPathVersion     = HashMap<Int, Int>()                        // sysId → last known PATH_VER
+    private val missionDownloadItems = HashMap<Int, HashMap<Int, Pair<Double, Double>>>() // sysId → seq → (lat, lon)
+    private val missionDownloadCount = HashMap<Int, Int>()                        // sysId → expected item count
 
     // ─── Public API ──────────────────────────────────────────────────────────
 
@@ -552,6 +562,41 @@ class RoverPositionManager(
             // MISSION_REQUEST_INT — rover asks for a specific waypoint during upload
             is MissionRequestInt -> sendMissionItem(senderId, payload.seq())
 
+            // MISSION_COUNT — rover is advertising its current mission for download
+            is MissionCount -> {
+                val count = payload.count()
+                missionDownloadItems[senderId] = HashMap()
+                missionDownloadCount[senderId] = count
+                Log.i("RoverMgr", "Mission download start: rover $senderId, $count items")
+                // count==0 means empty mission — complete immediately
+                if (count == 0) {
+                    missionDownloadItems.remove(senderId)
+                    missionDownloadCount.remove(senderId)
+                    scope.launch(Dispatchers.Main) { onMissionDownloaded(senderId, emptyList()) }
+                }
+            }
+
+            // MISSION_ITEM_INT — rover is sending individual items during download
+            is MissionItemInt -> {
+                val items = missionDownloadItems[senderId] ?: return
+                val expected = missionDownloadCount[senderId] ?: return
+                val lat = payload.x() / 1e7
+                val lon = payload.y() / 1e7
+                items[payload.seq()] = Pair(lat, lon)
+                if (items.size >= expected) {
+                    val mission = (0 until expected).mapNotNull { items[it] }
+                    missionDownloadItems.remove(senderId)
+                    missionDownloadCount.remove(senderId)
+                    sendMavlinkTo(roverIp(senderId), MissionAck.builder()
+                        .targetSystem(senderId).targetComponent(1)
+                        .type(EnumValue.of(MavMissionResult.MAV_MISSION_ACCEPTED))
+                        .missionType(EnumValue.of(MavMissionType.MAV_MISSION_TYPE_MISSION))
+                        .build())
+                    Log.i("RoverMgr", "Mission download done: rover $senderId, ${mission.size} WPs")
+                    scope.launch(Dispatchers.Main) { onMissionDownloaded(senderId, mission) }
+                }
+            }
+
             // MISSION_ACK (#47) — upload handshake complete
             is MissionAck -> {
                 pendingMissions.remove(senderId)
@@ -622,6 +667,14 @@ class RoverPositionManager(
                     }
                     "WP_ACT"  -> scope.launch(Dispatchers.Main) {
                         onMissionProgress(senderId, value.toInt())
+                    }
+                    "PATH_VER" -> {
+                        val newVer = value.toInt()
+                        val oldVer = roverPathVersion[senderId] ?: -1
+                        if (newVer != oldVer) {
+                            roverPathVersion[senderId] = newVer
+                            scope.launch(Dispatchers.IO) { requestMissionFromRover(senderId) }
+                        }
                     }
                 }
             }
@@ -798,6 +851,14 @@ class RoverPositionManager(
     /** Returns the known IP for a rover, or broadcast for sysId=0 or undiscovered rovers. */
     private fun roverIp(sysId: Int): InetAddress =
         if (sysId == 0) broadcastAddress else roverAddresses[sysId] ?: broadcastAddress
+
+    private fun requestMissionFromRover(sysId: Int) {
+        sendMavlinkTo(roverIp(sysId), MissionRequestList.builder()
+            .targetSystem(sysId).targetComponent(1)
+            .missionType(EnumValue.of(MavMissionType.MAV_MISSION_TYPE_MISSION))
+            .build())
+        Log.i("RoverMgr", "Mission sync request → rover $sysId")
+    }
 
     private fun sendMissionItem(targetSysId: Int, seq: Int) {
         val mission = pendingMissions[targetSysId] ?: return

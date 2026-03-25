@@ -354,7 +354,9 @@ class NavigatorNode(Node):
         self.cmd_pub          = self.create_publisher(RCInput,  'cmd_override',    10)
         self.wp_pub           = self.create_publisher(Int32,    'wp_active',       10)
         self.xte_pub          = self.create_publisher(Float32,  'xte',             10)
-        self.rerouted_pub     = self.create_publisher(String,   'rerouted_path',   10)
+        self.rerouted_pub       = self.create_publisher(String,   'rerouted_path',   10)
+        self.path_version_pub   = self.create_publisher(Int32,    'path_version',    10)
+        self._path_version      = 0
 
         # ── Services ─────────────────────────────────────────────────────────
         self.create_service(Trigger, 'pause_mission',  self._svc_pause)
@@ -883,6 +885,9 @@ class NavigatorNode(Node):
         ]
         rp_msg = String(); rp_msg.data = json.dumps(path_data, separators=(',', ':'))
         self.rerouted_pub.publish(rp_msg)
+        self._path_version += 1
+        pv = Int32(); pv.data = self._path_version
+        self.path_version_pub.publish(pv)
 
         n_bypass = len(new_bypass_indices)
         if n_bypass > 0:

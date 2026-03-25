@@ -282,6 +282,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         onLinkStatus = { sysId, type, ok ->
             runOnUiThread { updateLinkIndicator(sysId, type, ok) }
         },
+
+        onMissionDownloaded = { sysId, waypoints ->
+            runOnUiThread {
+                if (waypoints.isNotEmpty()) {
+                    roverMissions[sysId] = waypoints.map { (lat, lon) -> LatLng(lat, lon) }
+                } else {
+                    roverMissions.remove(sysId)
+                }
+                redrawRoverMissions()
+            }
+        },
     )
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────

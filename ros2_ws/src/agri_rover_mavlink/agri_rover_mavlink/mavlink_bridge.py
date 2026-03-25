@@ -110,6 +110,7 @@ class MavlinkBridgeNode(Node):
         # _mission_expect_seq: next seq we're waiting for; None when no upload active.
         # _mission_last_req_t: monotonic time of last MISSION_REQUEST_INT sent.
         self._rtk_status  = 'NO_FIX'   # latest string from gps_driver rtk_status topic
+        self._path_version        = 0
         self._last_rerouted_json  = '[]'
         self._reroute_retries     = 0
         self._reroute_timer       = None
@@ -130,6 +131,7 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(Int32,        'wp_active',    self._cb_wp,       10)
         self.create_subscription(Float32,      'xte',           self._cb_xte,            10)
         self.create_subscription(String,       'rerouted_path', self._cb_rerouted_path,  10)
+        self.create_subscription(Int32,        'path_version',  self._cb_path_version,   10)
         self.create_subscription(String,       'rtk_status',    self._cb_rtk_status,     10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
@@ -193,6 +195,9 @@ class MavlinkBridgeNode(Node):
 
     def _cb_xte(self, msg: Float32):
         self._xte = msg.data
+
+    def _cb_path_version(self, msg: Int32):
+        self._path_version = msg.data
 
     def _cb_rerouted_path(self, msg: String):
         """
@@ -360,6 +365,7 @@ class MavlinkBridgeNode(Node):
             ('SBUS_OK',  1.0 if self._rc.sbus_ok   else 0.0),
             ('RF_OK',    1.0 if self._rc.rf_link_ok else 0.0),
             ('RTK',      float(self._RTK_FIX_TYPE.get(self._rtk_status, 0))),
+            ('PATH_VER', float(self._path_version)),
         ]
         for name, value in pairs:
             self._send(self._mav.mav.named_value_float_encode(
@@ -454,6 +460,12 @@ class MavlinkBridgeNode(Node):
                     threading.Timer(0.15, lambda: self._send_mission_request(0)).start()
                 elif mt == 'MISSION_ITEM_INT':
                     self._on_mission_item(msg)
+                elif mt == 'MISSION_REQUEST_LIST':
+                    if msg.get_srcSystem() != 255:
+                        continue
+                    if msg.target_system not in (0, 255, self._rover_id):
+                        continue
+                    self._send_mission_to_gqc()
 
     def _send_mission_request(self, seq: int):
         """Send MISSION_REQUEST_INT, preferring unicast over broadcast."""
@@ -485,6 +497,34 @@ class MavlinkBridgeNode(Node):
             return
         self.get_logger().info(f'Retrying MISSION_REQUEST_INT seq={seq} ({elapsed*1000:.0f}ms)')
         self._send_mission_request(seq)
+
+    def _send_mission_to_gqc(self):
+        """Respond to MISSION_REQUEST_LIST — stream current mission back to GQC.
+
+        Sends MISSION_COUNT followed immediately by all MISSION_ITEM_INT from
+        _mission_buf (original uploaded waypoints only, no fence/servo items).
+        GQC uses this to stay in sync when PATH_VER changes (obstacle reroute).
+        """
+        items = list(self._mission_buf)   # snapshot under no lock — reads are safe
+        count_msg = self._mav.mav.mission_count_encode(0, 0, len(items), 0)
+        self._send(count_msg)
+        for i, wp in enumerate(items):
+            item = self._mav.mav.mission_item_int_encode(
+                target_system=0, target_component=0,
+                seq=i,
+                frame=6,   # MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
+                command=16,  # MAV_CMD_NAV_WAYPOINT
+                current=0,
+                autocontinue=1,
+                param1=wp.hold_secs,
+                param2=0.0, param3=0.0, param4=0.0,
+                x=int(wp.latitude  * 1e7),
+                y=int(wp.longitude * 1e7),
+                z=wp.speed,
+                mission_type=0)
+            self._send(item)
+        self.get_logger().info(
+            f'Mission download: sent {len(items)} waypoints to GQC (PATH_VER={self._path_version})')
 
     def _parse_fence_polygons(self) -> list[list[list[float]]]:
         """
