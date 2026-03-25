@@ -158,6 +158,11 @@ DEFAULT_TTR_PHYS: dict = {
     'decel_divisor':          1,       # SmoothSpeed disabled
     'angular_diff_limit_mms': 600,     # real max diff ~335 mm/s (spin), with headroom
     'smooth_tick_hz':         100,     # SmoothSpeed tick rate (100 Hz = 10 ms)
+    # Distance (m) from rear GPS antenna to wheel-axle midpoint (physical rotation
+    # centre) along the rover heading direction.  Positive = rotation centre is
+    # ahead of the rear antenna.  When non-zero, spinning causes the GPS antenna
+    # to sweep an arc, replicating the off-centre rotation seen on real hardware.
+    'rotation_center_offset_m': 0.0,  # set to real measured value (e.g. 0.4)
 }
 
 
@@ -185,6 +190,7 @@ class DiffDriveState(RoverState):
         self._decel_div     = float(p['decel_divisor'])
         self._ang_diff_lim  = float(p['angular_diff_limit_mms'])
         self._smooth_hz     = float(p['smooth_tick_hz'])
+        self._rc_offset     = float(p.get('rotation_center_offset_m', 0.0))
         self._max_steer     = max_steer   # navigator max_steering param
         self._last_left     = 0.0
         self._last_right    = 0.0
@@ -247,11 +253,27 @@ class DiffDriveState(RoverState):
         # omega = (L - R) / track_mm; L>R → turns right → positive heading
         omega = (left - right) / (self._track_m * 1000.0)
 
-        self.heading_rad += omega * dt
         lat_rad = math.radians(self.lat)
         cos_lat = math.cos(lat_rad) or 1e-9
-        self.lat      += (speed_mps * math.cos(self.heading_rad) * dt) / 111320.0
-        self.lon      += (speed_mps * math.sin(self.heading_rad) * dt) / (111320.0 * cos_lat)
+
+        if self._rc_offset == 0.0:
+            # Fast path: rotation centre == rear antenna (original behaviour)
+            self.heading_rad += omega * dt
+            self.lat      += (speed_mps * math.cos(self.heading_rad) * dt) / 111320.0
+            self.lon      += (speed_mps * math.sin(self.heading_rad) * dt) / (111320.0 * cos_lat)
+        else:
+            # Off-centre rotation: wheel-axle midpoint is _rc_offset metres ahead
+            # of the rear antenna.  Move the axle midpoint, then back-compute the
+            # rear antenna so the GPS traces an arc when the rover spins.
+            rc_lat = self.lat + (self._rc_offset * math.cos(self.heading_rad)) / 111320.0
+            rc_lon = self.lon + (self._rc_offset * math.sin(self.heading_rad)) / (111320.0 * cos_lat)
+            self.heading_rad += omega * dt
+            rc_lat += (speed_mps * math.cos(self.heading_rad) * dt) / 111320.0
+            rc_lon += (speed_mps * math.sin(self.heading_rad) * dt) / (111320.0 * cos_lat)
+            cos_lat2 = math.cos(math.radians(rc_lat)) or 1e-9
+            self.lat = rc_lat - (self._rc_offset * math.cos(self.heading_rad)) / 111320.0
+            self.lon = rc_lon - (self._rc_offset * math.sin(self.heading_rad)) / (111320.0 * cos_lat2)
+
         self.speed_mps = speed_mps
 
     def _smooth_one(self, last: float, target: float, accel_cap: float,
@@ -1446,17 +1468,22 @@ def simulate(waypoints:       list[SimWaypoint],
             break
 
         if was_pivoting or path_n._pivoting:
-            # 2-track skid-steer pivots around its geometric centre (midpoint
-            # between front and rear antenna = _center_pos).  Keep that point
-            # fixed while heading changes: after update recompute the rear GPS
-            # position so that centre stays at (rlat, rlon).
-            pivot_c_lat, pivot_c_lon = rlat, rlon
             cos_lat = math.cos(math.radians(rover.lat)) or 1e-9
-            rover.update(thr, steer, nav['max_speed'], phys['wheelbase'],
-                         dt, phys['turn_scale'])
-            half = bm / 2.0
-            rover.lat = pivot_c_lat - (half * math.cos(rover.heading_rad)) / 111_320.0
-            rover.lon = pivot_c_lon - (half * math.sin(rover.heading_rad)) / (111_320.0 * cos_lat)
+            if rover._rc_offset > 0.0:
+                # Off-centre rotation: DiffDriveState.update() with speed=0
+                # already keeps the wheel axle midpoint (rc_offset ahead of the
+                # rear antenna) fixed and sweeps the GPS antenna in an arc.
+                # Do NOT override rover.lat/lon — the arc is the desired behaviour.
+                rover.update(thr, steer, nav['max_speed'], phys['wheelbase'],
+                             dt, phys['turn_scale'])
+            else:
+                # Centred: pin the antenna midpoint (= rotation centre).
+                pivot_c_lat, pivot_c_lon = rlat, rlon
+                rover.update(thr, steer, nav['max_speed'], phys['wheelbase'],
+                             dt, phys['turn_scale'])
+                half = bm / 2.0
+                rover.lat = pivot_c_lat - (half * math.cos(rover.heading_rad)) / 111_320.0
+                rover.lon = pivot_c_lon - (half * math.sin(rover.heading_rad)) / (111_320.0 * cos_lat)
         else:
             rover.update(thr, steer, nav['max_speed'], phys['wheelbase'],
                          dt, phys['turn_scale'])
