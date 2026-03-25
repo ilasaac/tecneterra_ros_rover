@@ -83,6 +83,8 @@ DEFAULT_NAV: dict = {
     'afs_cte_scale_m':           2.0,
     'afs_cte_alarm_m':           3.0,
     'afs_approach_dist_m':       5.0,
+    'afs_min_throttle_ppm':      1550,
+    'afs_min_steer_ppm_delta':     50,
     # TTR dual-PID parameters
     'ttr_angle_kp':              3.0,
     'ttr_angle_ki':              0.0,
@@ -1084,9 +1086,11 @@ class PathNavigator:
         hdb              = nav['heading_deadband']
         align_thresh     = nav['align_threshold']
         pivot_thresh     = nav['pivot_threshold']
-        cte_scale        = nav.get('afs_cte_scale_m',    2.0)
-        cte_alarm        = nav.get('afs_cte_alarm_m',    3.0)
-        approach_dist    = nav.get('afs_approach_dist_m', 5.0)
+        cte_scale           = nav.get('afs_cte_scale_m',         2.0)
+        cte_alarm           = nav.get('afs_cte_alarm_m',         3.0)
+        approach_dist       = nav.get('afs_approach_dist_m',     5.0)
+        min_throttle_ppm    = nav.get('afs_min_throttle_ppm',    1550)
+        min_steer_ppm_delta = nav.get('afs_min_steer_ppm_delta',   50)
         k                = nav['stanley_k']
         softening        = nav['stanley_softening']
         lookahead        = nav['lookahead_distance']
@@ -1128,7 +1132,11 @@ class PathNavigator:
                 return PPM_CENTER, PPM_CENTER, False
             else:
                 steer_frac = max(-max_steer, min(max_steer, pivot_err / 45.0))
-                return PPM_CENTER, int(PPM_CENTER - steer_frac * 500), False
+                steer_ppm  = int(PPM_CENTER - steer_frac * 500)
+                if steer_ppm != PPM_CENTER:
+                    sign = 1 if steer_ppm > PPM_CENTER else -1
+                    steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
+                return PPM_CENTER, steer_ppm, False
 
         # ── Approach phase ──────────────────────────────────────────────
         if self._afs_phase == 'approach':
@@ -1148,8 +1156,12 @@ class PathNavigator:
             target_brg  = _bearing_to(rlat, rlon, wp.lat, wp.lon)
             heading_err = ((target_brg - heading + 180) % 360) - 180
             steer_frac  = max(-max_steer, min(max_steer, heading_err / 45.0))
-            thr = int(PPM_CENTER + (min_spd / max_spd) * 500)
-            return thr, int(PPM_CENTER - steer_frac * 500), False
+            thr = max(min_throttle_ppm, int(PPM_CENTER + (min_spd / max_spd) * 500))
+            steer_ppm = int(PPM_CENTER - steer_frac * 500)
+            if steer_ppm != PPM_CENTER:
+                sign = 1 if steer_ppm > PPM_CENTER else -1
+                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
+            return thr, steer_ppm, False
 
         # ── Straight phase ──────────────────────────────────────────────
         s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
@@ -1162,8 +1174,12 @@ class PathNavigator:
                 target_brg  = _bearing_to(rlat, rlon, wp.lat, wp.lon)
                 heading_err = ((target_brg - heading + 180) % 360) - 180
                 steer_frac  = max(-max_steer, min(max_steer, heading_err / 45.0))
-                thr = int(PPM_CENTER + (min_spd / max_spd) * 500)
-                return thr, int(PPM_CENTER - steer_frac * 500), False
+                thr = max(min_throttle_ppm, int(PPM_CENTER + (min_spd / max_spd) * 500))
+                steer_ppm = int(PPM_CENTER - steer_frac * 500)
+                if steer_ppm != PPM_CENTER:
+                    sign = 1 if steer_ppm > PPM_CENTER else -1
+                    steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
+                return thr, steer_ppm, False
         else:
             past_wp = (not is_bypass
                        and dist_to_wp < accept * 4.0
@@ -1197,7 +1213,7 @@ class PathNavigator:
         target_spd   = wp.speed if wp.speed > 0 else max_spd
         cte_factor   = max(0.0, 1.0 - abs(cte) / max(cte_scale, 0.01))
         v_mps        = max(min_spd, target_spd * cte_factor)
-        throttle_ppm = int(PPM_CENTER + (v_mps / max_spd) * 500)
+        throttle_ppm = max(min_throttle_ppm, int(PPM_CENTER + (v_mps / max_spd) * 500))
 
         if is_bypass:
             la_lat, la_lon = wp.lat, wp.lon
@@ -1215,7 +1231,11 @@ class PathNavigator:
                 self._spin_target_brg = target_bearing
             steer_frac = max(-max_steer, min(max_steer, heading_err / 45.0))
             self._ttr_apid.clear(); self._ttr_hpid.clear()
-            return PPM_CENTER, int(PPM_CENTER - steer_frac * 500), False
+            steer_ppm  = int(PPM_CENTER - steer_frac * 500)
+            if steer_ppm != PPM_CENTER:
+                sign = 1 if steer_ppm > PPM_CENTER else -1
+                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
+            return PPM_CENTER, steer_ppm, False
 
         self._spin_target_brg = None
 

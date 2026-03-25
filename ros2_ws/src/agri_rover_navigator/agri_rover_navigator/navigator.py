@@ -183,6 +183,15 @@ class NavigatorNode(Node):
         self.declare_parameter('afs_cte_scale_m',            2.0)
         self.declare_parameter('afs_cte_alarm_m',            3.0)
         self.declare_parameter('afs_approach_dist_m',        5.0)
+        #   afs_min_throttle_ppm    — hard PPM floor for any forward motion output.
+        #                             Prevents motor stall when CTE scaling or approach
+        #                             mode reduces throttle below the stiction threshold.
+        #   afs_min_steer_ppm_delta — minimum |steer_ppm − 1500| during active turns
+        #                             (spin, align-spin, approach phases).  Ensures the
+        #                             motors produce enough torque to spin even when the
+        #                             heading error is small but non-zero.
+        self.declare_parameter('afs_min_throttle_ppm',    1550)
+        self.declare_parameter('afs_min_steer_ppm_delta',   50)
         # TTR parameters (only used when control_algorithm == 'ttr')
         # Cascaded dual-PID: HightPid (CTE) feeds into AnglePid (heading+CTE)
         self.declare_parameter('ttr_angle_kp',               3.0)
@@ -221,9 +230,11 @@ class NavigatorNode(Node):
         self._clearance           = (rover_width / 2.0
                                      + self.get_parameter('obstacle_clearance_m').value)
         self._algo             = self.get_parameter('control_algorithm').value
-        self._afs_cte_scale    = self.get_parameter('afs_cte_scale_m').value
-        self._afs_cte_alarm    = self.get_parameter('afs_cte_alarm_m').value
-        self._afs_approach_dist = self.get_parameter('afs_approach_dist_m').value
+        self._afs_cte_scale       = self.get_parameter('afs_cte_scale_m').value
+        self._afs_cte_alarm       = self.get_parameter('afs_cte_alarm_m').value
+        self._afs_approach_dist   = self.get_parameter('afs_approach_dist_m').value
+        self._min_throttle_ppm    = self.get_parameter('afs_min_throttle_ppm').value
+        self._min_steer_ppm_delta = self.get_parameter('afs_min_steer_ppm_delta').value
         self._ttr_hpid    = _PID(self.get_parameter('ttr_hight_kp').value,
                                   self.get_parameter('ttr_hight_ki').value,
                                   self.get_parameter('ttr_hight_kd').value)
@@ -1525,7 +1536,11 @@ class NavigatorNode(Node):
                 return PPM_CENTER, PPM_CENTER
             else:
                 steer_frac = max(-self._max_steer, min(self._max_steer, pivot_err / 45.0))
-                return PPM_CENTER, int(PPM_CENTER - steer_frac * 500)
+                steer_ppm  = int(PPM_CENTER - steer_frac * 500)
+                if steer_ppm != PPM_CENTER:
+                    sign = 1 if steer_ppm > PPM_CENTER else -1
+                    steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), self._min_steer_ppm_delta)
+                return PPM_CENTER, steer_ppm
 
         # ── Approach phase ─────────────────────────────────────────────────
         if self._afs_phase == 'approach':
@@ -1554,8 +1569,12 @@ class NavigatorNode(Node):
             target_brg  = bearing_to(rlat, rlon, wp.latitude, wp.longitude)
             heading_err = ((target_brg - self._heading + 180) % 360) - 180
             steer_frac  = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
-            thr = int(PPM_CENTER + (self._min_speed / self._max_speed) * 500)
-            return thr, int(PPM_CENTER - steer_frac * 500)
+            thr = max(self._min_throttle_ppm, int(PPM_CENTER + (self._min_speed / self._max_speed) * 500))
+            steer_ppm = int(PPM_CENTER - steer_frac * 500)
+            if steer_ppm != PPM_CENTER:
+                sign = 1 if steer_ppm > PPM_CENTER else -1
+                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), self._min_steer_ppm_delta)
+            return thr, steer_ppm
 
         # ── Straight phase ─────────────────────────────────────────────────
         s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
@@ -1574,8 +1593,12 @@ class NavigatorNode(Node):
                 target_brg  = bearing_to(rlat, rlon, wp.latitude, wp.longitude)
                 heading_err = ((target_brg - self._heading + 180) % 360) - 180
                 steer_frac  = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
-                thr = int(PPM_CENTER + (self._min_speed / self._max_speed) * 500)
-                return thr, int(PPM_CENTER - steer_frac * 500)
+                thr = max(self._min_throttle_ppm, int(PPM_CENTER + (self._min_speed / self._max_speed) * 500))
+                steer_ppm = int(PPM_CENTER - steer_frac * 500)
+                if steer_ppm != PPM_CENTER:
+                    sign = 1 if steer_ppm > PPM_CENTER else -1
+                    steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), self._min_steer_ppm_delta)
+                return thr, steer_ppm
         else:
             # Non-turn waypoint: standard proximity advance
             past_wp = (not is_bypass
@@ -1611,11 +1634,11 @@ class NavigatorNode(Node):
             self._publish_halt()
             return PPM_CENTER, PPM_CENTER
 
-        # Throttle: inversely proportional to CTE, guaranteed ≥ min_speed
+        # Throttle: inversely proportional to CTE, guaranteed ≥ min_speed and min_throttle_ppm
         target_spd   = wp.speed if wp.speed > 0 else self._max_speed
         cte_factor   = max(0.0, 1.0 - abs(cte) / max(self._afs_cte_scale, 0.01))
         v_mps        = max(self._min_speed, target_spd * cte_factor)
-        throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
+        throttle_ppm = max(self._min_throttle_ppm, int(PPM_CENTER + (v_mps / self._max_speed) * 500))
 
         # Lookahead
         if is_bypass:
@@ -1637,7 +1660,11 @@ class NavigatorNode(Node):
             steer_frac = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
             self._ttr_apid.clear()
             self._ttr_hpid.clear()
-            return PPM_CENTER, int(PPM_CENTER - steer_frac * 500)
+            steer_ppm  = int(PPM_CENTER - steer_frac * 500)
+            if steer_ppm != PPM_CENTER:
+                sign = 1 if steer_ppm > PPM_CENTER else -1
+                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), self._min_steer_ppm_delta)
+            return PPM_CENTER, steer_ppm
 
         self._spin_target_brg = None
 

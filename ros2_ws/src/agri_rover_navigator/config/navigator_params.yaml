@@ -92,6 +92,18 @@ navigator:
     #   outgoing bearing.  Set to 2–3× the rover turn radius for clean arrivals.
     afs_approach_dist_m: 5.0
 
+    # afs_min_throttle_ppm: hard PPM floor for any forward motion command.
+    #   Prevents motor stall when CTE-proportional scaling or approach mode reduces
+    #   throttle below the motor stiction threshold.  Must be above the lowest PPM
+    #   value at which your motors reliably move.  E.g. 1550 = 50 µs above neutral.
+    afs_min_throttle_ppm: 1550
+
+    # afs_min_steer_ppm_delta: minimum |steer_ppm − 1500| during active turning
+    #   (spin, align-spin, and approach phases).  Prevents the rover stalling when
+    #   heading error is small but non-zero and proportional output barely moves the
+    #   motors.  E.g. 50 = steer PPM always ≥ 1550 or ≤ 1450 when steering.
+    afs_min_steer_ppm_delta: 50
+
     # TTR tuning (only active when control_algorithm: 'ttr')
     #   ttr_angle_kp/ki/kd     — heading+CTE PID gains (AnglePid)
     #   ttr_hight_kp/ki/kd     — lateral CTE PID gains (HightPid)
