@@ -1419,6 +1419,37 @@ class NavigatorNode(Node):
             self._publish_halt()
             return
 
+        # ── Lazy path_origin — synthesise if GPS was not ready at mission upload ─
+        # If seq=0 arrived before the first GPS fix, _path_origin_lat is None.
+        # This breaks _past_waypoint() and _nearest_on_path() for segment 0,
+        # preventing wp0 from ever being accepted via arc-length advance.
+        # Fix: place a synthetic origin 'lookahead' metres behind wp0 on the
+        # reverse of the outgoing segment bearing.  This guarantees _past_waypoint
+        # returns True when the rover is already on the far side of wp0 (e.g.
+        # rover was placed at or past wp0 before the mission was uploaded).
+        if self._path_idx == 0 and self._path_origin_lat is None and self._path:
+            first_wp = self._path[0]
+            if len(self._path) > 1:
+                out_brg = bearing_to(first_wp.latitude, first_wp.longitude,
+                                     self._path[1].latitude, self._path[1].longitude)
+            else:
+                out_brg = self._heading
+            rev_brg = (out_brg + 180.0) % 360.0
+            step_m  = self._lookahead
+            cos_lat = math.cos(math.radians(first_wp.latitude)) or 1e-9
+            self._path_origin_lat = (first_wp.latitude
+                                     + step_m * math.cos(math.radians(rev_brg)) / 111_320.0)
+            self._path_origin_lon = (first_wp.longitude
+                                     + step_m * math.sin(math.radians(rev_brg)) / (111_320.0 * cos_lat))
+            self._path_s = self._rebuild_path_s(
+                self._path, self._path_origin_lat, self._path_origin_lon)
+            self.get_logger().info(
+                f'Path origin synthesised (GPS not ready at upload): '
+                f'{self._path_origin_lat:.7f},{self._path_origin_lon:.7f} '
+                f'— {step_m:.1f} m behind wp0 on bearing {rev_brg:.0f}°')
+            if self._expanded_polygons:
+                self._reroute_path()
+
         # ── Hold at waypoint ─────────────────────────────────────────────────
         if self._holding:
             self._publish_halt()
