@@ -51,6 +51,23 @@ MODE_MAP = {
     'EMERGENCY':  16,
 }
 
+# Live navigator parameter tuning — MAVLink param_id (≤16 chars) → nav_params JSON key.
+# navigator.py publishes nav_params (JSON, every 5 s + on change).
+# mavlink_bridge caches it and serves PARAM_REQUEST_LIST / PARAM_SET from GQC.
+_MAVLINK_PARAMS: dict[str, str] = {
+    'MAX_SPEED':    'max_speed',
+    'MIN_SPEED':    'min_speed',
+    'LOOKAHEAD':    'lookahead_distance',
+    'STANLEY_K':    'stanley_k',
+    'PIVOT_THRESH': 'pivot_threshold',
+    'PIVOT_DIST':   'pivot_approach_dist',
+    'ALIGN_THRESH': 'align_threshold',
+    'ACCEPT_RAD':   'default_acceptance_radius',
+    'AFS_MIN_THR':  'afs_min_throttle_ppm',
+    'AFS_MIN_STR':  'afs_min_steer_ppm_delta',
+}
+_MAVLINK_PARAM_LIST: list[str] = list(_MAVLINK_PARAMS.keys())  # stable ordered list
+
 
 class MavlinkBridgeNode(Node):
 
@@ -110,6 +127,7 @@ class MavlinkBridgeNode(Node):
         # _mission_expect_seq: next seq we're waiting for; None when no upload active.
         # _mission_last_req_t: monotonic time of last MISSION_REQUEST_INT sent.
         self._rtk_status  = 'NO_FIX'   # latest string from gps_driver rtk_status topic
+        self._nav_params: dict[str, float] = {}  # latest nav_params JSON from navigator.py
         self._path_version        = 0
         self._last_rerouted_json  = '[]'
         self._reroute_retries     = 0
@@ -133,6 +151,7 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(String,       'rerouted_path', self._cb_rerouted_path,  10)
         self.create_subscription(Int32,        'path_version',  self._cb_path_version,   10)
         self.create_subscription(String,       'rtk_status',    self._cb_rtk_status,     10)
+        self.create_subscription(String,       'nav_params',    self._cb_nav_params,     10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
         self.cmd_pub           = self.create_publisher(RCInput,          'cmd_override',   10)
@@ -142,6 +161,7 @@ class MavlinkBridgeNode(Node):
         self.mode_pub          = self.create_publisher(String,           'mode',           10)
         self.armed_pub         = self.create_publisher(Bool,             'armed',          10)
         self.mission_clear_pub = self.create_publisher(Bool,             'mission_clear',  10)
+        self.nav_param_set_pub = self.create_publisher(String,           'nav_param_set',  10)
 
         # ── MAVLink receive thread ────────────────────────────────────────────
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
@@ -466,6 +486,49 @@ class MavlinkBridgeNode(Node):
                     if msg.target_system not in (0, 255, self._rover_id):
                         continue
                     self._send_mission_to_gqc()
+                elif mt == 'PARAM_REQUEST_LIST':
+                    if msg.get_srcSystem() != 255:
+                        continue
+                    if msg.target_system not in (0, 255, self._rover_id):
+                        continue
+                    threading.Thread(target=self._send_all_params, daemon=True).start()
+                elif mt == 'PARAM_REQUEST_READ':
+                    if msg.get_srcSystem() != 255:
+                        continue
+                    if msg.target_system not in (0, 255, self._rover_id):
+                        continue
+                    count = len(_MAVLINK_PARAM_LIST)
+                    idx   = msg.param_index
+                    if 0 <= idx < count:
+                        mav_name = _MAVLINK_PARAM_LIST[idx]
+                    else:
+                        raw = msg.param_id
+                        name = raw.rstrip('\x00') if isinstance(raw, str) else raw.rstrip(b'\x00').decode('ascii', errors='ignore')
+                        mav_name = name if name in _MAVLINK_PARAMS else None
+                    if mav_name:
+                        ros_name = _MAVLINK_PARAMS[mav_name]
+                        real_idx = _MAVLINK_PARAM_LIST.index(mav_name)
+                        self._send_param_value_mav(
+                            mav_name,
+                            float(self._nav_params.get(ros_name, 0.0)),
+                            real_idx, count)
+                elif mt == 'PARAM_SET':
+                    if msg.get_srcSystem() != 255:
+                        continue
+                    if msg.target_system not in (0, 255, self._rover_id):
+                        continue
+                    raw = msg.param_id
+                    mav_name = raw.rstrip('\x00') if isinstance(raw, str) else raw.rstrip(b'\x00').decode('ascii', errors='ignore')
+                    ros_name = _MAVLINK_PARAMS.get(mav_name)
+                    if ros_name is None:
+                        self.get_logger().warn(f'PARAM_SET: unknown param "{mav_name}"')
+                        continue
+                    value = float(msg.param_value)
+                    req = String(); req.data = json.dumps({'name': ros_name, 'value': value})
+                    self.nav_param_set_pub.publish(req)
+                    idx = _MAVLINK_PARAM_LIST.index(mav_name)
+                    self._send_param_value_mav(mav_name, value, idx, len(_MAVLINK_PARAM_LIST))
+                    self.get_logger().info(f'PARAM_SET {mav_name}={value} → navigator')
 
     def _send_mission_request(self, seq: int):
         """Send MISSION_REQUEST_INT, preferring unicast over broadcast."""
@@ -571,6 +634,35 @@ class MavlinkBridgeNode(Node):
         self.servo_pub.publish(rc)
         self.get_logger().info(
             f'DO_SET_SERVO servo={servo} pwm={self._servo_pwm[servo]} µs')
+
+    def _cb_nav_params(self, msg: String):
+        """Cache the latest navigator parameters (published every 5 s by navigator.py)."""
+        try:
+            self._nav_params = json.loads(msg.data)
+        except Exception as e:
+            self.get_logger().warn(f'nav_params parse error: {e}')
+
+    def _send_param_value_mav(self, mav_name: str, value: float, index: int, count: int):
+        """Send a single PARAM_VALUE to GQC."""
+        msg = self._mav.mav.param_value_encode(
+            param_id=mav_name,        # pymavlink null-pads char[16] automatically
+            param_value=value,
+            param_type=9,             # MAV_PARAM_TYPE_REAL32
+            param_count=count,
+            param_index=index)
+        self._send(msg)
+
+    def _send_all_params(self):
+        """Respond to PARAM_REQUEST_LIST — send all navigator params to GQC."""
+        if not self._nav_params:
+            self.get_logger().warn('PARAM_REQUEST_LIST: nav_params not yet received from navigator')
+        count = len(_MAVLINK_PARAM_LIST)
+        for i, mav_name in enumerate(_MAVLINK_PARAM_LIST):
+            ros_name = _MAVLINK_PARAMS[mav_name]
+            value    = float(self._nav_params.get(ros_name, 0.0))
+            self._send_param_value_mav(mav_name, value, i, count)
+            time.sleep(0.02)  # 20 ms gap to avoid UDP burst loss
+        self.get_logger().info(f'PARAM_REQUEST_LIST: sent {count} params to GQC')
 
     def _on_rc_override(self, msg):
         rc = RCInput()

@@ -57,6 +57,23 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val roverReroutedPaths   = HashMap<Int, List<Triple<Double, Double, Boolean>>>()
     private val reroutedPathOverlays = HashMap<Int, MutableList<Any>>()
 
+    // Live parameter tuning — EditText fields keyed by MAVLink param name;
+    // populated when the Nav Params dialog is open.
+    private val paramFields       = HashMap<String, android.widget.EditText>()
+    private var paramDialogRoverId = 1
+    private val PARAM_DEFS = listOf(
+        Triple("MAX_SPEED",    "Max Speed",           "m/s"),
+        Triple("MIN_SPEED",    "Min Speed",           "m/s"),
+        Triple("LOOKAHEAD",    "Lookahead Dist",      "m"),
+        Triple("STANLEY_K",    "Stanley K",           ""),
+        Triple("PIVOT_THRESH", "Pivot Threshold",     "°"),
+        Triple("PIVOT_DIST",   "Pivot Approach Dist", "m"),
+        Triple("ALIGN_THRESH", "Align Threshold",     "°"),
+        Triple("ACCEPT_RAD",   "Acceptance Radius",   "m"),
+        Triple("AFS_MIN_THR",  "AFS Min Throttle",    "µs"),
+        Triple("AFS_MIN_STR",  "AFS Min Steer Δ",     "µs"),
+    )
+
     // UI Elements
     private lateinit var map: GoogleMap
     private lateinit var touchOverlay: View
@@ -292,6 +309,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
                 redrawRoverMissions()
             }
+        },
+
+        onParamValue = { _, name, value, _, _ ->
+            runOnUiThread { updateParamField(name, value) }
         },
     )
 
@@ -1014,14 +1035,93 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val popup = PopupMenu(this, view)
         popup.menu.add("Mission Planner")
         popup.menu.add("Auto Mode")
+        popup.menu.add("Nav Params")
         popup.setOnMenuItemClickListener { item ->
             when (item.title) {
                 "Mission Planner" -> setMode(AppMode.PLANNER)
                 "Auto Mode"       -> setMode(AppMode.AUTO)
+                "Nav Params"      -> showNavParamsDialog()
             }
             true
         }
         popup.show()
+    }
+
+    private fun showNavParamsDialog() {
+        paramDialogRoverId = selectedRoverId
+        paramFields.clear()
+
+        val ctx   = this
+        val dp4   = (4 * resources.displayMetrics.density + 0.5f).toInt()
+        val dp48  = (48 * resources.displayMetrics.density + 0.5f).toInt()
+        val layout = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(dp48, dp4 * 6, dp48, dp4 * 6)
+        }
+
+        for ((name, label, unit) in PARAM_DEFS) {
+            val row = android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.HORIZONTAL
+                setPadding(0, dp4 * 2, 0, dp4 * 2)
+            }
+            val tv = android.widget.TextView(ctx).apply {
+                text = if (unit.isNotEmpty()) "$label ($unit)" else label
+                layoutParams = android.widget.LinearLayout.LayoutParams(
+                    0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1.5f)
+                textSize = 13f
+            }
+            val et = android.widget.EditText(ctx).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or
+                            android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                layoutParams = android.widget.LinearLayout.LayoutParams(
+                    0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                textSize = 13f
+                hint = "?"
+                setText("")
+            }
+            paramFields[name] = et
+            row.addView(tv)
+            row.addView(et)
+            layout.addView(row)
+        }
+
+        val scroll = android.widget.ScrollView(ctx).also { it.addView(layout) }
+
+        AlertDialog.Builder(ctx)
+            .setTitle("Nav Params — Rover $paramDialogRoverId")
+            .setView(scroll)
+            .setPositiveButton("Apply") { _, _ -> applyNavParams() }
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Refresh") { _, _ ->
+                roverManager.requestParams(paramDialogRoverId)
+            }
+            .show()
+
+        // Request current values immediately so fields are pre-populated
+        roverManager.requestParams(paramDialogRoverId)
+    }
+
+    private fun updateParamField(name: String, value: Float) {
+        val et = paramFields[name] ?: return
+        val text = if (value == kotlin.math.floor(value.toDouble()).toFloat() && value < 10_000f)
+            value.toInt().toString()
+        else
+            "%.3f".format(value)
+        et.setText(text)
+    }
+
+    private fun applyNavParams() {
+        var sent = 0
+        for ((name, et) in paramFields) {
+            val text  = et.text.toString().trim()
+            if (text.isEmpty()) continue
+            val value = text.toFloatOrNull() ?: continue
+            roverManager.setParam(paramDialogRoverId, name, value)
+            sent++
+        }
+        if (sent > 0)
+            Toast.makeText(this, "$sent param(s) sent to Rover $paramDialogRoverId",
+                Toast.LENGTH_SHORT).show()
     }
 
     private fun showPlannerMenu(view: View) {

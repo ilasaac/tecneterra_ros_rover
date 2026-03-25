@@ -84,6 +84,8 @@ except ImportError:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, Float32, Int32, String
 from sensor_msgs.msg import NavSatFix
 from std_srvs.srv import Trigger
@@ -94,6 +96,21 @@ PPM_CENTER = 1500
 PPM_MIN    = 1000
 PPM_MAX    = 2000
 EARTH_R    = 6_371_000.0   # metres
+
+# Tunable parameters exposed for live GQC editing via MAVLink PARAM_SET.
+# Format: ros2_param_name → (instance_attr, min_value, max_value)
+_PARAM_META: dict = {
+    'max_speed':                 ('_max_speed',            0.1,  3.0),
+    'min_speed':                 ('_min_speed',            0.1,  2.0),
+    'lookahead_distance':        ('_lookahead',            0.5, 10.0),
+    'stanley_k':                 ('_stanley_k',            0.0,  5.0),
+    'pivot_threshold':           ('_pivot_threshold',     10.0,180.0),
+    'pivot_approach_dist':       ('_pivot_approach_dist',  0.5, 10.0),
+    'align_threshold':           ('_align_thresh',        10.0, 90.0),
+    'default_acceptance_radius': ('_accept_r',            0.05,  2.0),
+    'afs_min_throttle_ppm':      ('_min_throttle_ppm',   1500, 1900),
+    'afs_min_steer_ppm_delta':   ('_min_steer_ppm_delta',    0,  400),
+}
 
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -357,6 +374,12 @@ class NavigatorNode(Node):
         self.rerouted_pub       = self.create_publisher(String,   'rerouted_path',   10)
         self.path_version_pub   = self.create_publisher(Int32,    'path_version',    10)
         self._path_version      = 0
+        self.nav_params_pub     = self.create_publisher(String,   'nav_params',      10)
+        self.create_subscription(String, 'nav_param_set', self._cb_nav_param_set, 10)
+        self.add_on_set_parameters_callback(self._on_set_parameters_callback)
+        # Publish current params periodically so mavlink_bridge always has fresh values.
+        # Also fires immediately so the first subscriber (after any node restart) gets them.
+        self.create_timer(5.0, self._publish_nav_params)
 
         # ── Services ─────────────────────────────────────────────────────────
         self.create_service(Trigger, 'pause_mission',  self._svc_pause)
@@ -376,6 +399,54 @@ class NavigatorNode(Node):
         self.get_logger().info(
             f'Navigator ready — algorithm={algo_info}, '
             f'full-path tracking + obstacle avoidance')
+
+    # ── Live parameter tuning ─────────────────────────────────────────────────
+
+    def _publish_nav_params(self):
+        """Publish all exposed parameters as a JSON dict so mavlink_bridge can respond
+        to PARAM_REQUEST_LIST.  Called every 5 s and on every param change."""
+        data = {k: float(getattr(self, meta[0])) for k, meta in _PARAM_META.items()}
+        msg = String()
+        msg.data = json.dumps(data, separators=(',', ':'))
+        self.nav_params_pub.publish(msg)
+
+    def _cb_nav_param_set(self, msg: String):
+        """Apply a live parameter change forwarded by mavlink_bridge from GQC PARAM_SET."""
+        try:
+            req   = json.loads(msg.data)
+            name  = req['name']
+            value = float(req['value'])
+        except Exception as e:
+            self.get_logger().warn(f'nav_param_set parse error: {e}')
+            return
+        meta = _PARAM_META.get(name)
+        if meta is None:
+            self.get_logger().warn(f'nav_param_set: unknown param "{name}"')
+            return
+        attr, lo, hi = meta
+        clamped = max(lo, min(hi, value))
+        if abs(clamped - value) > 1e-6:
+            self.get_logger().warn(
+                f'nav_param_set: {name}={value} out of range [{lo}, {hi}] — clamped to {clamped}')
+        setattr(self, attr, type(getattr(self, attr))(clamped))
+        self.get_logger().info(f'nav_param_set: {name} = {getattr(self, attr)}')
+        self._publish_nav_params()
+
+    def _on_set_parameters_callback(self, params) -> SetParametersResult:
+        """Handle ROS2 CLI parameter changes (ros2 param set /rv1/navigator <name> <val>)."""
+        changed = False
+        for p in params:
+            meta = _PARAM_META.get(p.name)
+            if meta is None:
+                continue
+            attr, lo, hi = meta
+            clamped = max(lo, min(hi, float(p.value)))
+            setattr(self, attr, type(getattr(self, attr))(clamped))
+            self.get_logger().info(f'ROS2 param set: {p.name} = {getattr(self, attr)}')
+            changed = True
+        if changed:
+            self._publish_nav_params()
+        return SetParametersResult(successful=True)
 
     # ── Sensor callbacks ──────────────────────────────────────────────────────
 

@@ -81,6 +81,12 @@ class RoverPositionManager(
      * waypoints: ordered list of (lat, lon) pairs for all nav waypoints in the current mission.
      */
     private val onMissionDownloaded: (Int, List<Pair<Double, Double>>) -> Unit,
+    /**
+     * Called when PARAM_VALUE is received from a rover (response to PARAM_REQUEST_LIST or PARAM_SET).
+     * sysId: rover system ID.  name: MAVLink param_id (≤16 chars).
+     * value: current float value.  index: 0-based index.  count: total param count.
+     */
+    private val onParamValue: (sysId: Int, name: String, value: Float, index: Int, count: Int) -> Unit,
 ) {
     private val PORT        = 14550
     private val MASTER_SYSID = 1
@@ -710,6 +716,15 @@ class RoverPositionManager(
                 scope.launch(Dispatchers.Main) { onGpsStatus(senderId, fixType) }
             }
 
+            // PARAM_VALUE (#22) — response to PARAM_REQUEST_LIST or PARAM_SET
+            is ParamValue -> {
+                val name  = payload.paramId().trimEnd('\u0000')
+                val value = payload.paramValue()
+                val index = payload.paramIndex()
+                val count = payload.paramCount()
+                scope.launch(Dispatchers.Main) { onParamValue(senderId, name, value, index, count) }
+            }
+
             // TUNNEL (#385) payload_type=0x5250 — rerouted path chunks from navigator
             is Tunnel -> {
                 if (payload.payloadType().value() != 0x5250) return
@@ -858,6 +873,28 @@ class RoverPositionManager(
             .missionType(EnumValue.of(MavMissionType.MAV_MISSION_TYPE_MISSION))
             .build())
         Log.i("RoverMgr", "Mission sync request → rover $sysId")
+    }
+
+    /** Request all navigator parameters from a rover (PARAM_REQUEST_LIST → stream of PARAM_VALUE). */
+    fun requestParams(sysId: Int) {
+        scope.launch {
+            sendMavlinkTo(roverIp(sysId), ParamRequestList.builder()
+                .targetSystem(sysId).targetComponent(1).build())
+            Log.i("RoverMgr", "PARAM_REQUEST_LIST → rover $sysId")
+        }
+    }
+
+    /** Send a PARAM_SET to change a single navigator parameter on a rover. */
+    fun setParam(sysId: Int, name: String, value: Float) {
+        scope.launch {
+            sendMavlinkTo(roverIp(sysId), ParamSet.builder()
+                .targetSystem(sysId).targetComponent(1)
+                .paramId(name)
+                .paramValue(value)
+                .paramType(EnumValue.create(MavParamType::class.java, 9)) // REAL32
+                .build())
+            Log.i("RoverMgr", "PARAM_SET $name=$value → rover $sysId")
+        }
     }
 
     private fun sendMissionItem(targetSysId: Int, seq: Int) {
