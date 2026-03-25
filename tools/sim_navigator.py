@@ -642,6 +642,7 @@ class PathNavigator:
         self._holding    = False
         self._hold_end   = 0.0
         self._mpc_prev_steers: list[float] = []
+        self._spin_target_brg: float | None = None
         self._ttr_apid   = _PID(nav.get('ttr_angle_kp', 3.0),
                                  nav.get('ttr_angle_ki', 0.0),
                                  nav.get('ttr_angle_kd', 0.1))
