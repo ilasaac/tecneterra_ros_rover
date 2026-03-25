@@ -60,7 +60,7 @@ navigator:
     obstacle_clearance_m: 0.5
 
     # ── Control algorithm ──────────────────────────────────────────────────
-    # control_algorithm: 'stanley', 'mpc', or 'ttr'
+    # control_algorithm: 'stanley', 'mpc', 'ttr', or 'afs'
     #   stanley — full-path Stanley lateral controller (heading error + CTE)
     #   mpc     — Model Predictive Control over a receding horizon; requires
     #             scipy (pip install scipy).  Falls back to Stanley if scipy
@@ -68,7 +68,29 @@ navigator:
     #   ttr     — cascaded dual-PID (CTE → heading); ported from ROS1 TTR nav.
     #             Speed reduces with CTE magnitude and decelerates near waypoints.
     #             SIL sim uses DiffDriveState (track-width kinematics from Robot.cpp).
+    #   afs     — Always Forward Strategy: throttle always positive, scaled by CTE.
+    #             Straight segments: throttle = max(min_speed, spd×(1−|CTE|/scale)).
+    #             Turn waypoints: approach with min_speed, stop after closest approach,
+    #             spin to outgoing bearing, then resume straight.
+    #             Alarm + halt if CTE exceeds afs_cte_alarm_m.
     control_algorithm: 'stanley'
+
+    # AFS parameters (only used when control_algorithm: 'afs')
+    # afs_cte_scale_m: CTE at which throttle decays to min_speed (linear).
+    #   At CTE=0 → full target speed.  At CTE=scale → min_speed.  Above → still min_speed.
+    #   Set smaller for more aggressive speed reduction near the edge of the path.
+    afs_cte_scale_m: 2.0
+
+    # afs_cte_alarm_m: CTE above which the rover halts and logs a critical alarm.
+    #   Should be greater than afs_cte_scale_m (otherwise rover halts before slowing).
+    #   Typical: 1.5–2× afs_cte_scale_m.
+    afs_cte_alarm_m: 3.0
+
+    # afs_approach_dist_m: distance from a turn waypoint at which AFS switches from
+    #   segment-following to direct-to-wp approach steering.  The rover drives toward
+    #   the waypoint at min_speed until it passes closest approach, then spins to the
+    #   outgoing bearing.  Set to 2–3× the rover turn radius for clean arrivals.
+    afs_approach_dist_m: 5.0
 
     # TTR tuning (only active when control_algorithm: 'ttr')
     #   ttr_angle_kp/ki/kd     — heading+CTE PID gains (AnglePid)

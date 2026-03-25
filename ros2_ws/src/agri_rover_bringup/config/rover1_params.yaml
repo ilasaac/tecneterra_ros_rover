@@ -56,7 +56,16 @@
     pivot_approach_dist:       4.0
     rover_width_m:             1.0
     obstacle_clearance_m:      0.5
-    control_algorithm:         stanley
+    control_algorithm:         stanley   # stanley | mpc | ttr | afs
+    # AFS (Always Forward Strategy) parameters — only used when control_algorithm: afs
+    # afs_cte_scale_m:    CTE (m) at which throttle reaches min_speed (linear decay)
+    # afs_cte_alarm_m:    CTE (m) above which the rover halts and logs a critical alarm
+    # afs_approach_dist_m: rover switches to direct-to-wp approach within this distance
+    #                      of a turn waypoint; continues until closest approach is passed,
+    #                      then stops and spins to the outgoing bearing.
+    afs_cte_scale_m:           2.0
+    afs_cte_alarm_m:           3.0
+    afs_approach_dist_m:       5.0
     # TTR dual-PID (CTE → heading cascaded controller)
     ttr_angle_kp:              3.0
     ttr_angle_ki:              0.0

@@ -77,8 +77,12 @@ DEFAULT_NAV: dict = {
     'rover_width_m':             1.0,
     'control_rate':              25.0,
     'max_timeout':               300.0,  # simulation hard stop (seconds)
-    # Control algorithm — 'stanley', 'mpc', or 'ttr'
+    # Control algorithm — 'stanley', 'mpc', 'ttr', or 'afs'
     'control_algorithm':         'stanley',
+    # AFS (Always Forward Strategy) parameters
+    'afs_cte_scale_m':           2.0,
+    'afs_cte_alarm_m':           3.0,
+    'afs_approach_dist_m':       5.0,
     # TTR dual-PID parameters
     'ttr_angle_kp':              3.0,
     'ttr_angle_ki':              0.0,
@@ -643,6 +647,10 @@ class PathNavigator:
         self._hold_end   = 0.0
         self._mpc_prev_steers: list[float] = []
         self._spin_target_brg: float | None = None
+        # AFS state
+        self._afs_phase:        str   = 'straight'  # 'straight' | 'approach' | 'spin'
+        self._afs_closest_dist: float = float('inf')
+        self._afs_spin_hdg:     float = 0.0
         self._ttr_apid   = _PID(nav.get('ttr_angle_kp', 3.0),
                                  nav.get('ttr_angle_ki', 0.0),
                                  nav.get('ttr_angle_kd', 0.1))
@@ -715,12 +723,14 @@ class PathNavigator:
             return False
         self._wps, self._origin_lat, self._origin_lon, \
             self._chunk_end_pivot_target = self._pending_chunks.pop(0)
-        self._path_s          = self._compute_arclens()
-        self.path_idx         = 0
-        self._mpc_prev_steers = []
-        self._spin_target_brg = None
-        self._pivoting        = False
-        self._holding         = False
+        self._path_s           = self._compute_arclens()
+        self.path_idx          = 0
+        self._mpc_prev_steers  = []
+        self._spin_target_brg  = None
+        self._pivoting         = False
+        self._holding          = False
+        self._afs_phase        = 'straight'
+        self._afs_closest_dist = float('inf')
         return True
 
     # ── Arc-length ─────────────────────────────────────────────────────────
@@ -1046,6 +1056,176 @@ class PathNavigator:
 
         return steer_frac, max(min_spd, v)
 
+    # ── AFS controller ─────────────────────────────────────────────────────
+
+    def _afs_step(self, rlat: float, rlon: float,
+                  flat: float, flon: float,
+                  heading: float, t_mono: float) -> tuple[int, int, bool]:
+        """
+        AFS (Always Forward Strategy) step — mirrors navigator.py._afs_step().
+
+        Returns (throttle_ppm, steer_ppm, done).
+        """
+        nav              = self._nav
+        max_spd          = nav['max_speed']
+        min_spd          = nav['min_speed']
+        max_steer        = nav['max_steering']
+        accept_r         = nav['default_acceptance_radius']
+        hdb              = nav['heading_deadband']
+        align_thresh     = nav['align_threshold']
+        pivot_thresh     = nav['pivot_threshold']
+        cte_scale        = nav.get('afs_cte_scale_m',    2.0)
+        cte_alarm        = nav.get('afs_cte_alarm_m',    3.0)
+        approach_dist    = nav.get('afs_approach_dist_m', 5.0)
+        k                = nav['stanley_k']
+        softening        = nav['stanley_softening']
+        lookahead        = nav['lookahead_distance']
+
+        wp               = self._wps[self.path_idx]
+        accept           = wp.acceptance_radius if wp.acceptance_radius > 0 else accept_r
+        dist_to_wp       = _haversine(rlat, rlon, wp.lat, wp.lon)
+        is_bypass        = wp.is_bypass
+        is_last_in_chunk = (self.path_idx == len(self._wps) - 1)
+        chunk_pivot_nxt  = self._chunk_end_pivot_target
+
+        # Turn detection (mirrors navigator.py._afs_step)
+        if is_last_in_chunk and chunk_pivot_nxt is not None:
+            if len(self._wps) > 1:
+                in_brg = _bearing_to(self._wps[-2].lat, self._wps[-2].lon, wp.lat, wp.lon)
+            else:
+                in_brg = _bearing_to(self._origin_lat, self._origin_lon, wp.lat, wp.lon)
+            out_brg    = _bearing_to(wp.lat, wp.lon,
+                                     chunk_pivot_nxt.lat, chunk_pivot_nxt.lon)
+            turn_angle = abs(((out_brg - in_brg + 180) % 360) - 180)
+            needs_turn = turn_angle >= pivot_thresh
+        else:
+            turn_angle = self._turn_angle_at(self.path_idx)
+            needs_turn = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
+
+        # ── Spin phase ──────────────────────────────────────────────────
+        if self._afs_phase == 'spin':
+            pivot_err = ((self._afs_spin_hdg - heading + 180) % 360) - 180
+            if abs(pivot_err) < hdb:
+                self._afs_phase        = 'straight'
+                self._afs_closest_dist = float('inf')
+                self._ttr_apid.clear()
+                self._ttr_hpid.clear()
+                self._advance()
+                if self.path_idx >= len(self._wps):
+                    if not self._load_next_chunk():
+                        return PPM_CENTER, PPM_CENTER, True
+                # Halt one tick — next call to _afs_step() will use fresh path_idx
+                return PPM_CENTER, PPM_CENTER, False
+            else:
+                steer_frac = max(-max_steer, min(max_steer, pivot_err / 45.0))
+                return PPM_CENTER, int(PPM_CENTER - steer_frac * 500), False
+
+        # ── Approach phase ──────────────────────────────────────────────
+        if self._afs_phase == 'approach':
+            if dist_to_wp < self._afs_closest_dist:
+                self._afs_closest_dist = dist_to_wp
+            if dist_to_wp > self._afs_closest_dist + 0.1:
+                self._afs_phase = 'spin'
+                if is_last_in_chunk and chunk_pivot_nxt is not None:
+                    nxt_lat, nxt_lon = chunk_pivot_nxt.lat, chunk_pivot_nxt.lon
+                elif not is_last_in_chunk:
+                    nxt = self._wps[self.path_idx + 1]
+                    nxt_lat, nxt_lon = nxt.lat, nxt.lon
+                else:
+                    nxt_lat, nxt_lon = wp.lat, wp.lon
+                self._afs_spin_hdg = _bearing_to(rlat, rlon, nxt_lat, nxt_lon)
+                return PPM_CENTER, PPM_CENTER, False
+            target_brg  = _bearing_to(rlat, rlon, wp.lat, wp.lon)
+            heading_err = ((target_brg - heading + 180) % 360) - 180
+            steer_frac  = max(-max_steer, min(max_steer, heading_err / 45.0))
+            thr = int(PPM_CENTER + (min_spd / max_spd) * 500)
+            return thr, int(PPM_CENTER - steer_frac * 500), False
+
+        # ── Straight phase ──────────────────────────────────────────────
+        s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
+
+        if needs_turn:
+            if dist_to_wp < approach_dist:
+                self._afs_phase        = 'approach'
+                self._afs_closest_dist = dist_to_wp
+                self._spin_target_brg  = None
+                target_brg  = _bearing_to(rlat, rlon, wp.lat, wp.lon)
+                heading_err = ((target_brg - heading + 180) % 360) - 180
+                steer_frac  = max(-max_steer, min(max_steer, heading_err / 45.0))
+                thr = int(PPM_CENTER + (min_spd / max_spd) * 500)
+                return thr, int(PPM_CENTER - steer_frac * 500), False
+        else:
+            past_wp = (not is_bypass
+                       and dist_to_wp < accept * 4.0
+                       and self._past_waypoint(rlat, rlon))
+            reached = dist_to_wp < accept or past_wp
+            if reached:
+                if wp.hold_secs > 0.0:
+                    self._holding  = True
+                    self._hold_end = t_mono + wp.hold_secs
+                    return PPM_CENTER, PPM_CENTER, False
+                self._advance()
+                if self.path_idx >= len(self._wps):
+                    if not self._load_next_chunk():
+                        return PPM_CENTER, PPM_CENTER, True
+                # Refresh for new target
+                wp         = self._wps[self.path_idx]
+                is_bypass  = wp.is_bypass
+                accept     = wp.acceptance_radius if wp.acceptance_radius > 0 else accept_r
+                dist_to_wp = _haversine(rlat, rlon, wp.lat, wp.lon)
+                s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
+                turn_angle  = self._turn_angle_at(self.path_idx)
+                needs_turn  = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
+
+        cte_seg = self.path_idx
+        cte     = 0.0 if is_bypass else self._cte_to_seg(flat, flon, cte_seg)
+
+        if abs(cte) >= cte_alarm:
+            self._step_info['mode'] = 'afs-alarm'
+            return PPM_CENTER, PPM_CENTER, False
+
+        target_spd   = wp.speed if wp.speed > 0 else max_spd
+        cte_factor   = max(0.0, 1.0 - abs(cte) / max(cte_scale, 0.01))
+        v_mps        = max(min_spd, target_spd * cte_factor)
+        throttle_ppm = int(PPM_CENTER + (v_mps / max_spd) * 500)
+
+        if is_bypass:
+            la_lat, la_lon = wp.lat, wp.lon
+        else:
+            la_lat, la_lon = self._point_at_s(s_nearest + lookahead)
+
+        target_bearing = _bearing_to(rlat, rlon, la_lat, la_lon)
+        if self._spin_target_brg is not None:
+            target_bearing = self._spin_target_brg
+
+        heading_err = ((target_bearing - heading + 180) % 360) - 180
+
+        if abs(heading_err) > align_thresh:
+            if self._spin_target_brg is None:
+                self._spin_target_brg = target_bearing
+            steer_frac = max(-max_steer, min(max_steer, heading_err / 45.0))
+            self._ttr_apid.clear(); self._ttr_hpid.clear()
+            return PPM_CENTER, int(PPM_CENTER - steer_frac * 500), False
+
+        self._spin_target_brg = None
+
+        stanley_ang = heading_err + math.degrees(
+            math.atan2(k * cte, max(v_mps, softening)))
+        stanley_ang = max(-90.0, min(90.0, stanley_ang))
+        steer_frac  = max(-max_steer, min(max_steer, stanley_ang / 45.0))
+
+        self._step_info.update({
+            'heading_err': heading_err,
+            'cte':         cte,
+            'cte_seg':     cte_seg,
+            'best_seg':    best_seg,
+            'steer_frac':  steer_frac,
+            'v_mps':       v_mps,
+            'mode':        'afs-straight',
+            '_heading':    heading,
+        })
+        return throttle_ppm, int(PPM_CENTER - steer_frac * 500), False
+
     # ── Control step ───────────────────────────────────────────────────────
 
     def step(self, rlat: float, rlon: float,
@@ -1082,6 +1262,17 @@ class PathNavigator:
                 self._holding = False
                 self._advance()
             return PPM_CENTER, PPM_CENTER, self.path_idx, False
+
+        # AFS algorithm
+        if self._algo == 'afs':
+            thr, steer, done = self._afs_step(rlat, rlon, flat, flon, heading, t_mono)
+            self._step_info.setdefault('wp_idx', self.path_idx)
+            self._step_info.setdefault('dist_to_wp',
+                                       _haversine(rlat, rlon,
+                                                  self._wps[self.path_idx].lat,
+                                                  self._wps[self.path_idx].lon)
+                                       if self.path_idx < len(self._wps) else 0.0)
+            return thr, steer, self.path_idx, done
 
         # Pivot
         if self._pivoting:
@@ -1742,7 +1933,7 @@ if __name__ == '__main__':
     ap.add_argument('--wheelbase',   type=float, default=DEFAULT_PHYS['wheelbase'])
     ap.add_argument('--turn-scale',  type=float, default=DEFAULT_PHYS['turn_scale'])
     ap.add_argument('--algo',        type=str,   default=None,
-                    choices=['stanley', 'mpc', 'ttr'],
+                    choices=['stanley', 'mpc', 'ttr', 'afs'],
                     help='Control algorithm (default: from rover1_params.yaml)')
     ap.add_argument('--track-width', type=float, default=DEFAULT_TTR_PHYS['track_width_m'],
                     help='TTR track width in metres (default: 0.9)')
