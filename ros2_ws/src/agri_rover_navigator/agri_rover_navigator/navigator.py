@@ -341,7 +341,7 @@ class NavigatorNode(Node):
         self._afs_phase:        str   = 'straight'
         self._afs_closest_dist: float = float('inf')
         self._afs_spin_hdg:     float = 0.0
-        self._afs_wp0_advanced: bool  = False
+        self._wp0_advanced: bool  = False
 
         # Spin-bearing freeze for large heading errors (applies to all algorithms).
         # Initialized here so _control_loop never hits AttributeError on first tick.
@@ -511,7 +511,7 @@ class NavigatorNode(Node):
         self._spin_target_brg        = None
         self._afs_phase              = 'straight'
         self._afs_closest_dist       = float('inf')
-        self._afs_wp0_advanced       = False
+        self._wp0_advanced           = False
         self._mpc_prev_steers        = []
         self._pending_path_chunks    = []
         self._chunk_end_pivot_target = None
@@ -534,7 +534,7 @@ class NavigatorNode(Node):
             self._spin_target_brg        = None
             self._afs_phase              = 'straight'
             self._afs_closest_dist       = float('inf')
-            self._afs_wp0_advanced       = False
+            self._wp0_advanced           = False
             self._mpc_prev_steers        = []
             self._pending_path_chunks    = []
             self._chunk_end_pivot_target = None
@@ -1566,14 +1566,6 @@ class NavigatorNode(Node):
 
         Returns (throttle_ppm, steer_ppm).
         """
-        # Rover starts at origin ≈ wp0. Mark wp0 as already reached on the first
-        # AFS tick so the rover immediately targets wp1 instead of circling wp0.
-        if self._path_idx == 0 and not self._afs_wp0_advanced:
-            self._afs_wp0_advanced = True
-            self.get_logger().info('AFS: origin = wp0 — marking reached, navigating to wp1')
-            self._advance_path()
-            return PPM_CENTER, PPM_CENTER
-
         wp               = self._path[self._path_idx]
         accept           = wp.acceptance_radius if wp.acceptance_radius > 0 else self._accept_r
         rlat, rlon       = self._center_pos()
@@ -1824,6 +1816,20 @@ class NavigatorNode(Node):
                 f'— {step_m:.1f} m behind wp0 on bearing {rev_brg:.0f}°')
             if self._expanded_polygons:
                 self._reroute_path()
+
+        # ── Mission start: wp[0] is the starting position — auto-advance ─────
+        # wp[0] is where the rover was when the mission was uploaded; the rover
+        # is already there.  Immediately mark it reached so the rover computes
+        # heading toward wp[1] (spinning if needed) rather than aiming at wp[0].
+        # The flag is reset on each fresh mission upload and NOT reset on chunk
+        # boundaries, so subsequent chunks are not affected.
+        if self._path_idx == 0 and not self._wp0_advanced and len(self._path) > 1:
+            self._wp0_advanced = True
+            self.get_logger().info(
+                f'Mission start: wp[0] (seq={self._path[0].seq}) auto-reached — '
+                f'heading for wp[1] (seq={self._path[1].seq})')
+            self._advance_path()
+            return
 
         # ── Hold at waypoint ─────────────────────────────────────────────────
         if self._holding:
