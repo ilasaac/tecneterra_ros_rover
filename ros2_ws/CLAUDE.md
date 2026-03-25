@@ -220,7 +220,7 @@ steer_frac   = (angle_output / 25) × max_steering
 **Full-path state:**
 - `_path`: list of all waypoints in order (built incrementally as mission items arrive)
 - `_path_s[i]`: cumulative arc-length from path origin to `_path[i]`
-- `_path_origin_lat/lon`: rover centre position captured when seq=0 arrives; defines start of virtual segment 0 (origin → wp[0])
+- `_path_origin_lat/lon`: rover centre position captured when seq=0 arrives; defines start of virtual segment 0 (origin → wp[0]). **If GPS is not ready when seq=0 arrives, remains None.** The control loop synthesises a fallback origin (`lookahead_distance` metres behind wp0 on the reverse of the wp0→wp1 bearing) on the first tick — this ensures `_past_waypoint` returns True when the rover is already past wp0 in the mission direction.
 - `_path_idx`: index of next waypoint not yet reached
 
 **`_nearest_on_path(lat, lon)`** — searches segments from `_path_idx` onward (never backtracks). Returns `(s_nearest, seg_idx)`.
