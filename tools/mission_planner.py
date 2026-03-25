@@ -28,6 +28,7 @@ import sys
 import threading as _threading
 import time as _time
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from urllib.parse import unquote as _unquote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sim_navigator import (  # noqa: E402
@@ -1522,7 +1523,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(_list_mission_files())
 
         elif self.path.startswith('/load_mission?name='):
-            name = self.path.split('=', 1)[1]
+            name = _unquote(self.path.split('=', 1)[1])
             try:
                 self._json(_load_mission_file(name))
             except FileNotFoundError:
