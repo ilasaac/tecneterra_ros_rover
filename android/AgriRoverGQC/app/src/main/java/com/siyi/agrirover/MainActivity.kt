@@ -430,19 +430,26 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 Toast.makeText(this, "No mission loaded on rover", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            // Distance check: prefer local upload positions; fall back to TUNNEL rerouted path
-            // so external uploads (e.g. mission_planner.py) are also gated on proximity.
-            val missionStart = roverMissions[selectedRoverId]?.firstOrNull()
-                ?: roverReroutedPaths[selectedRoverId]?.firstOrNull()
-                    ?.let { (lat, lon, _) -> LatLng(lat, lon) }
-            val roverPos     = roverPositions[selectedRoverId]
-            if (missionStart != null && (roverPos == null || distanceMeters(roverPos, missionStart) > 0.5)) {
-                AlertDialog.Builder(this)
-                    .setTitle("Too far from start")
-                    .setMessage("Move the rover manually to the starting position")
-                    .setPositiveButton("OK", null)
-                    .show()
-                return@setOnClickListener
+            // Distance check: only required when starting fresh (WP_ACT == 0 or unknown).
+            // If the rover is already past wp[0] (WP_ACT > 0) it is mid-mission — allow
+            // re-arm at current position so the mission can resume after an RTK alarm.
+            val wpReached = roverNextWaypointIndex[selectedRoverId] ?: -1
+            if (wpReached <= 0) {
+                // Fresh start: rover must be near wp[0].
+                // Prefer local upload positions; fall back to TUNNEL rerouted path
+                // so external uploads (e.g. mission_planner.py) are also gated on proximity.
+                val missionStart = roverMissions[selectedRoverId]?.firstOrNull()
+                    ?: roverReroutedPaths[selectedRoverId]?.firstOrNull()
+                        ?.let { (lat, lon, _) -> LatLng(lat, lon) }
+                val roverPos = roverPositions[selectedRoverId]
+                if (missionStart != null && (roverPos == null || distanceMeters(roverPos, missionStart) > 0.5)) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Too far from start")
+                        .setMessage("Move the rover manually to the starting position")
+                        .setPositiveButton("OK", null)
+                        .show()
+                    return@setOnClickListener
+                }
             }
             if (roverGpsFix[selectedRoverId] != 6) {
                 Toast.makeText(this, "RTK not fixed — cannot start autonomous", Toast.LENGTH_SHORT).show()
