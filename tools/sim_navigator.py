@@ -651,10 +651,11 @@ class PathNavigator:
         self._mpc_prev_steers: list[float] = []
         self._spin_target_brg: float | None = None
         # AFS state
-        self._afs_phase:        str   = 'straight'  # 'straight' | 'approach' | 'spin'
-        self._afs_closest_dist: float = float('inf')
-        self._afs_spin_hdg:     float = 0.0
-        self._wp0_advanced: bool  = False
+        self._afs_phase:          str   = 'straight'  # 'straight' | 'approach' | 'spin'
+        self._afs_closest_dist:   float = float('inf')
+        self._afs_spin_hdg:       float = 0.0
+        self._wp0_advanced:       bool  = False
+        self._pivot_closest_dist: float = float('inf')
         self._ttr_apid   = _PID(nav.get('ttr_angle_kp', 3.0),
                                  nav.get('ttr_angle_ki', 0.0),
                                  nav.get('ttr_angle_kd', 0.1))
@@ -729,12 +730,13 @@ class PathNavigator:
             self._chunk_end_pivot_target = self._pending_chunks.pop(0)
         self._path_s           = self._compute_arclens()
         self.path_idx          = 0
-        self._mpc_prev_steers  = []
-        self._spin_target_brg  = None
-        self._pivoting         = False
-        self._holding          = False
-        self._afs_phase        = 'straight'
-        self._afs_closest_dist = float('inf')
+        self._mpc_prev_steers    = []
+        self._spin_target_brg    = None
+        self._pivoting           = False
+        self._pivot_closest_dist = float('inf')
+        self._holding            = False
+        self._afs_phase          = 'straight'
+        self._afs_closest_dist   = float('inf')
         return True
 
     # ── Arc-length ─────────────────────────────────────────────────────────
@@ -1363,6 +1365,17 @@ class PathNavigator:
             's_clip': float('inf'),  # updated by _mpc_steer if called
         })
 
+        # Track closest approach to pivot waypoint.
+        if needs_pivot:
+            if dist_to_wp < self._pivot_closest_dist:
+                self._pivot_closest_dist = dist_to_wp
+
+        # Closest-approach overshoot: rover entered approach zone, passed its nearest
+        # point to the pivot wp, and has moved at least accept further away.
+        pivot_overshot = (needs_pivot
+                          and self._pivot_closest_dist < pivot_app_dist
+                          and dist_to_wp > self._pivot_closest_dist + accept)
+
         # Waypoint advance — bypass waypoints require physical proximity (arc-length
         # advance is disabled so short bypass arcs are not immediately skipped).
         # Overshoot: rover passed waypoint along the segment direction.
@@ -1372,7 +1385,7 @@ class PathNavigator:
         past_wp = (not needs_pivot and not is_bypass
                    and dist_to_wp < accept * 4.0
                    and self._past_waypoint(rlat, rlon))
-        reached = dist_to_wp < accept or past_wp
+        reached = dist_to_wp < accept or past_wp or pivot_overshot
         if reached:
             if wp.hold_secs > 0.0:
                 self._holding  = True
@@ -1488,6 +1501,7 @@ class PathNavigator:
         if self.path_idx < len(self._wps):
             self.path_idx += 1
             self.total_advanced += 1
+            self._pivot_closest_dist = float('inf')
 
 
 # ── Public helpers ────────────────────────────────────────────────────────────

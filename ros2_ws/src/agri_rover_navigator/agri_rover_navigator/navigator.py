@@ -331,8 +331,13 @@ class NavigatorNode(Node):
 
         # Pivot-turn state — rover spins in place to the outgoing heading before
         # advancing past a sharp-turn waypoint.
-        self._pivoting:         bool  = False
-        self._pivot_target_hdg: float = 0.0
+        self._pivoting:           bool  = False
+        self._pivot_target_hdg:   float = 0.0
+        # Closest distance observed to the current pivot waypoint during approach.
+        # Reset on each waypoint advance.  Used for overshoot detection: if the rover
+        # arcs past the waypoint without entering accept_r, fires when it starts
+        # moving away (dist > closest + accept).
+        self._pivot_closest_dist: float = float('inf')
 
         # AFS (Always Forward Strategy) state.
         #   _afs_phase:        current phase — 'straight' | 'approach' | 'spin'
@@ -508,6 +513,7 @@ class NavigatorNode(Node):
         self._path_origin_lon        = None
         self._holding                = False
         self._pivoting               = False
+        self._pivot_closest_dist     = float('inf')
         self._spin_target_brg        = None
         self._afs_phase              = 'straight'
         self._afs_closest_dist       = float('inf')
@@ -531,6 +537,7 @@ class NavigatorNode(Node):
             self._path_idx        = 0
             self._holding         = False
             self._pivoting               = False
+            self._pivot_closest_dist     = float('inf')
             self._spin_target_brg        = None
             self._afs_phase              = 'straight'
             self._afs_closest_dist       = float('inf')
@@ -1119,6 +1126,7 @@ class NavigatorNode(Node):
         self._path_idx              = 0
         self._mpc_prev_steers       = []
         self._pivoting              = False
+        self._pivot_closest_dist    = float('inf')
         self._holding               = False
         self._afs_phase             = 'straight'
         self._afs_closest_dist      = float('inf')
@@ -1346,6 +1354,7 @@ class NavigatorNode(Node):
             m = Int32(); m.data = wp.seq
             self.wp_pub.publish(m)
         self._path_idx += 1
+        self._pivot_closest_dist = float('inf')   # reset for next waypoint
 
         if self._path_idx >= len(self._path):
             if self._pending_path_chunks:
@@ -1905,19 +1914,29 @@ class NavigatorNode(Node):
         dist_to_wp          = haversine(rlat, rlon, wp.latitude, wp.longitude)
 
         # ── Waypoint advance ─────────────────────────────────────────────────
-        # For pivot waypoints: only proximity triggers advance so the rover
-        # must physically arrive at the turn point.
+        # Track closest approach to pivot waypoint so we can detect the moment
+        # the rover arcs past it without entering accept_r (Option C).
+        if needs_pivot:
+            if dist_to_wp < self._pivot_closest_dist:
+                self._pivot_closest_dist = dist_to_wp
+
+        # Closest-approach overshoot: rover entered the approach zone (was within
+        # pivot_approach_dist), reached its nearest point, and has since moved at
+        # least accept metres further away — the arc has carried it past the turn
+        # point even though it never entered accept_r.
+        pivot_overshot = (needs_pivot
+                          and self._pivot_closest_dist < self._pivot_approach_dist
+                          and dist_to_wp > self._pivot_closest_dist + accept)
+
         # For normal waypoints: proximity OR segment overshoot (rover passed
         # the waypoint along the segment direction) triggers advance.
-        # Overshoot: rover passed waypoint along the segment direction.
-        # Prevents getting stuck when the rover slightly misses a waypoint.
         # Proximity guard: only fire when rover is already close — prevents
         # TTR/MPC lookahead corner-cutting from cascading waypoint advances on
         # dense missions (t>=1 while still far away from the waypoint).
         past_wp = (not needs_pivot and not is_bypass
                    and dist_to_wp < accept * 4.0
                    and self._past_waypoint(rlat, rlon))
-        reached = dist_to_wp < accept or past_wp
+        reached = dist_to_wp < accept or past_wp or pivot_overshot
 
         if reached:
             if not is_bypass and wp.hold_secs > 0.0:
@@ -1940,9 +1959,11 @@ class NavigatorNode(Node):
                 self._pivoting        = True
                 self._mpc_prev_steers = []   # warm-start stale after stop-and-spin
                 self._ttr_apid.clear(); self._ttr_hpid.clear()
+                trigger = 'overshoot' if pivot_overshot else 'proximity'
                 self.get_logger().info(
-                    f'Waypoint {wp.seq} reached — pivot {turn_angle:.0f}° '
-                    f'to {self._pivot_target_hdg:.0f}°')
+                    f'Waypoint {wp.seq} reached ({trigger}, '
+                    f'closest={self._pivot_closest_dist:.2f}m) — '
+                    f'pivot {turn_angle:.0f}° to {self._pivot_target_hdg:.0f}°')
                 self._publish_halt()
             else:
                 if not is_bypass:
