@@ -289,17 +289,18 @@ class NavigatorNode(Node):
         #   afs_min_throttle_ppm    — hard PPM floor for any forward motion output.
         #                             Prevents motor stall when CTE scaling or approach
         #                             mode reduces throttle below the stiction threshold.
-        #   afs_min_steer_ppm_delta — minimum |steer_ppm − 1500| during active turns
-        #                             (spin, align-spin, approach phases).  Ensures the
-        #                             motors produce enough torque to spin even when the
-        #                             heading error is small but non-zero.
+        #   afs_min_steer_ppm_delta — minimum |steer_ppm − 1500| during ALL active turns
+        #                             and curves (pivot spins, align-spins, and normal curve
+        #                             driving).  Ensures motors overcome stiction regardless
+        #                             of control algorithm (Stanley / MPC / TTR / AFS).
         self.declare_parameter('afs_min_throttle_ppm',    1550)
         self.declare_parameter('afs_min_steer_ppm_delta',   50)
         #   afs_steer_coast_angle   — |heading_error| (degrees) below which the steer floor
         #                             is NOT applied.  Allows proportional control to decay
-        #                             to zero near the target, preventing overshoot when
-        #                             afs_min_steer_ppm_delta is tuned high for stiction.
-        self.declare_parameter('afs_steer_coast_angle',   15.0)
+        #                             to zero near the target.  Set close to heading_deadband
+        #                             (e.g. 5°) so the floor applies until the deadband exits
+        #                             the spin — prevents motor stall near the target heading.
+        self.declare_parameter('afs_steer_coast_angle',    5.0)
         # TTR parameters (only used when control_algorithm == 'ttr')
         # Cascaded dual-PID: HightPid (CTE) feeds into AnglePid (heading+CTE)
         self.declare_parameter('ttr_angle_kp',               3.0)
@@ -2294,6 +2295,13 @@ class NavigatorNode(Node):
                 steer_frac  = max(-self._max_steer,
                                   min(self._max_steer, stanley_ang / 45.0))
             steer_ppm = int(PPM_CENTER - steer_frac * 500)
+            # Apply steer floor so motors overcome stiction during active corrections.
+            # Same floor as spin modes — coast zone exempts small errors near straight-ahead
+            # so we don't force unnecessary weave during fine tracking.
+            if steer_ppm != PPM_CENTER and abs(heading_err) > self._afs_steer_coast:
+                sign = 1 if steer_ppm > PPM_CENTER else -1
+                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
+                                                    self._min_steer_ppm_delta)
 
         if self._diag_writer is not None:
             sf = (PPM_CENTER - steer_ppm) / 500.0

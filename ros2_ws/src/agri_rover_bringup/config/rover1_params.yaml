@@ -67,8 +67,8 @@
     afs_cte_alarm_m:           3.0
     afs_approach_dist_m:       5.0
     afs_min_throttle_ppm:      1550   # hard PPM floor for forward motion (tune to motor stiction)
-    afs_min_steer_ppm_delta:    150   # min |steer_ppm - 1500| during turns (tune to motor stiction)
-    afs_steer_coast_angle:      15.0  # below this |heading_err| (°), floor not applied — allows coast to zero
+    afs_min_steer_ppm_delta:    150   # min |steer_ppm - 1500| during ALL turns/curves (tune to motor stiction)
+    afs_steer_coast_angle:       5.0  # below this |heading_err| (°), floor not applied — coast to zero near target
     # TTR dual-PID (CTE → heading cascaded controller)
     ttr_angle_kp:              3.0
     ttr_angle_ki:              0.0
