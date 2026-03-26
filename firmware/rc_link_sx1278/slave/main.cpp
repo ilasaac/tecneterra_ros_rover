@@ -79,10 +79,11 @@ typedef enum {
     MODE_RF = 0,          // channels come from SX1278 (master rover RF link)
     MODE_AUTONOMOUS,      // channels from Jetson <J:...> command
     MODE_IDLE,            // neutral — other rover selected or middle with no AUTO (not an alarm)
+    MODE_AUTO_TIMEOUT,    // CH5 AUTO + HB alive but no fresh <J:> cmd yet — neutral, bootstraps navigator
     MODE_EMERGENCY        // true emergency: RF lost or SWA (CH4) triggered
 } Mode;
 
-static const char *const MODE_STR[] = { "MANUAL", "AUTONOMOUS", "IDLE", "EMERGENCY" };
+static const char *const MODE_STR[] = { "MANUAL", "AUTONOMOUS", "IDLE", "AUTO-TIMEOUT", "EMERGENCY" };
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -204,6 +205,12 @@ static Mode compute_mode(void) {
     if (ch9 <= RELAY_HIGH) {
         if (rf_ch[CH_AUTONOMOUS] > AUTO_THRESH && hb_alive && cmd_fresh)
             return MODE_AUTONOMOUS;
+        // CH5 in AUTO + HB alive but no fresh <J:> cmd yet.  Report AUTO-TIMEOUT
+        // so rp2040_bridge treats it as AUTONOMOUS and the navigator starts publishing
+        // cmd_override — the first <J:> received will flip cmd_fresh and enter true
+        // AUTONOMOUS on the very next frame.  PPM output stays neutral (idle) here.
+        if (rf_ch[CH_AUTONOMOUS] > AUTO_THRESH && hb_alive)
+            return MODE_AUTO_TIMEOUT;
         return MODE_IDLE;
     }
 
@@ -220,6 +227,7 @@ static void apply_mode(Mode m) {
         case MODE_AUTONOMOUS:
             for (int i = 0; i < CHANNELS; i++) out_ch[i] = auto_ch[i];
             break;
+        case MODE_AUTO_TIMEOUT:
         case MODE_IDLE:
         case MODE_EMERGENCY:
             for (int i = 0; i < CHANNELS; i++) out_ch[i] = 1500;
