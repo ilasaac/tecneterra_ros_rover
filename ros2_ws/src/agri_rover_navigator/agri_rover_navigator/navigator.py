@@ -269,9 +269,10 @@ class NavigatorNode(Node):
         self.declare_parameter('rover_width_m',              1.4)
         self.declare_parameter('obstacle_clearance_m',       0.5)
         # Minimum segment length (metres) for pivot-turn detection.  Bearing
-        # between two points closer than this is unreliable with RTK noise, so
-        # short segments never trigger pivot detection or chunk splits.
-        self.declare_parameter('min_pivot_segment_m',        1.0)
+        # between two points closer than this is considered unreliable (GPS noise).
+        # RTK precision is < 0.02 m so any segment > 0.3 m has a reliable bearing.
+        # Set lower than the densest recorded waypoint spacing in your missions.
+        self.declare_parameter('min_pivot_segment_m',        0.3)
         # Control algorithm — 'stanley', 'mpc', 'ttr', or 'afs'
         self.declare_parameter('control_algorithm',          'stanley')
         # AFS (Always Forward Strategy) parameters (only used when control_algorithm == 'afs')
