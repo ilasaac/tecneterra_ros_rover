@@ -405,6 +405,7 @@ tr:hover td{background:#1e1e3a}
       <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
         <span style="color:#8cf;font-size:10px">Log CSV</span>
         <button class="btn-blue" style="padding:2px 7px;font-size:11px" onclick="document.getElementById('az-log-input').click()">&#128194; Browse</button>
+        <button id="btn-save-log" class="btn-green" style="padding:2px 7px;font-size:11px;display:none" onclick="saveLog()" title="Save loaded log to disk">&#128190; Save</button>
         <span id="az-log-name" style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">no file</span>
         <input type="file" id="az-log-input" accept=".csv" style="display:none" onchange="onLogFileSelect(event)">
       </div>
@@ -1638,8 +1639,25 @@ function onLogFileSelect(event) {
   if (!f) return;
   document.getElementById('az-log-name').textContent = f.name;
   const reader = new FileReader();
-  reader.onload = e => { logFileData = e.target.result; };
+  reader.onload = e => { logFileData = e.target.result; _showSaveBtn(f.name); };
   reader.readAsText(f);
+}
+
+function _showSaveBtn(filename) {
+  const btn = document.getElementById('btn-save-log');
+  btn.style.display = '';
+  btn._filename = filename;
+}
+
+function saveLog() {
+  if (!logFileData) return;
+  const btn = document.getElementById('btn-save-log');
+  const name = btn._filename || 'navigator_diag.csv';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([logFileData], {type: 'text/csv'}));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 async function fetchRoverLog(roverNum) {
@@ -1658,7 +1676,9 @@ async function fetchRoverLog(roverNum) {
     const d = await resp.json();
     if (d.error) { status(`RV${roverNum} fetch error: ${d.error}`, '#e74c3c'); return; }
     logFileData = d.content;
+    const fname = `navigator_diag_rv${roverNum}.csv`;
     document.getElementById('az-log-name').textContent = `RV${roverNum} @ ${ip}`;
+    _showSaveBtn(fname);
     status(`Log loaded from RV${roverNum} (${ip}) — click Run to analyze`, '#27ae60');
   } catch(e) {
     status('Fetch error: ' + e, '#e74c3c');
