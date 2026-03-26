@@ -2045,11 +2045,12 @@ class NavigatorNode(Node):
         # heading toward wp[1] (spinning if needed) rather than aiming at wp[0].
         # The flag is reset on each fresh mission upload and NOT reset on chunk
         # boundaries, so subsequent chunks are not affected.
-        if self._path_idx == 0 and not self._wp0_advanced and len(self._path) > 1:
+        if self._path_idx == 0 and not self._wp0_advanced:
             self._wp0_advanced = True
+            nxt = f'wp[1] (seq={self._path[1].seq})' if len(self._path) > 1 else 'end of path'
             self.get_logger().info(
                 f'Mission start: wp[0] (seq={self._path[0].seq}) auto-reached — '
-                f'heading for wp[1] (seq={self._path[1].seq})')
+                f'heading for {nxt}')
             self._advance_path()
             return
 

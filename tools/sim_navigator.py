@@ -1291,7 +1291,7 @@ class PathNavigator:
 
         # Mission start: wp[0] is the starting position — auto-advance to wp[1].
         # Flag is reset on mission load, NOT on chunk load, so only fires once.
-        if self.path_idx == 0 and not self._wp0_advanced and len(self._wps) > 1:
+        if self.path_idx == 0 and not self._wp0_advanced:
             self._wp0_advanced = True
             self._advance()
             if self.path_idx >= len(self._wps):
