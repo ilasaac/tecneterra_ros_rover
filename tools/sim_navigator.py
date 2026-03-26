@@ -84,8 +84,8 @@ DEFAULT_NAV: dict = {
     'afs_cte_alarm_m':           3.0,
     'afs_approach_dist_m':       5.0,
     'afs_min_throttle_ppm':      1550,
-    'afs_min_steer_ppm_delta':    150,
-    'afs_steer_coast_angle':      15.0,
+    'min_steer_ppm_delta':    150,
+    'steer_coast_angle':      15.0,
     # TTR dual-PID parameters
     'ttr_angle_kp':              3.0,
     'ttr_angle_ki':              0.0,
@@ -1084,8 +1084,8 @@ class PathNavigator:
         cte_alarm           = nav.get('afs_cte_alarm_m',         3.0)
         approach_dist       = nav.get('afs_approach_dist_m',     5.0)
         min_throttle_ppm    = nav.get('afs_min_throttle_ppm',    1550)
-        min_steer_ppm_delta = nav.get('afs_min_steer_ppm_delta',  150)
-        coast_angle         = nav.get('afs_steer_coast_angle',    15.0)
+        min_steer_ppm_delta = nav.get('min_steer_ppm_delta',  150)
+        coast_angle         = nav.get('steer_coast_angle',    15.0)
         k                = nav['stanley_k']
         softening        = nav['stanley_softening']
         lookahead        = nav['lookahead_distance']
