@@ -1828,7 +1828,7 @@ class NavigatorNode(Node):
             else:
                 steer_frac = max(-self._max_steer, min(self._max_steer, pivot_err / 45.0))
                 steer_ppm  = int(PPM_CENTER - steer_frac * 500)
-                if steer_ppm != PPM_CENTER and abs(pivot_err) > self._afs_steer_coast:
+                if steer_ppm != PPM_CENTER:
                     sign = 1 if steer_ppm > PPM_CENTER else -1
                     steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), self._min_steer_ppm_delta)
                 return PPM_CENTER, steer_ppm
@@ -1952,7 +1952,7 @@ class NavigatorNode(Node):
             self._ttr_apid.clear()
             self._ttr_hpid.clear()
             steer_ppm  = int(PPM_CENTER - steer_frac * 500)
-            if steer_ppm != PPM_CENTER and abs(heading_err) > self._afs_steer_coast:
+            if steer_ppm != PPM_CENTER:
                 sign = 1 if steer_ppm > PPM_CENTER else -1
                 steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), self._min_steer_ppm_delta)
             return PPM_CENTER, steer_ppm
@@ -2083,12 +2083,13 @@ class NavigatorNode(Node):
                 self._advance_path()
             else:
                 # Proportional spin: full speed above 45°, linear ramp below.
-                # Apply floor only above coast angle so motors overcome stiction
-                # without forcing an overshoot past the 3° deadband.
+                # Always apply floor during spin — no coast zone. Throttle is neutral
+                # so there is no forward momentum; overshoot risk is negligible and the
+                # floor must be active right up to the heading_deadband exit condition.
                 steer_frac = max(-self._max_steer,
                                  min(self._max_steer, pivot_err / 45.0))
                 steer_ppm  = int(PPM_CENTER - steer_frac * 500)
-                if steer_ppm != PPM_CENTER and abs(pivot_err) > self._afs_steer_coast:
+                if steer_ppm != PPM_CENTER:
                     sign = 1 if steer_ppm > PPM_CENTER else -1
                     steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
                                                         self._min_steer_ppm_delta)
@@ -2259,9 +2260,9 @@ class NavigatorNode(Node):
                 self._spin_target_brg = target_bearing
             steer_frac   = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
             steer_ppm    = int(PPM_CENTER - steer_frac * 500)
-            # Apply steer floor only above coast angle — lets proportional decay to zero
-            # near target so motors don't force an overshoot past the deadband.
-            if steer_ppm != PPM_CENTER and abs(heading_err) > self._afs_steer_coast:
+            # Always apply floor during align-spin — no coast zone (zero throttle,
+            # negligible overshoot risk; floor must be active up to heading_deadband).
+            if steer_ppm != PPM_CENTER:
                 sign = 1 if steer_ppm > PPM_CENTER else -1
                 steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
                                                     self._min_steer_ppm_delta)
