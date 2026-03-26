@@ -409,9 +409,14 @@ tr:hover td{background:#1e1e3a}
         <input type="file" id="az-log-input" accept=".csv" style="display:none" onchange="onLogFileSelect(event)">
       </div>
       <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
-        <span style="color:#8cf;font-size:10px">SSH user</span>
-        <input id="az-ssh-user" value="ilasa1" size="6"
-               style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;font-size:11px;width:60px">
+        <span style="color:#8cf;font-size:10px">user</span>
+        <input id="az-ssh-user" value="ilasa1" size="5"
+               style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px;width:50px">
+        <span style="color:#8cf;font-size:10px">key</span>
+        <input id="az-ssh-key" value="~/.ssh/agri_rover" size="14"
+               style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px;flex:1">
+      </div>
+      <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
         <button class="btn-orange" style="padding:2px 8px;font-size:11px;flex:1" onclick="fetchRoverLog(1)">&#8595; RV1</button>
         <button class="btn-blue"   style="padding:2px 8px;font-size:11px;flex:1" onclick="fetchRoverLog(2)">&#8595; RV2</button>
       </div>
@@ -1646,7 +1651,9 @@ async function fetchRoverLog(roverNum) {
     const resp = await fetch('/fetch_rover_log', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ip, user, path: '/tmp/navigator_diag.csv'}),
+      body: JSON.stringify({ip, user,
+      key: document.getElementById('az-ssh-key').value.trim(),
+      path: '/tmp/navigator_diag.csv'}),
     });
     const d = await resp.json();
     if (d.error) { status(`RV${roverNum} fetch error: ${d.error}`, '#e74c3c'); return; }
@@ -1891,19 +1898,23 @@ class _Handler(BaseHTTPRequestHandler):
             import subprocess, tempfile, os as _os2
             data     = json.loads(raw)
             rover_ip = data.get('ip', '').strip()
-            ssh_user = (data.get('user', '') or 'rover').strip()
+            ssh_user = (data.get('user', '') or 'ilasa1').strip()
+            ssh_key  = (data.get('key', '') or '').strip()
             log_path = data.get('path', '/tmp/navigator_diag.csv')
             if not rover_ip:
                 self._json({'error': 'rover IP required'}); return
             tmp = tempfile.NamedTemporaryFile(suffix='.csv', delete=False)
             tmp.close()
             try:
-                res = subprocess.run(
-                    ['scp', '-o', 'StrictHostKeyChecking=no',
-                     '-o', 'ConnectTimeout=5',
-                     '-o', 'BatchMode=yes',
-                     f'{ssh_user}@{rover_ip}:{log_path}', tmp.name],
-                    capture_output=True, timeout=10)
+                cmd = ['scp',
+                       '-o', 'StrictHostKeyChecking=no',
+                       '-o', 'ConnectTimeout=5',
+                       '-o', 'BatchMode=yes']
+                if ssh_key:
+                    import os as _os3
+                    cmd += ['-i', _os3.path.expanduser(ssh_key)]
+                cmd += [f'{ssh_user}@{rover_ip}:{log_path}', tmp.name]
+                res = subprocess.run(cmd, capture_output=True, timeout=10)
                 if res.returncode != 0:
                     err = res.stderr.decode(errors='replace').strip() or 'scp failed'
                     self._json({'error': err}); return
