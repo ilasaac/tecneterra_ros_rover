@@ -74,6 +74,74 @@ def _list_mission_files() -> list[dict]:
                        'mtime': int(os.path.getmtime(p))})
     return result
 
+# ── Mission analyzer ──────────────────────────────────────────────────────────
+
+def _compute_analysis(log_csv: str, mission_name: str) -> dict:
+    """Parse navigator_diag.csv + optional mission JSON → per-segment stats."""
+    import io as _io
+    reader = csv.DictReader(_io.StringIO(log_csv))
+    rows = []
+    for row in reader:
+        try:
+            rows.append({
+                't':           float(row['t']),
+                'lat':         float(row['lat']),
+                'lon':         float(row['lon']),
+                'cte':         float(row['cte']),
+                'wp_idx':      int(row['wp_idx']),
+                'speed_tgt':   float(row.get('speed_tgt') or 0),
+                'fix_quality': int(row.get('fix_quality') or -1),
+            })
+        except (ValueError, KeyError):
+            continue
+
+    if not rows:
+        return {'error': 'No valid rows in log (need t,lat,lon,cte,wp_idx columns)'}
+
+    track = [{'lat': r['lat'], 'lon': r['lon'],
+               'cte': r['cte'], 'wp_idx': r['wp_idx']} for r in rows]
+
+    # Per-segment stats grouped by wp_idx
+    from itertools import groupby as _groupby
+    segments = []
+    for wp_idx, grp in _groupby(rows, key=lambda r: r['wp_idx']):
+        g = list(grp)
+        ctes = [abs(r['cte']) for r in g]
+        dur = g[-1]['t'] - g[0]['t'] if len(g) > 1 else 0.0
+        rtk_pct = sum(1 for r in g if r['fix_quality'] == 2) / len(g) * 100
+        segments.append({
+            'wp_idx':    wp_idx,
+            'n_points':  len(g),
+            'cte_mean':  sum(ctes) / len(ctes),
+            'cte_max':   max(ctes),
+            'cte_rms':   math.sqrt(sum(c**2 for c in ctes) / len(ctes)),
+            'duration_s': round(dur, 2),
+            'speed_mean': round(sum(r['speed_tgt'] for r in g) / len(g), 3),
+            'rtk_pct':   round(rtk_pct, 1),
+        })
+
+    # Overall stats
+    all_ctes = [abs(r['cte']) for r in rows]
+    overall = {
+        'n_points':  len(rows),
+        'duration_s': round(rows[-1]['t'] - rows[0]['t'] if len(rows) > 1 else 0, 2),
+        'cte_mean':  round(sum(all_ctes) / len(all_ctes), 4),
+        'cte_max':   round(max(all_ctes), 4),
+        'cte_rms':   round(math.sqrt(sum(c**2 for c in all_ctes) / len(all_ctes)), 4),
+        'rtk_pct':   round(sum(1 for r in rows if r['fix_quality'] == 2) / len(rows) * 100, 1),
+    }
+
+    mission_wps = []
+    if mission_name:
+        try:
+            mission_wps = _load_mission_file(mission_name).get('waypoints', [])
+        except Exception:
+            pass
+
+    return {'track': track, 'segments': segments,
+            'overall': overall, 'mission_wps': mission_wps}
+
+
 # ── MAVLink passive snooper ────────────────────────────────────────────────────
 _snooped:      dict             = {}   # last captured mission {waypoints, obstacles, rover}
 _snooped_lock: _threading.Lock = _threading.Lock()
@@ -255,6 +323,10 @@ tr:hover td{background:#1e1e3a}
 #map-ctrl{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;gap:4px;z-index:10}
 #map-ctrl button{width:32px;height:32px;padding:0;font-size:16px;background:#1a1a2e;color:#ddd;border:1px solid #444;border-radius:4px}
 #map-ctrl button:hover{background:#0f3460}
+#analyze-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+#az-seg-table{display:none}
+#az-overall{display:none;padding:5px 8px;font-size:11px;color:#ccc;background:#0d0d1a;border-bottom:1px solid #222;line-height:1.7;font-family:monospace}
+.az-legend{padding:3px 8px;font-size:10px;color:#aaa;background:#0d0d1a;border-bottom:1px solid #222;display:flex;gap:8px;align-items:center}
 </style>
 </head>
 <body>
@@ -269,6 +341,7 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-blue" onclick="document.getElementById('file-import').click()">&#8593; Import</button>
     <button class="btn-red" onclick="clearAll()">&#10005; Clear</button>
     <button class="btn-orange" onclick="toggleGenPanel()">&#9881; Gen</button>
+    <button id="btn-analyze" class="btn-blue" onclick="toggleAnalyzeMode()" title="Analyze actual vs planned mission">&#128200; Analyze</button>
     <input type="file" id="file-import" accept=".csv" style="display:none" onchange="importCSV(event)">
   </div>
   <div style="padding:3px 6px;background:#0d0d1a;border-bottom:1px solid #333;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
@@ -325,6 +398,38 @@ tr:hover td{background:#1e1e3a}
       <thead><tr><th>#</th><th>Lat</th><th>Lon</th><th>Spd</th><th></th></tr></thead>
       <tbody id="wp-tbody"></tbody>
     </table>
+  </div>
+  <!-- ── Analyze panel (shown instead of wp-list in analyze mode) ── -->
+  <div id="analyze-panel">
+    <div class="section" style="background:#0d1a2e">
+      <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
+        <span style="color:#8cf;font-size:10px">Log CSV</span>
+        <button class="btn-blue" style="padding:2px 7px;font-size:11px" onclick="document.getElementById('az-log-input').click()">Browse</button>
+        <span id="az-log-name" style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">no file selected</span>
+        <input type="file" id="az-log-input" accept=".csv" style="display:none" onchange="onLogFileSelect(event)">
+      </div>
+      <div style="display:flex;gap:3px;align-items:center">
+        <span style="color:#8cf;font-size:10px">Mission</span>
+        <select id="az-m-select" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px;border-radius:2px;font-size:11px">
+          <option value="">— none —</option>
+        </select>
+        <button class="btn-green" style="padding:2px 9px;font-size:11px" onclick="runAnalysis()">&#9654; Run</button>
+      </div>
+    </div>
+    <div class="az-legend">
+      <span>CTE:</span>
+      <span style="color:#00e676">&#9632;&nbsp;&lt;0.10m</span>
+      <span style="color:#ffee00">&#9632;&nbsp;&lt;0.20m</span>
+      <span style="color:#ff9100">&#9632;&nbsp;&lt;0.40m</span>
+      <span style="color:#ff1744">&#9632;&nbsp;&ge;0.40m</span>
+    </div>
+    <div id="az-overall"></div>
+    <div style="flex:1;overflow-y:auto">
+      <table id="az-seg-table">
+        <thead><tr><th>Seg</th><th>Mean CTE</th><th>Max CTE</th><th>RMS CTE</th><th>Dur(s)</th><th>RTK%</th></tr></thead>
+        <tbody id="az-seg-tbody"></tbody>
+      </table>
+    </div>
   </div>
   <div id="stats"></div>
   <div id="playback" style="display:none;padding:6px 8px;border-top:1px solid #333;background:#0a0a14">
@@ -442,13 +547,16 @@ function unproject(x, y) {
 }
 
 // ── App state ─────────────────────────────────────────────────────
-let waypoints  = [];
-let addMode    = false;
-let simResult  = null;
-let obstacles  = [];
-let obsMode    = false;
-let obsCurPts  = [];
-let liveRovers = {};   // sysid → {lat, lon, hdg, ts}
+let waypoints     = [];
+let addMode       = false;
+let simResult     = null;
+let obstacles     = [];
+let obsMode       = false;
+let obsCurPts     = [];
+let liveRovers    = {};   // sysid → {lat, lon, hdg, ts}
+let analyzeMode   = false;
+let analyzeResult = null;
+let logFileData   = null;
 
 // Drag / pan tracking
 let _drag    = null;   // {type:'wp',idx} | {type:'pan',sx,sy,sLat,sLon}
@@ -463,6 +571,10 @@ function fitAll() {
   if (simResult) pts.push(...(simResult.path || []));
   obstacles.forEach(poly => pts.push(...poly));
   obsCurPts.forEach(p => pts.push(p));
+  if (analyzeResult) {
+    (analyzeResult.track || []).forEach(p => pts.push([p.lat, p.lon]));
+    (analyzeResult.mission_wps || []).forEach(w => pts.push([w.lat, w.lon]));
+  }
   if (!pts.length) return;
   let minLat = Infinity, maxLat = -Infinity;
   let minLon = Infinity, maxLon = -Infinity;
@@ -494,6 +606,7 @@ function redraw() {
   drawWaypoints();
   drawStartMarker();
   drawRover();
+  drawAnalyzeTrack();
   drawLiveRovers();
   drawMeasureOverlay();
 }
@@ -1481,6 +1594,116 @@ async function pollLiveRovers() {
 setInterval(pollLiveRovers, 2000);
 pollLiveRovers();
 
+// ── Mission analyzer ──────────────────────────────────────────────
+
+function cteColor(v) {
+  const a = Math.abs(v);
+  if (a < 0.10) return '#00e676';
+  if (a < 0.20) return '#ffee00';
+  if (a < 0.40) return '#ff9100';
+  return '#ff1744';
+}
+
+function toggleAnalyzeMode() {
+  analyzeMode = !analyzeMode;
+  document.getElementById('btn-analyze').classList.toggle('btn-active', analyzeMode);
+  document.getElementById('wp-list').style.display      = analyzeMode ? 'none' : '';
+  document.getElementById('stats').style.display        = 'none';
+  document.getElementById('playback').style.display     = 'none';
+  document.getElementById('analyze-panel').style.display = analyzeMode ? 'flex' : 'none';
+  if (analyzeMode) {
+    fetch('/missions').then(r => r.json()).then(list => {
+      const sel = document.getElementById('az-m-select');
+      sel.innerHTML = '<option value="">— none —</option>' +
+        list.map(m => `<option value="${m.name}">${m.name} (${m.wp_count} wps)</option>`).join('');
+    });
+  }
+  redraw();
+}
+
+function onLogFileSelect(event) {
+  const f = event.target.files[0];
+  if (!f) return;
+  document.getElementById('az-log-name').textContent = f.name;
+  const reader = new FileReader();
+  reader.onload = e => { logFileData = e.target.result; };
+  reader.readAsText(f);
+}
+
+async function runAnalysis() {
+  if (!logFileData) { status('Select a log CSV file first.', '#e74c3c'); return; }
+  const missionName = document.getElementById('az-m-select').value;
+  status('Analyzing...', '#888');
+  try {
+    const resp = await fetch('/analyze', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({log: logFileData, mission: missionName}),
+    });
+    const d = await resp.json();
+    if (d.error) { status('Error: ' + d.error, '#e74c3c'); return; }
+    analyzeResult = d;
+
+    // Overall stats banner
+    const o = d.overall;
+    const overall = document.getElementById('az-overall');
+    overall.style.display = '';
+    overall.innerHTML =
+      `Pts: <b>${o.n_points}</b>  Dur: <b>${o.duration_s.toFixed(1)} s</b><br>` +
+      `CTE rms <b style="color:#7ef">${o.cte_rms.toFixed(3)} m</b>  ` +
+      `max <b style="color:#f97">${o.cte_max.toFixed(3)} m</b>  ` +
+      `mean <b>${o.cte_mean.toFixed(3)} m</b><br>` +
+      `RTK fix: <b style="color:${o.rtk_pct > 80 ? '#0f0' : '#ff0'}">${o.rtk_pct.toFixed(1)} %</b>`;
+
+    // Per-segment table
+    document.getElementById('az-seg-table').style.display = '';
+    document.getElementById('az-seg-tbody').innerHTML = d.segments.map(s =>
+      `<tr>
+        <td>${s.wp_idx}</td>
+        <td style="color:${cteColor(s.cte_mean)}">${s.cte_mean.toFixed(3)}</td>
+        <td style="color:${cteColor(s.cte_max)}">${s.cte_max.toFixed(3)}</td>
+        <td style="color:${cteColor(s.cte_rms)}">${s.cte_rms.toFixed(3)}</td>
+        <td>${s.duration_s.toFixed(1)}</td>
+        <td style="color:${s.rtk_pct > 80 ? '#0f0' : '#ff0'}">${s.rtk_pct.toFixed(0)}%</td>
+      </tr>`
+    ).join('');
+
+    // Load mission waypoints onto the map
+    if (d.mission_wps && d.mission_wps.length) {
+      waypoints = d.mission_wps.map((w, i) => ({...w, idx: i}));
+    }
+
+    fitAll();
+    status(`Analyzed ${o.n_points} pts · ${d.segments.length} segs · RMS CTE ${o.cte_rms.toFixed(3)} m`);
+  } catch(e) {
+    status('Analysis error: ' + e, '#e74c3c');
+  }
+}
+
+function drawAnalyzeTrack() {
+  if (!analyzeResult || !analyzeResult.track || !analyzeResult.track.length) return;
+  const track = analyzeResult.track;
+  // Draw colored track segments
+  for (let i = 1; i < track.length; i++) {
+    const a = project(track[i-1].lat, track[i-1].lon);
+    const b = project(track[i].lat,   track[i].lon);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = cteColor(track[i].cte);
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+  // Start marker (cyan dot)
+  const s = project(track[0].lat, track[0].lon);
+  ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#00bcd4'; ctx.fill();
+  // End marker (magenta dot)
+  const e = project(track[track.length-1].lat, track[track.length-1].lon);
+  ctx.beginPath(); ctx.arc(e.x, e.y, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#e040fb'; ctx.fill();
+}
+
 // ── Init ──────────────────────────────────────────────────────────
 resizeCanvas();
 </script>
@@ -1630,6 +1853,11 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f'[upload] handler error: {e}', flush=True)
                 self._json({'ok': False, 'message': f'Server error: {e}'})
+
+        elif self.path == '/analyze':
+            data = json.loads(raw)
+            result = _compute_analysis(data.get('log', ''), data.get('mission', ''))
+            self._json(result)
 
         elif self.path == '/export_csv':
             data = json.loads(raw)

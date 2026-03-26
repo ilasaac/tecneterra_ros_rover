@@ -434,7 +434,7 @@ class NavigatorNode(Node):
                 't', 'lat', 'lon', 'heading',
                 'target_brg', 'hdg_err', 'cte',
                 'steer_frac', 'steer_ppm', 'throttle_ppm',
-                'speed_tgt', 'dist_to_wp', 'wp_idx', 'algo',
+                'speed_tgt', 'dist_to_wp', 'wp_idx', 'algo', 'fix_quality',
             ])
             self.get_logger().info(f'Diagnostic log: {path}')
 
@@ -1978,6 +1978,7 @@ class NavigatorNode(Node):
                 round(dist_to_wp, 3),
                 self._path_idx,
                 'afs-straight',
+                self._fix.status.status if self._fix else -1,
             ])
             self._diag_file.flush()
 
@@ -2308,6 +2309,7 @@ class NavigatorNode(Node):
                 round(dist_to_wp, 3),
                 self._path_idx,
                 self._algo,
+                self._fix.status.status if self._fix else -1,
             ])
             self._diag_file.flush()
 
