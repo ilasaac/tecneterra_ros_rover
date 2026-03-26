@@ -6,7 +6,7 @@ Bridges ROS2 topics ↔ MAVLink v2 UDP to the Android GQC app.
 Outbound (ROS2 → MAVLink → GQC):
   HEARTBEAT          1 Hz   — sysid, armed state, mode
   GLOBAL_POSITION_INT  5 Hz — lat, lon from /fix
-  RC_CHANNELS        10 Hz  — raw PPM from /rc_input
+  RC_CHANNELS        10 Hz  — PPM from /cmd_override in AUTO, /rc_input otherwise
   SYS_STATUS          1 Hz  — battery, comms state
   NAMED_VALUE_FLOAT   1 Hz  — TANK, TEMP, HUMID, PRESSURE
   STATUSTEXT          on event — log/alert messages
@@ -110,8 +110,9 @@ class MavlinkBridgeNode(Node):
         self._mode        = 'MANUAL'
         self._heading_deg = None   # None until first heading message received
         self._boot_ms     = int(time.time() * 1000)
-        self._cmd_thr     = 1500   # last cmd_override throttle (CH1), for telemetry
-        self._cmd_str     = 1500   # last cmd_override steering (CH2), for telemetry
+        self._cmd_thr      = 1500        # last cmd_override throttle (CH1), for telemetry
+        self._cmd_str      = 1500        # last cmd_override steering (CH2), for telemetry
+        self._cmd_channels: list[int] = []  # full cmd_override channel list
         self._wp_active   = -1    # active waypoint seq from navigator (-1 = none)
         self._xte         = 0.0   # cross-track error from navigator (metres)
         self._mission_buf: list[MissionWaypoint] = []
@@ -201,11 +202,12 @@ class MavlinkBridgeNode(Node):
         self._heading_deg = msg.data
 
     def _cb_cmd_mon(self, msg: RCInput):
-        """Track cmd_override throttle/steering for telemetry broadcast."""
+        """Track cmd_override channels for autonomous RC_CHANNELS telemetry."""
         if len(msg.channels) > 0:
             self._cmd_thr = msg.channels[0]
         if len(msg.channels) > 1:
             self._cmd_str = msg.channels[1]
+        self._cmd_channels = list(msg.channels)
 
     def _cb_wp(self, msg: Int32):
         self._wp_active = msg.data
@@ -360,8 +362,14 @@ class MavlinkBridgeNode(Node):
         ))
 
     def _send_rc(self):
-        chs = list(self._rc.channels) + [0] * (18 - len(self._rc.channels))
-        chancount = len(self._rc.channels)
+        # In AUTONOMOUS mode show the actual PPM commands sent to the motors;
+        # in all other modes show the raw RC stick input.
+        if self._mode == 'AUTONOMOUS' and self._cmd_channels:
+            src = self._cmd_channels
+        else:
+            src = list(self._rc.channels)
+        chs = src + [0] * (18 - len(src))
+        chancount = len(src)
         self._send(self._mav.mav.rc_channels_encode(
             self._uptime_ms(), chancount, *chs[:18], 0))
 
