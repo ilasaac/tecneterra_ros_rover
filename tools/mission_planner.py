@@ -410,7 +410,7 @@ tr:hover td{background:#1e1e3a}
       </div>
       <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
         <span style="color:#8cf;font-size:10px">SSH user</span>
-        <input id="az-ssh-user" value="rover" size="6"
+        <input id="az-ssh-user" value="ilasa1" size="6"
                style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;font-size:11px;width:60px">
         <button class="btn-orange" style="padding:2px 8px;font-size:11px;flex:1" onclick="fetchRoverLog(1)">&#8595; RV1</button>
         <button class="btn-blue"   style="padding:2px 8px;font-size:11px;flex:1" onclick="fetchRoverLog(2)">&#8595; RV2</button>
@@ -1901,8 +1901,9 @@ class _Handler(BaseHTTPRequestHandler):
                 res = subprocess.run(
                     ['scp', '-o', 'StrictHostKeyChecking=no',
                      '-o', 'ConnectTimeout=5',
+                     '-o', 'BatchMode=yes',
                      f'{ssh_user}@{rover_ip}:{log_path}', tmp.name],
-                    capture_output=True, timeout=20)
+                    capture_output=True, timeout=10)
                 if res.returncode != 0:
                     err = res.stderr.decode(errors='replace').strip() or 'scp failed'
                     self._json({'error': err}); return
