@@ -44,6 +44,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val roverIconKeys   = HashMap<Int, Triple<Boolean, Boolean, Boolean>>()
     private val roverNavStatus  = HashMap<Int, String>()   // "NA" | "MSL" | "ARM"
     private val roverGpsFix    = HashMap<Int, Int>()       // GPS_RAW_INT fixType (0–6); 6=RTK_FIX
+    private val roverHaccMm    = HashMap<Int, Float>()     // UBX NAV-PVT hAcc in mm; -1 = not received
     private val roverPpmChannels = HashMap<Int, IntArray>()   // latest RC_CHANNELS per rover
 
     // Per-rover uploaded missions
@@ -315,6 +316,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         onParamValue = { _, name, value, _, _ ->
             runOnUiThread { updateParamField(name, value) }
         },
+
+        onHaccStatus = { sysId, haccMm ->
+            runOnUiThread { handleHaccChange(sysId, haccMm) }
+        },
     )
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -398,8 +403,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         // REC — toggles timed position recording with aux-channel servo capture
         btnRec.setOnClickListener {
-            if (roverGpsFix[selectedRoverId] != 6) {
-                Toast.makeText(this, "RTK not fixed — cannot record", Toast.LENGTH_SHORT).show()
+            if (!hasGoodAccuracy(selectedRoverId)) {
+                Toast.makeText(this, "GPS accuracy insufficient — cannot record", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             if (isRecording) stopRecording() else startRecording()
@@ -451,8 +456,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     return@setOnClickListener
                 }
             }
-            if (roverGpsFix[selectedRoverId] != 6) {
-                Toast.makeText(this, "RTK not fixed — cannot start autonomous", Toast.LENGTH_SHORT).show()
+            if (!hasGoodAccuracy(selectedRoverId)) {
+                Toast.makeText(this, "GPS accuracy insufficient — cannot start autonomous", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             roverManager.sendCommand(selectedRoverId, 400, 1f, 0f)  // ARM
@@ -609,20 +614,29 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
      * Acts only on the transition fixed→not-fixed (wasFixed && !isFixed) to avoid
      * firing the dialog on every GPS update.
      */
+    /**
+     * Returns true if the rover has acceptable GPS accuracy for recording/autonomous.
+     * When hAcc data is available (>= 0), uses hAcc <= 200 mm as the criterion.
+     * Falls back to fix type >= 5 (RTK_FLOAT or better) when hAcc is not yet received.
+     */
+    private fun hasGoodAccuracy(sysId: Int): Boolean {
+        val hacc = roverHaccMm[sysId] ?: -1f
+        return if (hacc >= 0f) hacc <= 200f else (roverGpsFix[sysId] ?: 0) >= 5
+    }
+
     private fun handleRtkChange(sysId: Int, fixType: Int) {
-        val wasFixed = roverGpsFix[sysId] == 6
         roverGpsFix[sysId] = fixType
-        val isFixed = fixType == 6
 
         if (sysId == selectedRoverId) updateRecButtonState()
 
-        if (wasFixed && !isFixed) {
-            // Recording: stop immediately when RTK is lost
+        // Fix-type disarm is the fallback when UBX hAcc data is not available.
+        // If hAcc is being received, handleHaccChange() handles accuracy-based disarm.
+        val haccActive = (roverHaccMm[sysId] ?: -1f) >= 0f
+        if (!haccActive && fixType < 5) {
             if (isRecording && sysId == selectedRoverId) {
                 stopRecording()
                 Toast.makeText(this, "Recording stopped — RTK fix lost", Toast.LENGTH_LONG).show()
             }
-            // Autonomous: disarm if rover was armed
             if (roverArmed[sysId] == true) {
                 roverManager.sendCriticalCommand(sysId, 400, 0f, 0f)
                 AlertDialog.Builder(this)
@@ -635,9 +649,39 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    /** Gray out the REC button when the selected rover has no RTK fix. */
+    /**
+     * Called when hAcc (horizontal accuracy) is received from a rover.
+     * Disarms and alerts when accuracy degrades beyond 200 mm.
+     */
+    private fun handleHaccChange(sysId: Int, haccMm: Float) {
+        val wasGood = hasGoodAccuracy(sysId)
+        roverHaccMm[sysId] = haccMm
+        val isGood = hasGoodAccuracy(sysId)
+
+        if (sysId == selectedRoverId) updateRecButtonState()
+
+        if (wasGood && !isGood) {
+            if (isRecording && sysId == selectedRoverId) {
+                stopRecording()
+                Toast.makeText(this,
+                    "Recording stopped — GPS accuracy degraded (${haccMm.toInt()} mm > 200 mm)",
+                    Toast.LENGTH_LONG).show()
+            }
+            if (roverArmed[sysId] == true) {
+                roverManager.sendCriticalCommand(sysId, 400, 0f, 0f)
+                AlertDialog.Builder(this)
+                    .setTitle("⚠ GPS Accuracy Degraded — Rover $sysId Stopped")
+                    .setMessage("GPS accuracy ${haccMm.toInt()} mm exceeds 200 mm limit.\nRover $sysId has been disarmed.")
+                    .setCancelable(false)
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }
+    }
+
+    /** Gray out the REC button when the selected rover has insufficient GPS accuracy. */
     private fun updateRecButtonState() {
-        btnRec.alpha = if (roverGpsFix[selectedRoverId] == 6) 1.0f else 0.4f
+        btnRec.alpha = if (hasGoodAccuracy(selectedRoverId)) 1.0f else 0.4f
     }
 
     private fun updateNavStatus(sysId: Int, status: String) {

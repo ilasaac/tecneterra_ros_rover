@@ -66,6 +66,7 @@ _MAVLINK_PARAMS: dict[str, str] = {
     'AFS_MIN_THR':  'afs_min_throttle_ppm',
     'MIN_STEER_PPM':   'min_steer_ppm_delta',
     'STEER_COAST_ANG': 'steer_coast_angle',
+    'GPS_ACC_ALARM':   'gps_accuracy_alarm_mm',
 }
 _MAVLINK_PARAM_LIST: list[str] = list(_MAVLINK_PARAMS.keys())  # stable ordered list
 
@@ -128,6 +129,7 @@ class MavlinkBridgeNode(Node):
         # _mission_expect_seq: next seq we're waiting for; None when no upload active.
         # _mission_last_req_t: monotonic time of last MISSION_REQUEST_INT sent.
         self._rtk_status  = 'NO_FIX'   # latest string from gps_driver rtk_status topic
+        self._hacc_mm     = -1.0       # horizontal accuracy from UBX NAV-PVT (mm); -1 = unknown
         self._nav_params: dict[str, float] = {}  # latest nav_params JSON from navigator.py
         self._path_version        = 0
         self._last_rerouted_json  = '[]'
@@ -154,6 +156,7 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(String,       'rerouted_path', self._cb_rerouted_path,  10)
         self.create_subscription(Int32,        'path_version',  self._cb_path_version,   10)
         self.create_subscription(String,       'rtk_status',    self._cb_rtk_status,     10)
+        self.create_subscription(Float32,      'hacc',          self._cb_hacc,           10)
         self.create_subscription(String,       'nav_params',    self._cb_nav_params,     10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
@@ -189,6 +192,7 @@ class MavlinkBridgeNode(Node):
     def _cb_sensors(self, msg: SensorData):      self._sensors = msg
     def _cb_status(self, msg: RoverStatus):      self._status = msg
     def _cb_rtk_status(self, msg: String):       self._rtk_status = msg.data
+    def _cb_hacc(self, msg: Float32):            self._hacc_mm = msg.data
 
     def _cb_mode(self, msg: String):
         self._mode = msg.data
@@ -388,6 +392,7 @@ class MavlinkBridgeNode(Node):
             ('SBUS_OK',  1.0 if self._rc.sbus_ok   else 0.0),
             ('RF_OK',    1.0 if self._rc.rf_link_ok else 0.0),
             ('RTK',      float(self._RTK_FIX_TYPE.get(self._rtk_status, 0))),
+            ('HACC',     self._hacc_mm),
             ('PATH_VER', float(self._path_version)),
         ]
         for name, value in pairs:

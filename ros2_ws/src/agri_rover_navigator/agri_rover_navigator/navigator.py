@@ -111,6 +111,7 @@ _PARAM_META: dict = {
     'afs_min_throttle_ppm':      ('_min_throttle_ppm',   1500, 1900),
     'min_steer_ppm_delta':   ('_min_steer_delta',    0,  400),
     'steer_coast_angle':     ('_steer_coast',        0.0, 60.0),
+    'gps_accuracy_alarm_mm': ('_gps_acc_alarm',     -1.0, 2000.0),
 }
 
 
@@ -323,6 +324,12 @@ class NavigatorNode(Node):
         self.declare_parameter('mpc_w_dsteer',               0.05)
         self.declare_parameter('wheelbase_m',                0.6)
 
+        # ── GPS accuracy alarm ─────────────────────────────────────────────────
+        # gps_accuracy_alarm_mm: hAcc from UBX NAV-PVT above which the rover halts
+        #   and an alert is issued.  Only active when hacc > 0 (UBX data received).
+        #   -1 disables the alarm.  Typical: 200 mm (0.20 m) for RTK-class accuracy.
+        self.declare_parameter('gps_accuracy_alarm_mm', 200.0)
+
         # ── Inter-rover proximity safety ──────────────────────────────────────
         # peer_rover_ns: absolute ROS2 namespace of the other rover (e.g. '/rv2').
         #   Leave empty '' to disable proximity safety (single-rover mode).
@@ -366,6 +373,7 @@ class NavigatorNode(Node):
         self._min_throttle_ppm    = self.get_parameter('afs_min_throttle_ppm').value
         self._min_steer_delta = self.get_parameter('min_steer_ppm_delta').value
         self._steer_coast     = self.get_parameter('steer_coast_angle').value
+        self._gps_acc_alarm   = self.get_parameter('gps_accuracy_alarm_mm').value
         self._ttr_hpid    = _PID(self.get_parameter('ttr_hight_kp').value,
                                   self.get_parameter('ttr_hight_ki').value,
                                   self.get_parameter('ttr_hight_kd').value)
@@ -404,6 +412,7 @@ class NavigatorNode(Node):
         self._mode:      str              = 'MANUAL'
         self._armed:     bool             = False
         self._paused:    bool             = False
+        self._hacc_mm:   float            = -1.0   # UBX NAV-PVT hAcc in mm; -1 = not received
 
         # Inter-rover proximity state
         self._peer_fix:       NavSatFix | None = None
@@ -436,7 +445,7 @@ class NavigatorNode(Node):
                 't', 'lat', 'lon', 'heading',
                 'target_brg', 'hdg_err', 'cte',
                 'steer_frac', 'steer_ppm', 'throttle_ppm',
-                'speed_tgt', 'dist_to_wp', 'wp_idx', 'algo', 'fix_quality',
+                'speed_tgt', 'dist_to_wp', 'wp_idx', 'algo', 'fix_quality', 'hacc_mm',
             ])
             self.get_logger().info(f'Diagnostic log: {path}')
 
@@ -505,6 +514,7 @@ class NavigatorNode(Node):
         self.create_subscription(RCInput,         'servo_state',   self._cb_servo_state,  10)
         self.create_subscription(Bool,            'mission_clear', self._cb_mission_clear, 10)
         self.create_subscription(String,          'mission_fence', self._cb_mission_fence, 10)
+        self.create_subscription(Float32,         'hacc',          self._cb_hacc,          10)
 
         # ── Inter-rover proximity subscriptions (cross-namespace, absolute paths) ──
         peer_ns = self.get_parameter('peer_rover_ns').value
@@ -625,6 +635,9 @@ class NavigatorNode(Node):
 
     def _cb_heading(self, msg: Float32):
         self._heading = msg.data
+
+    def _cb_hacc(self, msg: Float32):
+        self._hacc_mm = msg.data
 
     def _cb_mode(self, msg: String):
         self._mode = msg.data
@@ -1981,6 +1994,7 @@ class NavigatorNode(Node):
                 self._path_idx,
                 'afs-straight',
                 self._fix.status.status if self._fix else -1,
+                round(self._hacc_mm, 1),
             ])
             self._diag_file.flush()
 
@@ -2000,6 +2014,15 @@ class NavigatorNode(Node):
                 return   # all chunks complete
         if self._fix is None or (time.time() - self._fix_time) > self._gps_timeout:
             self.get_logger().warn('GPS stale — halting')
+            self._publish_halt()
+            return
+
+        # ── GPS accuracy alarm ─────────────────────────────────────────────────
+        if (self._gps_acc_alarm > 0 and self._hacc_mm > 0
+                and self._hacc_mm > self._gps_acc_alarm):
+            self.get_logger().warn(
+                f'GPS accuracy degraded: hAcc={self._hacc_mm:.0f} mm '
+                f'> alarm={self._gps_acc_alarm:.0f} mm — halting')
             self._publish_halt()
             return
 
@@ -2321,6 +2344,7 @@ class NavigatorNode(Node):
                 self._path_idx,
                 self._algo,
                 self._fix.status.status if self._fix else -1,
+                round(self._hacc_mm, 1),
             ])
             self._diag_file.flush()
 

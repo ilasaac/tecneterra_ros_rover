@@ -1,14 +1,15 @@
 """
 agri_rover_gps — gps_driver node
 
-Reads two uBlox RTK GPS receivers over serial (NMEA 0183).
-  Primary GPS   → position (GGA), speed (VTG)
+Reads two uBlox RTK GPS receivers over serial (NMEA 0183 + UBX binary).
+  Primary GPS   → position (GGA), speed (VTG), accuracy (UBX NAV-PVT hAcc)
   Secondary GPS → position used to compute heading via baseline vector
 
 Publishes:
   ~/fix          (sensor_msgs/NavSatFix)   — primary position, up to publish_rate Hz
   ~/heading      (std_msgs/Float32)        — degrees from north, up to publish_rate Hz
   ~/rtk_status   (std_msgs/String)         — NO_FIX|GPS|DGPS|RTK_FLT|RTK_FIX
+  ~/hacc         (std_msgs/Float32)        — horizontal accuracy estimate in mm (-1 = unknown)
 
 Note: publish_rate (default 25 Hz) is the timer rate; actual publish rate is bounded
 by the GPS hardware NMEA output rate. A message is only published when new primary
@@ -70,9 +71,11 @@ class GpsDriverNode(Node):
         self.fix_front_pub = self.create_publisher(NavSatFix, 'fix_front',  10)
         self.head_pub      = self.create_publisher(Float32,   'heading',    10)
         self.status_pub    = self.create_publisher(String,    'rtk_status', 10)
+        self.hacc_pub      = self.create_publisher(Float32,   'hacc',       10)
 
         # ── GPS state ────────────────────────────────────────────────────────
-        self._primary          = {'lat': 0.0, 'lon': 0.0, 'fix': '0', 'hdop': 99.9}
+        self._primary          = {'lat': 0.0, 'lon': 0.0, 'fix': '0', 'hdop': 99.9,
+                                  'hacc_mm': -1}
         self._secondary        = {'lat': 0.0, 'lon': 0.0}
         self._vtg_heading      = None   # degrees, filled when heading_source=='vtg'
         self._lock             = threading.Lock()
@@ -128,12 +131,17 @@ class GpsDriverNode(Node):
         # CFG-MSG: GGA on UART1 (idx 1) and USB (idx 3) at rate 1
         ser.write(_build(0x06, 0x01, bytes([0xF0, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00])))
         time.sleep(0.05)
+        # CFG-MSG: NAV-PVT (class=0x01, id=0x07) on UART1+USB at rate 1 — provides hAcc
+        ser.write(_build(0x06, 0x01, bytes([0x01, 0x07, 0, 1, 0, 1, 0, 0])))
+        time.sleep(0.05)
 
         # ── CFG-VALSET (F9P / X20P / generation 9+) ─────────────────────────
         # Key IDs (little-endian 32-bit):
-        #   CFG-RATE-MEAS              0x30210001  U2  measurement period ms
-        #   CFG-MSGOUT-NMEA_ID_GGA_UART1  0x20910029  U1  GGA rate on UART1
-        #   CFG-MSGOUT-NMEA_ID_GGA_USB    0x2091002B  U1  GGA rate on USB
+        #   CFG-RATE-MEAS                    0x30210001  U2  measurement period ms
+        #   CFG-MSGOUT-NMEA_ID_GGA_UART1     0x20910029  U1  GGA rate on UART1
+        #   CFG-MSGOUT-NMEA_ID_GGA_USB       0x2091002B  U1  GGA rate on USB
+        #   CFG-MSGOUT-UBX_NAV_PVT_UART1     0x20910007  U1  NAV-PVT on UART1
+        #   CFG-MSGOUT-UBX_NAV_PVT_USB       0x20910009  U1  NAV-PVT on USB
         def _key(k: int) -> bytes:
             return k.to_bytes(4, 'little')
 
@@ -142,6 +150,8 @@ class GpsDriverNode(Node):
             + _key(0x30210001) + period_ms.to_bytes(2, 'little')  # CFG-RATE-MEAS
             + _key(0x20910029) + bytes([0x01])         # GGA on UART1
             + _key(0x2091002B) + bytes([0x01])         # GGA on USB
+            + _key(0x20910007) + bytes([0x01])         # NAV-PVT on UART1
+            + _key(0x20910009) + bytes([0x01])         # NAV-PVT on USB
         )
         ser.write(_build(0x06, 0x8A, valset_payload))
         time.sleep(0.05)
@@ -168,7 +178,7 @@ class GpsDriverNode(Node):
             f'GGA+VTG only (legacy + VALSET + PUBX,40)'
         )
 
-    # ── Serial reader thread ──────────────────────────────────────────────────
+    # ── Serial reader threads ─────────────────────────────────────────────────
 
     def _start_reader(self, port: str, baud: int, is_primary: bool):
         def run():
@@ -183,15 +193,84 @@ class GpsDriverNode(Node):
                 return
             self._ubx_configure(ser)
             self.get_logger().info(f'GPS port {port} opened')
-            while rclpy.ok():
-                try:
-                    line = ser.readline().decode('ascii', errors='ignore').strip()
-                except serial.SerialException:
-                    break
-                self._parse_nmea(line, is_primary)
+            if is_primary:
+                self._primary_read_loop(ser)
+            else:
+                self._nmea_read_loop(ser, is_primary=False)
 
         t = threading.Thread(target=run, daemon=True)
         t.start()
+
+    def _nmea_read_loop(self, ser: 'serial.Serial', is_primary: bool):
+        """Simple readline-based NMEA reader for the secondary port."""
+        while rclpy.ok():
+            try:
+                line = ser.readline().decode('ascii', errors='ignore').strip()
+            except serial.SerialException:
+                break
+            self._parse_nmea(line, is_primary)
+
+    def _primary_read_loop(self, ser: 'serial.Serial'):
+        """Byte-buffer reader for the primary port — handles both NMEA and UBX binary."""
+        buf = bytearray()
+        while rclpy.ok():
+            try:
+                chunk = ser.read(ser.in_waiting or 1)
+            except serial.SerialException:
+                break
+            buf.extend(chunk)
+
+            while buf:
+                b0 = buf[0]
+                if b0 == ord('$'):
+                    # NMEA sentence — read until newline
+                    nl = buf.find(b'\n')
+                    if nl < 0:
+                        break  # incomplete, wait for more bytes
+                    line = buf[:nl + 1].decode('ascii', errors='ignore').strip()
+                    buf = buf[nl + 1:]
+                    self._parse_nmea(line, is_primary=True)
+                elif b0 == 0xB5:
+                    # Potential UBX frame — need at least sync byte 2
+                    if len(buf) < 2:
+                        break
+                    if buf[1] != 0x62:
+                        buf = buf[1:]   # not a valid UBX sync — discard first byte
+                        continue
+                    if len(buf) < 6:
+                        break  # need class + id + 2-byte length
+                    payload_len = buf[4] | (buf[5] << 8)
+                    frame_len = 6 + payload_len + 2   # header + payload + checksum
+                    if len(buf) < frame_len:
+                        break  # incomplete frame, wait for more bytes
+                    self._parse_ubx(bytes(buf[:frame_len]))
+                    buf = buf[frame_len:]
+                else:
+                    buf = buf[1:]   # skip unknown byte
+
+    # ── UBX binary parsing ────────────────────────────────────────────────────
+
+    def _parse_ubx(self, frame: bytes):
+        """Parse one complete UBX frame. Currently extracts hAcc from NAV-PVT."""
+        # Frame layout: 0xB5 0x62 cls id len_lo len_hi <payload> ck_a ck_b
+        cls = frame[2]
+        mid = frame[3]
+        payload_len = frame[4] | (frame[5] << 8)
+        payload = frame[6:6 + payload_len]
+
+        # Verify Fletcher checksum over bytes [2 .. 5 + payload_len]
+        ck_a = ck_b = 0
+        for b in frame[2:6 + payload_len]:
+            ck_a = (ck_a + b) & 0xFF
+            ck_b = (ck_b + ck_a) & 0xFF
+        if ck_a != frame[-2] or ck_b != frame[-1]:
+            return  # checksum mismatch — discard
+
+        if cls == 0x01 and mid == 0x07 and len(payload) >= 44:
+            # NAV-PVT: horizontal accuracy estimate at payload offset 40, uint32 LE, mm
+            hacc_mm = int.from_bytes(payload[40:44], 'little')
+            with self._lock:
+                self._primary['hacc_mm'] = hacc_mm
 
     # ── NMEA parsing ─────────────────────────────────────────────────────────
 
@@ -308,6 +387,11 @@ class GpsDriverNode(Node):
         status_msg      = String()
         status_msg.data = FIX_QUALITY.get(p['fix'], 'UNKNOWN')
         self.status_pub.publish(status_msg)
+
+        # Horizontal accuracy from UBX NAV-PVT (-1 = not yet received)
+        hacc_msg      = Float32()
+        hacc_msg.data = float(p.get('hacc_mm', -1))
+        self.hacc_pub.publish(hacc_msg)
 
 
 def main(args=None):

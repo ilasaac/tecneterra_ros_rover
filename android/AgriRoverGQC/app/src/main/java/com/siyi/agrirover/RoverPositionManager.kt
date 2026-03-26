@@ -87,6 +87,11 @@ class RoverPositionManager(
      * value: current float value.  index: 0-based index.  count: total param count.
      */
     private val onParamValue: (sysId: Int, name: String, value: Float, index: Int, count: Int) -> Unit,
+    /**
+     * Called when NAMED_VALUE_FLOAT "HACC" is received.
+     * sysId: rover system ID.  haccMm: horizontal accuracy estimate in mm (-1 = unknown).
+     */
+    private val onHaccStatus: (Int, Float) -> Unit,
 ) {
     private val PORT        = 14550
     private val MASTER_SYSID = 1
@@ -675,6 +680,9 @@ class RoverPositionManager(
                     }
                     "RTK"     -> scope.launch(Dispatchers.Main) {
                         onGpsStatus(senderId, value.toInt())
+                    }
+                    "HACC"    -> scope.launch(Dispatchers.Main) {
+                        onHaccStatus(senderId, value)
                     }
                     "WP_ACT"  -> scope.launch(Dispatchers.Main) {
                         onMissionProgress(senderId, value.toInt())
