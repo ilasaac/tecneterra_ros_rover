@@ -404,9 +404,16 @@ tr:hover td{background:#1e1e3a}
     <div class="section" style="background:#0d1a2e">
       <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
         <span style="color:#8cf;font-size:10px">Log CSV</span>
-        <button class="btn-blue" style="padding:2px 7px;font-size:11px" onclick="document.getElementById('az-log-input').click()">Browse</button>
-        <span id="az-log-name" style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">no file selected</span>
+        <button class="btn-blue" style="padding:2px 7px;font-size:11px" onclick="document.getElementById('az-log-input').click()">&#128194; Browse</button>
+        <span id="az-log-name" style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">no file</span>
         <input type="file" id="az-log-input" accept=".csv" style="display:none" onchange="onLogFileSelect(event)">
+      </div>
+      <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
+        <span style="color:#8cf;font-size:10px">SSH user</span>
+        <input id="az-ssh-user" value="rover" size="6"
+               style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;font-size:11px;width:60px">
+        <button class="btn-orange" style="padding:2px 8px;font-size:11px;flex:1" onclick="fetchRoverLog(1)">&#8595; RV1</button>
+        <button class="btn-blue"   style="padding:2px 8px;font-size:11px;flex:1" onclick="fetchRoverLog(2)">&#8595; RV2</button>
       </div>
       <div style="display:flex;gap:3px;align-items:center">
         <span style="color:#8cf;font-size:10px">Mission</span>
@@ -1630,6 +1637,27 @@ function onLogFileSelect(event) {
   reader.readAsText(f);
 }
 
+async function fetchRoverLog(roverNum) {
+  const ip   = document.getElementById(`r-ip-rv${roverNum}`).value.trim();
+  const user = document.getElementById('az-ssh-user').value.trim() || 'rover';
+  if (!ip) { status(`Set RV${roverNum} IP in the upload panel first.`, '#e74c3c'); return; }
+  status(`Fetching navigator_diag.csv from RV${roverNum} (${ip})…`, '#888');
+  try {
+    const resp = await fetch('/fetch_rover_log', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip, user, path: '/tmp/navigator_diag.csv'}),
+    });
+    const d = await resp.json();
+    if (d.error) { status(`RV${roverNum} fetch error: ${d.error}`, '#e74c3c'); return; }
+    logFileData = d.content;
+    document.getElementById('az-log-name').textContent = `RV${roverNum} @ ${ip}`;
+    status(`Log loaded from RV${roverNum} (${ip}) — click Run to analyze`, '#27ae60');
+  } catch(e) {
+    status('Fetch error: ' + e, '#e74c3c');
+  }
+}
+
 async function runAnalysis() {
   if (!logFileData) { status('Select a log CSV file first.', '#e74c3c'); return; }
   const missionName = document.getElementById('az-m-select').value;
@@ -1858,6 +1886,38 @@ class _Handler(BaseHTTPRequestHandler):
             data = json.loads(raw)
             result = _compute_analysis(data.get('log', ''), data.get('mission', ''))
             self._json(result)
+
+        elif self.path == '/fetch_rover_log':
+            import subprocess, tempfile, os as _os2
+            data     = json.loads(raw)
+            rover_ip = data.get('ip', '').strip()
+            ssh_user = (data.get('user', '') or 'rover').strip()
+            log_path = data.get('path', '/tmp/navigator_diag.csv')
+            if not rover_ip:
+                self._json({'error': 'rover IP required'}); return
+            tmp = tempfile.NamedTemporaryFile(suffix='.csv', delete=False)
+            tmp.close()
+            try:
+                res = subprocess.run(
+                    ['scp', '-o', 'StrictHostKeyChecking=no',
+                     '-o', 'ConnectTimeout=5',
+                     f'{ssh_user}@{rover_ip}:{log_path}', tmp.name],
+                    capture_output=True, timeout=20)
+                if res.returncode != 0:
+                    err = res.stderr.decode(errors='replace').strip() or 'scp failed'
+                    self._json({'error': err}); return
+                with open(tmp.name, encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                self._json({'ok': True, 'content': content})
+            except FileNotFoundError:
+                self._json({'error': 'scp not found — install OpenSSH client'})
+            except subprocess.TimeoutExpired:
+                self._json({'error': f'Connection to {rover_ip} timed out'})
+            except Exception as e:
+                self._json({'error': str(e)})
+            finally:
+                try: _os2.unlink(tmp.name)
+                except: pass
 
         elif self.path == '/export_csv':
             data = json.loads(raw)
