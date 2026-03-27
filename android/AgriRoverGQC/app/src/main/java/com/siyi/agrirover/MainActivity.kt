@@ -596,8 +596,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             1    -> "NO FIX"  to "#F44336"
             else -> "NO GPS"  to "#888888"
         }
+        val hacc = roverHaccMm[sysId] ?: -1f
+        val haccStr = if (hacc >= 0f) "  ${hacc.toInt()}mm" else ""
         val view = if (sysId == 1) txtRv1Rtk else txtRv2Rtk
-        view.text = text
+        view.text = text + haccStr
         view.setTextColor(Color.parseColor(colorHex))
     }
 
@@ -658,6 +660,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         roverHaccMm[sysId] = haccMm
         val isGood = hasGoodAccuracy(sysId)
 
+        updateRtkLabel(sysId, roverGpsFix[sysId] ?: 0)
         if (sysId == selectedRoverId) updateRecButtonState()
 
         if (wasGood && !isGood) {

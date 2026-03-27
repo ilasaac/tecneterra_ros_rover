@@ -556,17 +556,19 @@ class RoverPositionManager(
                 val armed = (payload.baseMode().value() and 128) != 0
                 scope.launch(Dispatchers.Main) { onArmState(senderId, armed) }
 
-                // Check RC ↔ UDP state consistency after every slave heartbeat
-                if (senderId == SLAVE_SYSID) checkLinkMismatch()
+                // Check state consistency on every heartbeat from either rover
+                if (senderId == SLAVE_SYSID || senderId == MASTER_SYSID) checkLinkMismatch()
             }
 
             // GLOBAL_POSITION_INT (#33) — rover GPS position
             is GlobalPositionInt -> {
                 // Discard out-of-order packets (garden AP / any WiFi can reorder UDP).
                 // time_boot_ms is uint32 sent by mavlink_bridge — monotonically increasing.
+                // Exception: a large backward jump (> 30 s) means the rover restarted —
+                // accept the packet so indicators resume updating after a Docker restart.
                 val tMs = payload.timeBootMs().toLong() and 0xFFFFFFFFL
                 val lastTms = roverLastPosTms[senderId] ?: -1L
-                if (tMs <= lastTms) return
+                if (tMs <= lastTms && lastTms - tMs < 30_000L) return
                 roverLastPosTms[senderId] = tMs
                 val lat = payload.lat() / 1e7
                 val lon = payload.lon() / 1e7
@@ -650,11 +652,12 @@ class RoverPositionManager(
                 // Discard out-of-order/duplicate packets (broadcast + unicast both arrive).
                 // Per-name tracking: all names in one batch share the same timestamp, so a
                 // per-rover guard would drop every name after the first in each batch.
+                // Exception: a large backward jump (> 30 s) means the rover restarted.
                 val tMs  = payload.timeBootMs().toLong() and 0xFFFFFFFFL
                 val name = payload.name().trimEnd('\u0000')
                 val perRover = roverLastNvfTms.getOrPut(senderId) { HashMap() }
                 val lastTms  = perRover[name] ?: -1L
-                if (tMs <= lastTms) return
+                if (tMs <= lastTms && lastTms - tMs < 30_000L) return
                 perRover[name] = tMs
                 val value = payload.value()
                 when (name) {
@@ -704,9 +707,10 @@ class RoverPositionManager(
             is RcChannels -> {
                 // Discard out-of-order/duplicate packets (sent at 10 Hz; broadcast + unicast
                 // both arrive, so each real update generates two packets with the same timestamp).
+                // Exception: a large backward jump (> 30 s) means the rover restarted.
                 val tMs = payload.timeBootMs().toLong() and 0xFFFFFFFFL
                 val lastRc = roverLastRcTms[senderId] ?: -1L
-                if (tMs <= lastRc) return
+                if (tMs <= lastRc && lastRc - tMs < 30_000L) return
                 roverLastRcTms[senderId] = tMs
                 val raw = intArrayOf(
                     payload.chan1Raw(),  payload.chan2Raw(),  payload.chan3Raw(),
@@ -786,31 +790,35 @@ class RoverPositionManager(
     // ─── Mismatch detection ───────────────────────────────────────────────────
 
     /**
-     * Compares the physical RC switch state (from master's RC_CHANNELS) against
+     * Compares the master rover's reported mode (from HEARTBEAT flags) against
      * what the slave rover is actually applying (from slave's HEARTBEAT flags).
      *
-     * A mismatch means the safety commands (emergency / mode) are not reaching
-     * the slave correctly.  After MISMATCH_TIMEOUT_MS of persistence, the
-     * onLinkMismatch callback fires so the app can stop everything and warn the user.
+     * Both sides use HEARTBEAT — not RC_CHANNELS — because in AUTO mode the master
+     * RP2040 outputs navigator-commanded PPM values on serial (commit 37dc7e5), not
+     * raw switch positions.  Reading SWA/SWB from RC_CHANNELS in that state would
+     * incorrectly see 1500 (neutral) and fire a false emergency mismatch.
+     *
+     * mavlink_bridge sets the flags correctly from the RP2040 mode string:
+     *   MAV_STATE_EMERGENCY          → mode == 'EMERGENCY'
+     *   MAV_MODE_FLAG_GUIDED_ENABLED → mode == 'AUTONOMOUS'
      *
      * Conditions checked:
-     *   • Emergency active on master (SWA < 1700) but slave NOT in emergency  [safety-critical]
-     *   • Master back to MANUAL (SWB < 1700) but slave still in autonomous    [safety-critical]
+     *   • Master in EMERGENCY but slave NOT in emergency  [safety-critical]
+     *   • Master NOT autonomous but slave still running autonomous  [safety-critical]
      *   NOTE: master→AUTO but slave→IDLE is intentionally NOT flagged — slave is
      *   stopped (safe); it will go autonomous once its navigator connects.
      */
     private fun checkLinkMismatch() {
-        val masterChannels = roverPpmChannels[MASTER_SYSID]
-        if (masterChannels == null || masterChannels.size < 4) return
-
         val slaveConnected = (roverLastHb[SLAVE_SYSID] ?: 0L) >
                               System.currentTimeMillis() - 3000L
         // Only check mismatch when slave is connected; disconnection is
         // handled separately by the watchdog → onConnectionChange callback.
         if (!slaveConnected) { mismatchStart = null; return }
 
-        val masterEmergency  = masterChannels[2] < EMERGENCY_THRESHOLD
-        val masterAutonomous = masterChannels[3] > AUTONOMOUS_THRESHOLD
+        val masterBase   = roverBaseMode[MASTER_SYSID]  ?: return
+        val masterStatus = roverSysStatus[MASTER_SYSID] ?: return
+        val masterEmergency  = masterStatus == 6               // MAV_STATE_EMERGENCY
+        val masterAutonomous = (masterBase and 0x08) != 0      // MAV_MODE_FLAG_GUIDED_ENABLED
 
         val slaveBase   = roverBaseMode[SLAVE_SYSID]  ?: return
         val slaveStatus = roverSysStatus[SLAVE_SYSID] ?: return

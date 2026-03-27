@@ -208,12 +208,24 @@ def _start_snooper():
                             'hdg': hdg / 100.0 if hdg != 65535 else None,
                             'ts': _time.time(),
                         }
+                elif t == 'RC_CHANNELS':
+                    with _rover_live_lock:
+                        live = _rover_live.get(sysid)
+                        if live:
+                            live['servos'] = {
+                                5: msg.chan5_raw, 6: msg.chan6_raw,
+                                7: msg.chan7_raw, 8: msg.chan8_raw,
+                            }
                 elif t == 'MISSION_COUNT':
-                    buf[sysid] = {'count': msg.count, 'nav': {}, 'fence': []}
+                    buf[sysid] = {'count': msg.count, 'nav': {}, 'fence': [], 'servos': {}}
                 elif t == 'MISSION_ITEM_INT' and sysid in buf:
                     b = buf[sysid]
                     if msg.command == 5003:
                         b['fence'].append((msg.x / 1e7, msg.y / 1e7, int(msg.param1)))
+                    elif msg.command == 183:
+                        snum = int(msg.param1)
+                        if snum in (5, 6, 7, 8):
+                            b['servos'][snum] = int(msg.param2)
                     elif msg.command == 16:
                         b['nav'][msg.seq] = {
                             'lat': msg.x / 1e7, 'lon': msg.y / 1e7,
@@ -226,6 +238,7 @@ def _start_snooper():
                         with _snooped_lock:
                             _snooped.clear()
                             _snooped.update({'waypoints': wps, 'obstacles': obs,
+                                             'servos': b.get('servos', {}),
                                              'rover': sysid, 'ts': _time.time()})
                         print(f'[snoop] RV{sysid}: {len(wps)} wps, '
                               f'{len(obs)} obstacles captured', flush=True)
@@ -234,7 +247,8 @@ def _start_snooper():
 
 # ── MAVLink upload to rover ────────────────────────────────────────────────────
 def _mavlink_upload(waypoints: list, obstacles: list,
-                    rover_ip: str, rover_port: int, rover_sysid: int) -> dict:
+                    rover_ip: str, rover_port: int, rover_sysid: int,
+                    servos: dict | None = None) -> dict:
     """Upload mission to rover using GQC streaming protocol (no wait for REQUEST_INT)."""
     os.environ.setdefault('MAVLINK20', '1')
     try:
@@ -249,6 +263,11 @@ def _mavlink_upload(waypoints: list, obstacles: list,
             for v in poly:
                 items.append({'cmd': 5003, 'p1': float(n), 'p2': 0.0, 'p3': 0.0, 'p4': 0.0,
                               'lat': float(v[0]), 'lon': float(v[1]), 'z': 0.0})
+        svs = {int(k): int(v) for k, v in (servos or {}).items()}
+        for servo_num in (5, 6, 7, 8):
+            pwm = max(1000, min(2000, svs.get(servo_num, 1500)))
+            items.append({'cmd': 183, 'p1': float(servo_num), 'p2': float(pwm),
+                          'p3': 0.0, 'p4': 0.0, 'lat': 0.0, 'lon': 0.0, 'z': 0.0})
         for wp in waypoints:
             items.append({'cmd': 16, 'p1': 0.0,
                           'p2': float(wp.get('acceptance_radius') or DEFAULT_NAV['default_acceptance_radius']),
@@ -376,6 +395,24 @@ tr:hover td{background:#1e1e3a}
       </select>
       <button class="btn-blue" style="padding:3px 7px;font-size:11px" onclick="loadMission()">Load</button>
     </div>
+  </div>
+  <div class="section" style="background:#091a09">
+    <div style="color:#5d9;font-size:10px;margin-bottom:3px">&#9881; Servo CH5–CH8</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:3px">
+      <div><div style="color:#888;font-size:9px;text-align:center">CH5</div>
+           <input id="svo-5" type="number" min="1000" max="2000" step="50" value="1500"
+                  style="width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 2px;border-radius:2px;font-size:10px;text-align:center"></div>
+      <div><div style="color:#888;font-size:9px;text-align:center">CH6</div>
+           <input id="svo-6" type="number" min="1000" max="2000" step="50" value="1500"
+                  style="width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 2px;border-radius:2px;font-size:10px;text-align:center"></div>
+      <div><div style="color:#888;font-size:9px;text-align:center">CH7</div>
+           <input id="svo-7" type="number" min="1000" max="2000" step="50" value="1500"
+                  style="width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 2px;border-radius:2px;font-size:10px;text-align:center"></div>
+      <div><div style="color:#888;font-size:9px;text-align:center">CH8</div>
+           <input id="svo-8" type="number" min="1000" max="2000" step="50" value="1500"
+                  style="width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 2px;border-radius:2px;font-size:10px;text-align:center"></div>
+    </div>
+    <div id="servo-live" style="font-size:9px;color:#555;margin-top:3px">Rover: —</div>
   </div>
   <div class="section" style="background:#1a0d2e">
     <div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
@@ -1012,6 +1049,28 @@ function status(msg, color='#27ae60') {
   el.textContent = msg;
 }
 
+// ── Servo state ───────────────────────────────────────────────────
+function getServos() {
+  const r = {};
+  [5,6,7,8].forEach(ch => {
+    const el = document.getElementById(`svo-${ch}`);
+    const v = parseInt(el ? el.value : 1500);
+    r[String(ch)] = isNaN(v) ? 1500 : Math.max(1000, Math.min(2000, v));
+  });
+  return r;
+}
+
+function setServos(s) {
+  if (!s) return;
+  [5,6,7,8].forEach(ch => {
+    const val = s[ch] ?? s[String(ch)];
+    if (val != null) {
+      const el = document.getElementById(`svo-${ch}`);
+      if (el) el.value = val;
+    }
+  });
+}
+
 // ── Add mode ──────────────────────────────────────────────────────
 function toggleAddMode() {
   addMode = !addMode;
@@ -1205,7 +1264,7 @@ async function saveMission() {
   if (!name) { status('Enter a mission name first.', '#e74c3c'); return; }
   await fetch('/save_mission', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name, waypoints, obstacles}),
+    body: JSON.stringify({name, waypoints, obstacles, servos: getServos()}),
   });
   status(`Saved "${name}".`);
   refreshMissionList();
@@ -1220,6 +1279,7 @@ async function loadMission() {
   waypoints = d.waypoints || [];
   obstacles = []; obsCurPts = [];
   (d.obstacles || []).forEach(poly => obstacles.push(poly));
+  setServos(d.servos);
   refresh();
   if (waypoints.length) {
     syncStartToWp0();
@@ -1253,7 +1313,7 @@ async function uploadRover(roverId) {
   try {
     const resp = await fetch('/upload_rover', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port: 14550, rover_sysid: roverId}),
+      body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port: 14550, rover_sysid: roverId, servos: getServos()}),
     });
     const d = await resp.json();
     status(d.message, d.ok ? '#27ae60' : '#e74c3c');
@@ -1412,6 +1472,7 @@ async function importSnooped() {
   waypoints = d.waypoints;
   obstacles = []; obsCurPts = [];
   (d.obstacles || []).forEach(poly => obstacles.push(poly));
+  setServos(d.servos);
   refresh();
   if (waypoints.length) {
     syncStartToWp0();
@@ -1601,6 +1662,16 @@ async function pollLiveRovers() {
     const resp = await fetch('/rover_live');
     const d = await resp.json();
     liveRovers = d;
+    const now = Date.now() / 1000;
+    let servoHtml = 'Rover: —';
+    for (const [sid, r] of Object.entries(d)) {
+      if (now - r.ts > 5 || !r.servos) continue;
+      const s = r.servos;
+      servoHtml = `RV${sid}: <span style="color:#5d9">CH5=${s[5]??s['5']??'?'} CH6=${s[6]??s['6']??'?'} CH7=${s[7]??s['7']??'?'} CH8=${s[8]??s['8']??'?'}</span>`;
+      break;
+    }
+    const sl = document.getElementById('servo-live');
+    if (sl) sl.innerHTML = servoHtml;
     redraw();
   } catch(e) {}
 }
@@ -1898,11 +1969,12 @@ class _Handler(BaseHTTPRequestHandler):
                 rover_ip  = data.get('rover_ip', '192.168.100.19')
                 rover_port = int(data.get('rover_port', 14550))
                 rover_sysid = int(data.get('rover_sysid', 1))
-                wps = data.get('waypoints', [])
-                obs = data.get('obstacles', [])
+                wps    = data.get('waypoints', [])
+                obs    = data.get('obstacles', [])
+                servos = data.get('servos', {})
                 print(f'[upload] -> RV{rover_sysid} @ {rover_ip}:{rover_port}  '
                       f'wps={len(wps)} obs={len(obs)}', flush=True)
-                result = _mavlink_upload(wps, obs, rover_ip, rover_port, rover_sysid)
+                result = _mavlink_upload(wps, obs, rover_ip, rover_port, rover_sysid, servos)
                 print(f'[upload] {result["message"]}', flush=True)
                 self._json(result)
             except Exception as e:

@@ -30,10 +30,25 @@ ros_agri_rover/
 │   ├── nmea_wifi_rx.py             UDP NMEA → PTY bridge (runs inside container)
 │   ├── rtk_forwarder.py            NTRIP/E610 RTK corrections → u-blox serial
 │   ├── sim_navigator.py            Software-in-the-loop simulator (mirrors navigator.py)
-│   ├── monitor.py                  Terminal dashboard + Leaflet map server (:8088)
-│   └── mission_uploader.py         CSV mission → MAVLink upload
+├── monitor.py                  Terminal dashboard + Leaflet map server (:8088)
+├── config_editor.py            GUI to edit rover parameters (tkinter)
+└── mission_uploader.py         CSV mission → MAVLink upload
 └── docs/
+└── CONFIG_EDITOR.md            Detailed guide for the Parameter Editor
 ```
+
+## Configuration
+
+The rover's behavior is controlled by parameters in YAML files located in `ros2_ws/src/agri_rover_bringup/config/`. 
+
+### Parameter Editor (GUI)
+For a user-friendly way to modify these settings, use the **AgriRover Parameter Editor**. It includes descriptions for every parameter and ensures data type correctness.
+
+**To run the editor:**
+```powershell
+python tools/config_editor.py
+```
+For more details, see [docs/CONFIG_EDITOR.md](docs/CONFIG_EDITOR.md).
 
 ## Communication Architecture
 

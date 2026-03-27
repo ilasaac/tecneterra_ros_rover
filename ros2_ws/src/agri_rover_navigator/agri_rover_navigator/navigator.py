@@ -2363,10 +2363,10 @@ class NavigatorNode(Node):
         channels[1]  = steering
         channels[2]  = 1939   # PPM CH3 = SBUS CH5  (no inversion)
         channels[3]  = 1061   # PPM CH4 = PPM_INV(SBUS CH6) = 3000-1939
-        channels[4]  = 1061   # PPM CH5 = SBUS CH11 (no inversion)
-        channels[5]  = 1061   # PPM CH6 = SBUS CH12 (no inversion)
-        channels[6]  = 1500   # PPM CH7 = PPM_INV(SBUS CH7) = 3000-1500
-        channels[7]  = 1061   # PPM CH8 = PPM_INV(SBUS CH8) = 3000-1939
+        channels[4]  = self._servo_ch[0]  # PPM CH5 = servo 5
+        channels[5]  = self._servo_ch[1]  # PPM CH6 = servo 6
+        channels[6]  = self._servo_ch[2]  # PPM CH7 = servo 7
+        channels[7]  = self._servo_ch[3]  # PPM CH8 = servo 8
         msg.channels = channels
         msg.mode     = 'AUTONOMOUS'
         msg.stamp    = self.get_clock().now().to_msg()
