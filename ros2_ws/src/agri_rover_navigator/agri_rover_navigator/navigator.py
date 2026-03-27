@@ -503,6 +503,7 @@ class NavigatorNode(Node):
 
         # Servo state (PPM CH5-CH8) re-published in every cmd_override.
         self._servo_ch: list[int] = [PPM_CENTER] * 4
+        self._servo_ch_logged: list[int] = [PPM_CENTER] * 4  # last logged state
 
         # ── Subscriptions ────────────────────────────────────────────────────
         self.create_subscription(NavSatFix,       'fix',           self._cb_fix,          10)
@@ -646,10 +647,14 @@ class NavigatorNode(Node):
         self._armed = msg.data
 
     def _cb_servo_state(self, msg: RCInput):
+        changed = False
         for i in range(4):
             val = msg.channels[i + 4] if i + 4 < len(msg.channels) else 0
-            if val != 0:
+            if val != 0 and val != self._servo_ch[i]:
                 self._servo_ch[i] = val
+                changed = True
+        if changed:
+            self.get_logger().info(f'[SERVO] servo_state applied → _servo_ch={self._servo_ch}')
 
     # ── Inter-rover proximity callbacks ───────────────────────────────────────
 
@@ -2371,6 +2376,10 @@ class NavigatorNode(Node):
         msg.mode     = 'AUTONOMOUS'
         msg.stamp    = self.get_clock().now().to_msg()
         self.cmd_pub.publish(msg)
+        if self._servo_ch != self._servo_ch_logged:
+            self.get_logger().info(
+                f'[SERVO] cmd_override publishing servo CH5-8={self._servo_ch}')
+            self._servo_ch_logged = list(self._servo_ch)
 
     def _publish_halt(self):
         self._publish_cmd(PPM_CENTER, PPM_CENTER)

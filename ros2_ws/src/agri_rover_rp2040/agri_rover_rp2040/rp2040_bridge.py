@@ -74,6 +74,7 @@ class Rp2040BridgeNode(Node):
         # already healthy at bridge start we would never receive an OK event.
         self._sbus_ok    = True
         self._rf_link_ok = True
+        self._last_servo_vals: list[int] = [1500, 1500, 1500, 1500]  # last logged CH5-8
 
         # ── Timers ───────────────────────────────────────────────────────────
         self.create_timer(hb_interval, self._send_heartbeat)
@@ -181,8 +182,14 @@ class Rp2040BridgeNode(Node):
 
     def _on_cmd_override(self, msg: RCInput):
         """Forward autonomous command to RP2040 as <J:c0,...,c7>."""
-        chs = ','.join(str(c) for c in list(msg.channels[:8]))
+        vals = list(msg.channels[:8])
+        chs = ','.join(str(c) for c in vals)
         self._uart_write(f'<J:{chs}>\n')
+        # Log on servo channel change (PPM CH5-CH8, indices 4-7)
+        servo_vals = vals[4:8]
+        if servo_vals != self._last_servo_vals:
+            self.get_logger().info(f'[SERVO] <J:> CH5-8 changed: {self._last_servo_vals} → {servo_vals}')
+            self._last_servo_vals = servo_vals
 
     def _uart_write(self, text: str):
         with self._lock:

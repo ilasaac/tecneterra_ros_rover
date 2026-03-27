@@ -113,6 +113,7 @@ class MavlinkBridgeNode(Node):
         self._cmd_thr      = 1500        # last cmd_override throttle (CH1), for telemetry
         self._cmd_str      = 1500        # last cmd_override steering (CH2), for telemetry
         self._cmd_channels: list[int] = []  # full cmd_override channel list
+        self._rc_src_last: str = ''         # last logged RC_CHANNELS source (for diagnostics)
         self._wp_active   = -1    # active waypoint seq from navigator (-1 = none)
         self._xte         = 0.0   # cross-track error from navigator (metres)
         self._mission_buf: list[MissionWaypoint] = []
@@ -376,8 +377,13 @@ class MavlinkBridgeNode(Node):
         # in all other modes show the raw RC stick input.
         if self._mode == 'AUTONOMOUS' and self._cmd_channels:
             src = self._cmd_channels
+            rc_src = f'cmd_channels(len={len(src)}) ch5={src[4] if len(src)>4 else "?"}'
         else:
             src = list(self._rc.channels)
+            rc_src = f'rc.channels(mode={self._mode},cmd_ch_len={len(self._cmd_channels)})'
+        if rc_src != self._rc_src_last:
+            self.get_logger().info(f'[RC_SRC] RC_CHANNELS source → {rc_src}')
+            self._rc_src_last = rc_src
         chs = src + [0] * (18 - len(src))
         chancount = len(src)
         self._send(self._mav.mav.rc_channels_encode(
