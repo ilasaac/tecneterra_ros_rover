@@ -488,11 +488,11 @@ class MavlinkBridgeNode(Node):
                         self._mission_count      = msg.count
                         self._mission_buf        = []
                         self._fence_buf          = []   # clear fence data for new mission
-                    self._wp_servo_map       = {}
-                    self._last_nav_wp_seq    = None
                         self._mission_src        = (msg.get_srcSystem(), msg.get_srcComponent())
                         self._mission_expect_seq = 0
                         self._mission_last_req_t = time.monotonic()
+                    self._wp_servo_map       = {}
+                    self._last_nav_wp_seq    = None
                     self._mission_retry_count  = 0
                     self._mission_retry_at_seq = None
                     self.get_logger().info(
