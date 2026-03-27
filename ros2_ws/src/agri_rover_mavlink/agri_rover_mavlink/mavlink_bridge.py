@@ -123,6 +123,12 @@ class MavlinkBridgeNode(Node):
         # Servo state for PPM CH5-CH8 (servo numbers 5-8 → channel indices 4-7).
         # Updated by DO_SET_SERVO commands; forwarded to rp2040_bridge via cmd_override.
         self._servo_pwm = {5: 1500, 6: 1500, 7: 1500, 8: 1500}
+        # Per-waypoint servo changes: built during mission upload.
+        # {wp_seq: {servo_ch: pwm}} — applied when navigator publishes wp_active == wp_seq.
+        # DO_SET_SERVO items that appear AFTER a NAV_WAYPOINT in the item stream are deferred
+        # here; items that appear BEFORE the first NAV_WAYPOINT are applied immediately.
+        self._wp_servo_map: dict[int, dict[int, int]] = {}
+        self._last_nav_wp_seq: int | None = None  # seq of last NAV_WAYPOINT received
         # Mission upload retry state — protected by _mission_lock.
         # _gqc_unicast: GQC IP discovered from first incoming UDP packet; used instead
         #   of broadcast for mission handshake replies (broadcast is unreliable on WiFi APs).
@@ -211,6 +217,10 @@ class MavlinkBridgeNode(Node):
 
     def _cb_wp(self, msg: Int32):
         self._wp_active = msg.data
+        if msg.data >= 0 and msg.data in self._wp_servo_map:
+            for sn, pw in self._wp_servo_map[msg.data].items():
+                self.get_logger().info(f'WP{msg.data} reached — applying servo CH{sn}={pw}')
+                self._apply_servo_cmd(sn, pw)
         if msg.data == -1:
             # Mission complete — auto-disarm and reset mission state → STATUS → NA
             self._armed         = False
@@ -457,6 +467,8 @@ class MavlinkBridgeNode(Node):
                             self._mission_buf        = []
                             self._mission_src        = None
                             self._mission_expect_seq = None
+                        self._wp_servo_map    = {}
+                        self._last_nav_wp_seq = None
                         addr = self._gqc_unicast or self._gqc_addr
                         packed = self._mav.mav.mission_ack_encode(
                             msg.get_srcSystem(), msg.get_srcComponent(),
@@ -476,6 +488,8 @@ class MavlinkBridgeNode(Node):
                         self._mission_count      = msg.count
                         self._mission_buf        = []
                         self._fence_buf          = []   # clear fence data for new mission
+                    self._wp_servo_map       = {}
+                    self._last_nav_wp_seq    = None
                         self._mission_src        = (msg.get_srcSystem(), msg.get_srcComponent())
                         self._mission_expect_seq = 0
                         self._mission_last_req_t = time.monotonic()
@@ -762,7 +776,18 @@ class MavlinkBridgeNode(Node):
             pass
 
         if msg.command == 183:  # MAV_CMD_DO_SET_SERVO
-            self._apply_servo_cmd(int(msg.param1), int(msg.param2))
+            sn, pw = int(msg.param1), int(msg.param2)
+            if self._last_nav_wp_seq is None:
+                # Before any NAV_WAYPOINT → apply immediately as initial servo state
+                self._apply_servo_cmd(sn, pw)
+            else:
+                # After a NAV_WAYPOINT → defer: apply when navigator reaches that waypoint
+                if 5 <= sn <= 8:
+                    if self._last_nav_wp_seq not in self._wp_servo_map:
+                        self._wp_servo_map[self._last_nav_wp_seq] = {}
+                    self._wp_servo_map[self._last_nav_wp_seq][sn] = pw
+                    self.get_logger().info(
+                        f'Deferred servo CH{sn}={pw} → wp_seq={self._last_nav_wp_seq}')
         elif msg.command == 5003:  # MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION
             # Collect fence polygon vertices — published as ~/mission_fence JSON
             # when the full mission has been received.
@@ -780,6 +805,7 @@ class MavlinkBridgeNode(Node):
             wp.speed            = float(msg.z)    if msg.z    > 0.0 else 0.0
             wp.hold_secs        = float(msg.param1) if msg.param1 > 0.0 else 0.0
             wp.acceptance_radius = 0.0  # 0 → navigator uses default_acceptance_radius from YAML
+            self._last_nav_wp_seq = wp.seq  # track for deferred servo association
             self._mission_buf.append(wp)
             self.mission_pub.publish(wp)
 

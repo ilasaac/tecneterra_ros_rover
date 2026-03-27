@@ -274,6 +274,14 @@ def _mavlink_upload(waypoints: list, obstacles: list,
                           'p3': 0.0, 'p4': 0.0,
                           'lat': float(wp['lat']), 'lon': float(wp['lon']),
                           'z': float(wp.get('speed') or 0.0)})
+            # Per-waypoint servo changes — placed AFTER the NAV_WAYPOINT so mavlink_bridge
+            # defers them and applies them when the navigator reaches this waypoint.
+            wp_svs = wp.get('servos') or {}
+            for servo_num in (5, 6, 7, 8):
+                pwm = wp_svs.get(servo_num) or wp_svs.get(str(servo_num))
+                if pwm is not None:
+                    items.append({'cmd': 183, 'p1': float(servo_num), 'p2': float(int(pwm)),
+                                  'p3': 0.0, 'p4': 0.0, 'lat': 0.0, 'lon': 0.0, 'z': 0.0})
         if not items:
             return {'ok': False, 'message': 'No items to upload'}
     except Exception as e:
@@ -432,7 +440,7 @@ tr:hover td{background:#1e1e3a}
   </div>
   <div id="wp-list">
     <table>
-      <thead><tr><th>#</th><th>Lat</th><th>Lon</th><th>Spd</th><th></th></tr></thead>
+      <thead><tr><th>#</th><th>Lat</th><th>Lon</th><th>Spd</th><th>Srv</th><th></th></tr></thead>
       <tbody id="wp-tbody"></tbody>
     </table>
   </div>
@@ -1086,7 +1094,7 @@ function toggleAddMode() {
 
 // ── Waypoints ─────────────────────────────────────────────────────
 function addWp(lat, lon, speed=0, hold=0) {
-  waypoints.push({lat, lon, speed, hold_secs: hold});
+  waypoints.push({lat, lon, speed, hold_secs: hold, servos: {}});
   refresh();
 }
 
@@ -1098,10 +1106,20 @@ function refresh() {
   status(`${waypoints.length} waypoint(s).`);
 }
 
+function _wpHasServos(wp) {
+  const s = wp.servos || {};
+  return [5,6,7,8].some(ch => s[ch] != null || s[String(ch)] != null);
+}
+
 function refreshTable() {
   const tb = document.getElementById('wp-tbody');
   tb.innerHTML = '';
   waypoints.forEach((wp, i) => {
+    if (!wp.servos) wp.servos = {};
+    const hasSrv = _wpHasServos(wp);
+    const btnStyle = hasSrv
+      ? 'background:#1a7a3a;color:#5d9;border:1px solid #2a9a4a'
+      : 'background:#1a1a3a;color:#556;border:1px solid #334';
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td style="color:#aaa">${i}</td>
@@ -1109,10 +1127,65 @@ function refreshTable() {
       <td><input value="${wp.lon.toFixed(7)}" onchange="waypoints[${i}].lon=+this.value;redraw()"></td>
       <td><input value="${wp.speed||0}" style="width:38px"
           onchange="waypoints[${i}].speed=+this.value||0"></td>
+      <td><button id="svo-btn-${i}" onclick="toggleWpServo(${i})"
+          style="padding:1px 5px;font-size:10px;border-radius:2px;cursor:pointer;${btnStyle}">S</button></td>
       <td><button onclick="removeWp(${i})"
           style="background:#7a1515;color:#fff;border:none;padding:1px 6px;border-radius:2px;cursor:pointer">&#10005;</button></td>`;
     tb.appendChild(tr);
+
+    // Servo sub-row — visible only when toggled or when values are already set
+    const svoRow = document.createElement('tr');
+    svoRow.id = `svo-row-${i}`;
+    svoRow.style.display = hasSrv ? '' : 'none';
+    svoRow.style.background = '#0a1a0a';
+    const inputs = [5,6,7,8].map(ch => {
+      const v = wp.servos[ch] ?? wp.servos[String(ch)] ?? '';
+      return `<span style="font-size:9px;color:#5a8">CH${ch}</span>
+        <input id="wp-svo-${i}-${ch}" type="number" min="1000" max="2000" step="50"
+          value="${v}" placeholder="—"
+          style="width:40px;background:#0a1020;color:#eee;border:1px solid #334;padding:1px 2px;
+                 border-radius:2px;font-size:10px;text-align:center;margin:0 5px 0 2px"
+          onchange="wpServoSet(${i},${ch},this.value)">`;
+    }).join('');
+    svoRow.innerHTML = `
+      <td></td>
+      <td colspan="5" style="padding:3px 6px">
+        <span style="font-size:9px;color:#5a8;margin-right:4px">&#9881; at WP${i}:</span>
+        ${inputs}
+        <button onclick="wpServoClear(${i})"
+          style="padding:1px 5px;font-size:9px;background:#3a1515;color:#c88;
+                 border:1px solid #622;border-radius:2px;cursor:pointer;margin-left:2px">Clear</button>
+      </td>`;
+    tb.appendChild(svoRow);
   });
+}
+
+function toggleWpServo(i) {
+  const row = document.getElementById(`svo-row-${i}`);
+  if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+function wpServoSet(i, ch, val) {
+  if (!waypoints[i].servos) waypoints[i].servos = {};
+  const v = val === '' ? null : Math.max(1000, Math.min(2000, parseInt(val)));
+  if (v === null || isNaN(v)) {
+    delete waypoints[i].servos[ch];
+    delete waypoints[i].servos[String(ch)];
+  } else {
+    waypoints[i].servos[String(ch)] = v;
+  }
+  const hasSrv = _wpHasServos(waypoints[i]);
+  const btn = document.getElementById(`svo-btn-${i}`);
+  if (btn) {
+    btn.style.background = hasSrv ? '#1a7a3a' : '#1a1a3a';
+    btn.style.color      = hasSrv ? '#5d9'    : '#556';
+    btn.style.border     = hasSrv ? '1px solid #2a9a4a' : '1px solid #334';
+  }
+}
+
+function wpServoClear(i) {
+  waypoints[i].servos = {};
+  refreshTable();
 }
 
 // ── Simulation ────────────────────────────────────────────────────
@@ -1276,7 +1349,7 @@ async function loadMission() {
   if (!name) { status('Select a mission first.', '#e74c3c'); return; }
   const resp = await fetch(`/load_mission?name=${encodeURIComponent(name)}`);
   const d = await resp.json();
-  waypoints = d.waypoints || [];
+  waypoints = (d.waypoints || []).map(wp => ({servos: {}, ...wp}));
   obstacles = []; obsCurPts = [];
   (d.obstacles || []).forEach(poly => obstacles.push(poly));
   setServos(d.servos);
@@ -1469,7 +1542,7 @@ async function importSnooped() {
     status('No network mission captured yet — arm GQC and upload a mission.', '#e74c3c');
     return;
   }
-  waypoints = d.waypoints;
+  waypoints = d.waypoints.map(wp => ({servos: {}, ...wp}));
   obstacles = []; obsCurPts = [];
   (d.obstacles || []).forEach(poly => obstacles.push(poly));
   setServos(d.servos);
