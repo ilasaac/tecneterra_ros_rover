@@ -456,7 +456,7 @@ def parse_args():
     p.add_argument('--rv2-hdg',   default=270.0,        type=float)
 
     # Physics
-    p.add_argument('--max-speed',   default=1.5,  type=float, metavar='M/S')
+    p.add_argument('--max-speed',   default=2.84, type=float, metavar='M/S')
     p.add_argument('--wheelbase',   default=0.50, type=float, metavar='M')
     p.add_argument('--turn-scale',  default=0.2,  type=float, metavar='0-1',
                    help='Turn rate scale (1.0=full differential — default, matches MPC model)')

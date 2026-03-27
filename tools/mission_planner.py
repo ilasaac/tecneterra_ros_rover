@@ -47,10 +47,10 @@ MISSIONS_DIR = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions'))
 os.makedirs(MISSIONS_DIR, exist_ok=True)
 
-def _save_mission_file(name: str, waypoints: list, obstacles: list):
+def _save_mission_file(name: str, waypoints: list, obstacles: list, servos: dict | None = None):
     path = os.path.join(MISSIONS_DIR, f'{name}.json')
     with open(path, 'w') as f:
-        json.dump({'waypoints': waypoints, 'obstacles': obstacles}, f, indent=2)
+        json.dump({'waypoints': waypoints, 'obstacles': obstacles, 'servos': servos or {}}, f, indent=2)
     return path
 
 def _load_mission_file(name: str) -> dict:
@@ -1959,7 +1959,8 @@ class _Handler(BaseHTTPRequestHandler):
             if not name:
                 self._json({'error': 'name required'}); return
             path = _save_mission_file(name, data.get('waypoints', []),
-                                      data.get('obstacles', []))
+                                      data.get('obstacles', []),
+                                      data.get('servos', {}))
             print(f'[save] {path}', flush=True)
             self._json({'ok': True, 'name': name})
 
