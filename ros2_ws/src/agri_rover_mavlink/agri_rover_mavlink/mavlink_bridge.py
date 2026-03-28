@@ -113,7 +113,6 @@ class MavlinkBridgeNode(Node):
         self._cmd_thr      = 1500        # last cmd_override throttle (CH1), for telemetry
         self._cmd_str      = 1500        # last cmd_override steering (CH2), for telemetry
         self._cmd_channels: list[int] = []  # full cmd_override channel list
-        self._rc_src_last: str = ''         # last logged RC_CHANNELS source (for diagnostics)
         self._wp_active   = -1    # active waypoint seq from navigator (-1 = none)
         self._xte         = 0.0   # cross-track error from navigator (metres)
         self._mission_buf: list[MissionWaypoint] = []
@@ -373,17 +372,36 @@ class MavlinkBridgeNode(Node):
         ))
 
     def _send_rc(self):
-        # In AUTONOMOUS mode show the actual PPM commands sent to the motors;
-        # in all other modes show the raw RC stick input.
+        # In AUTONOMOUS mode show the actual PPM commands sent to the motors,
+        # remapped back to SBUS channel order so GQC's remapSbusToLogical()
+        # produces the correct PPM CH5/CH6 (servo/pump) display values.
+        # In all other modes show the raw RC stick input (already in SBUS order).
         if self._mode == 'AUTONOMOUS' and self._cmd_channels:
-            src = self._cmd_channels
-            rc_src = f'cmd_channels(len={len(src)}) ch5={src[4] if len(src)>4 else "?"}'
+            ppm = self._cmd_channels
+            # Inverse of GQC remapSbusToLogical():
+            #   PPM CH1 (throttle) → SBUS[2]  (CH3)
+            #   PPM CH2 (steering) → SBUS[0]  (CH1)
+            #   PPM CH3 (SWA)      → SBUS[4]  (CH5)
+            #   PPM CH4 (SWB)      → SBUS[5]  (CH6)
+            #   PPM CH5 (servo5)   → SBUS[10] (CH11)
+            #   PPM CH6 (servo6)   → SBUS[11] (CH12)
+            #   PPM CH7 (servo7)   → SBUS[6]  (CH7)
+            #   PPM CH8 (servo8)   → SBUS[7]  (CH8)
+            #   PPM CH9            → SBUS[8]  (CH9)
+            def _p(i): return ppm[i] if len(ppm) > i else 1500
+            sbus_sim = [1500] * 16
+            sbus_sim[2]  = _p(0)   # throttle
+            sbus_sim[0]  = _p(1)   # steering
+            sbus_sim[4]  = _p(2)   # SWA (emergency)
+            sbus_sim[5]  = _p(3)   # SWB (autonomous)
+            sbus_sim[10] = _p(4)   # servo5 / pump
+            sbus_sim[11] = _p(5)   # servo6
+            sbus_sim[6]  = _p(6)   # servo7
+            sbus_sim[7]  = _p(7)   # servo8
+            sbus_sim[8]  = _p(8)   # rover select (CH9)
+            src = sbus_sim
         else:
             src = list(self._rc.channels)
-            rc_src = f'rc.channels(mode={self._mode},cmd_ch_len={len(self._cmd_channels)})'
-        if rc_src != self._rc_src_last:
-            self.get_logger().info(f'[RC_SRC] RC_CHANNELS source → {rc_src}')
-            self._rc_src_last = rc_src
         chs = src + [0] * (18 - len(src))
         chancount = len(src)
         self._send(self._mav.mav.rc_channels_encode(
