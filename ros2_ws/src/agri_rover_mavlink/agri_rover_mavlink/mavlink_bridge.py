@@ -1076,19 +1076,9 @@ class MavlinkBridgeNode(Node):
         renumbered.append(wp_here)
         seq += 1
 
-        # WP1 — position where rover stopped (return there before continuing)
-        if self._resume_position is not None:
-            wp_return               = MissionWaypoint()
-            wp_return.seq               = seq
-            wp_return.latitude          = self._resume_position[0]
-            wp_return.longitude         = self._resume_position[1]
-            wp_return.speed             = wps[0].speed
-            wp_return.acceptance_radius = wps[0].acceptance_radius
-            wp_return.hold_secs         = 0.0
-            renumbered.append(wp_return)
-            seq += 1
-
-        # Remaining original waypoints
+        # Remaining original waypoints (starting from the next unvisited WP).
+        # No separate STOP waypoint — the first remaining WP is where the rover
+        # was heading when it stopped, so it naturally returns there.
         for orig in wps:
             wp               = MissionWaypoint()
             wp.seq               = seq
@@ -1103,10 +1093,10 @@ class MavlinkBridgeNode(Node):
         n_obs = len(self._resume_fence_buf)
         self.get_logger().info(
             f'[RESOURCE] Resume mission: {len(renumbered)} WPs '
-            f'(base → stopped → WP{self._resume_wp_seq}..WP{self._resume_wp_seq + len(wps) - 1}), '
+            f'(base → WP{self._resume_wp_seq}..WP{self._resume_wp_seq + len(wps) - 1}), '
             f'fence={n_obs} vertices')
         for i, wp in enumerate(renumbered):
-            label = 'BASE' if i == 0 else ('STOP' if i == 1 and self._resume_position else f'WP{wp.seq}')
+            label = 'BASE' if i == 0 else f'origWP{self._resume_wp_seq + i - 1}'
             self.get_logger().info(
                 f'  resume[{i}] {label}: ({wp.latitude:.7f},{wp.longitude:.7f})')
         self._send_statustext(
