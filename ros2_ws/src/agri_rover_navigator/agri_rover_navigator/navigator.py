@@ -873,9 +873,10 @@ class NavigatorNode(Node):
                 exp_str = '  '.join(f'{lat:.7f},{lon:.7f}' for lat, lon in exp)
                 self.get_logger().info(f'  poly[{pi}] expanded: {exp_str}')
 
-        # Always reroute when we have a path — with no obstacles this just publishes
-        # the plain mission path to GQC for the map overlay.
-        if self._path_original:
+        # Only reroute if there are actual obstacles — empty fence should not
+        # trigger _reroute_path() because waypoints may still be arriving and
+        # a premature split would scramble the waypoint order.
+        if self._obstacle_polygons and self._path_original:
             self._reroute_path()
         elif self._obstacle_polygons:
             self.get_logger().warn(

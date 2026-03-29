@@ -990,11 +990,13 @@ class MavlinkBridgeNode(Node):
         # ordering, so the clear may arrive AFTER wp[0] and wipe it out.
         for wp in waypoints:
             self.mission_pub.publish(wp)
-        # Publish fence (may be empty for base trip without obstacles)
-        polys = self._parse_fence_polygons(fence_buf) if fence_buf else []
-        fence_msg = String()
-        fence_msg.data = json.dumps({'polygons': polys})
-        self.fence_pub.publish(fence_msg)
+        # Publish fence only if there are actual obstacles — an empty fence
+        # arriving mid-stream would trigger premature reroute + split in navigator.
+        if fence_buf:
+            polys = self._parse_fence_polygons(fence_buf)
+            fence_msg = String()
+            fence_msg.data = json.dumps({'polygons': polys})
+            self.fence_pub.publish(fence_msg)
 
         # Broadcast via MAVLink so GQC and mission_planner see the new mission + obstacles
         threading.Thread(
