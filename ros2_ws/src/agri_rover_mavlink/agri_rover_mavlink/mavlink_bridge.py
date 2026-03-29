@@ -396,8 +396,8 @@ class MavlinkBridgeNode(Node):
             sbus_sim[5]  = _p(3)   # SWB (autonomous)
             sbus_sim[10] = _p(4)   # servo5 / pump
             sbus_sim[11] = _p(5)   # servo6
-            sbus_sim[6]  = _p(6)   # servo7
-            sbus_sim[7]  = _p(7)   # servo8
+            sbus_sim[6]  = 3000 - _p(6)   # servo7 un-invert (CH7 inverted in ppm_map)
+            sbus_sim[7]  = 3000 - _p(7)   # servo8 un-invert (CH8 inverted in ppm_map)
             sbus_sim[8]  = _p(8)   # rover select (CH9)
             src = sbus_sim
         else:
@@ -692,17 +692,32 @@ class MavlinkBridgeNode(Node):
             polygons.append(current)
         return polygons
 
+    @staticmethod
+    def _ppm_inv(v: int) -> int:
+        """PPM_INV: 3000 − v maps 1000↔2000 keeping 1500 centred."""
+        return 3000 - v
+
     def _apply_servo_cmd(self, servo: int, pwm: int):
         """Apply a DO_SET_SERVO command: update servo state and publish to servo_state.
 
         Servo 5-8 map to PPM channels 4-7 (0-indexed).
         Published on servo_state topic — navigator subscribes, maintains the values,
         and includes them in every cmd_override tick so they are sent continuously.
+
+        Servos 7 and 8 correspond to PPM CH7 and CH8, which apply_ppm_map inverts
+        (PPM_CHn = 3000 − SBUS_CHn).  GQC's DO_SET_SERVO uses the SBUS/display
+        convention (same values the user sees on the MK32 in manual mode), so we
+        pre-invert here so the physical PPM output matches manual mode behaviour.
         """
         if servo not in self._servo_pwm:
             self.get_logger().warn(f'DO_SET_SERVO: servo {servo} out of range (5-8)')
             return
-        self._servo_pwm[servo] = max(1000, min(2000, pwm))
+        pwm = max(1000, min(2000, pwm))
+        # Servos 7 and 8 are inverted in the RP2040 ppm_map for manual mode.
+        # Pre-invert so the autonomous PPM output is identical to manual mode.
+        if servo in (7, 8):
+            pwm = self._ppm_inv(pwm)
+        self._servo_pwm[servo] = pwm
         rc = RCInput()
         rc.channels = [0, 0, 0, 0,
                        self._servo_pwm[5], self._servo_pwm[6],
@@ -710,8 +725,9 @@ class MavlinkBridgeNode(Node):
         rc.mode  = 'SERVO'
         rc.stamp = self.get_clock().now().to_msg()
         self.servo_pub.publish(rc)
+        inv_note = f' (hw={self._servo_pwm[servo]})' if servo in (7, 8) else ''
         self.get_logger().info(
-            f'DO_SET_SERVO servo={servo} pwm={self._servo_pwm[servo]} µs')
+            f'DO_SET_SERVO servo={servo} pwm={3000 - self._servo_pwm[servo] if servo in (7, 8) else self._servo_pwm[servo]} µs{inv_note}')
 
     def _cb_nav_params(self, msg: String):
         """Cache the latest navigator parameters (published every 5 s by navigator.py)."""
