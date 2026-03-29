@@ -36,6 +36,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     // --- MULTI-ROVER STATE ---
     private var selectedRoverId = 1
+    private var roverExplicitlySelected = false  // true once CH9 goes low or high
     private val roverMarkers    = HashMap<Int, Marker>()
     private val roverPositions  = HashMap<Int, LatLng>()
     private val roverModes      = HashMap<Int, AppMode>()
@@ -254,8 +255,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 // CH9 (index 8) selects active rover: <1250 → RV1, >1750 → RV2, mid → no change
                 if (channels.size > 8 && channels[8] != 65535) {
                     val newId = when {
-                        channels[8] < 1250 -> 1
-                        channels[8] > 1750 -> 2
+                        channels[8] < 1250 -> { roverExplicitlySelected = true; 1 }
+                        channels[8] > 1750 -> { roverExplicitlySelected = true; 2 }
                         else               -> selectedRoverId
                     }
                     if (newId != selectedRoverId) {
@@ -433,8 +434,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         // START — arm then set AUTO mode
         btnStart.setOnClickListener {
-            val ch9Start = roverPpmChannels[1]?.getOrNull(8) ?: 65535
-            if (ch9Start in 1250..1750 || ch9Start == 65535) {
+            if (!roverExplicitlySelected) {
                 Toast.makeText(this, "Choose a rover (CH9 switch)", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
@@ -1289,10 +1289,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun doUploadMission() {
         if (isRecording) stopRecording()
-        // Guard: CH9 must explicitly select a rover (low=RV1, high=RV2).
-        // Mid position means neither rover is chosen — upload would go to stale default.
-        val ch9 = roverPpmChannels[1]?.getOrNull(8) ?: 65535
-        if (ch9 in 1250..1750 || ch9 == 65535) {
+        if (!roverExplicitlySelected) {
             Toast.makeText(this, "Choose a rover (CH9 switch)", Toast.LENGTH_SHORT).show()
             return
         }
