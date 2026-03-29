@@ -22,6 +22,14 @@
     gqc_host:  192.168.100.255  # WiFi broadcast — GQC receives regardless of IP
     gqc_port:  14550
     bind_port: 14550            # listen on :14550 for inbound MAVLink from GQC
+    # Resource management — set GPS coordinates of your field base stations
+    recharge_lat:      0.0    # battery recharge station latitude  (set for your field)
+    recharge_lon:      0.0    # battery recharge station longitude
+    water_lat:         0.0    # water refill station latitude
+    water_lon:         0.0    # water refill station longitude
+    battery_low_pct:   15.0  # trigger base return when battery below this % (0–100)
+    tank_low_frac:     0.05  # trigger base return when tank below this fraction (0–1)
+    base_acceptance_m: 1.5   # arrival radius at base station (metres)
 
 /rv1/sensor_node:
   ros__parameters:

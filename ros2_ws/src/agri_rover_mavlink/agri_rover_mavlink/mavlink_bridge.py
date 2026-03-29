@@ -82,6 +82,14 @@ class MavlinkBridgeNode(Node):
         self.declare_parameter('gqc_port',       14550)
         self.declare_parameter('bind_port',      14550)
         self.declare_parameter('heartbeat_rate', 1.0)
+        # Resource management — base station coordinates and thresholds
+        self.declare_parameter('recharge_lat',      0.0)
+        self.declare_parameter('recharge_lon',      0.0)
+        self.declare_parameter('water_lat',         0.0)
+        self.declare_parameter('water_lon',         0.0)
+        self.declare_parameter('battery_low_pct',  15.0)
+        self.declare_parameter('tank_low_frac',     0.05)
+        self.declare_parameter('base_acceptance_m', 1.5)
 
         self._rover_id   = self.get_parameter('rover_id').value
         self._gqc_host   = self.get_parameter('gqc_host').value
@@ -137,6 +145,12 @@ class MavlinkBridgeNode(Node):
         # _mission_src: (srcSys, srcComp) from MISSION_COUNT; None when no upload active.
         # _mission_expect_seq: next seq we're waiting for; None when no upload active.
         # _mission_last_req_t: monotonic time of last MISSION_REQUEST_INT sent.
+        # Resource management state machine: 'normal' → 'going_to_base' → 'at_base' → 'normal'
+        self._resource_state  = 'normal'   # 'normal' | 'going_to_base' | 'at_base'
+        self._resource_reason: str | None  = None  # 'battery' | 'tank'
+        self._resume_mission:  list        = []    # snapshot of _mission_buf at trigger time
+        self._resume_wp_seq    = 0                 # wp_active index to resume from
+        self._resume_servo_map: dict       = {}    # servo map renumbered for resume mission
         self._rtk_status  = 'NO_FIX'   # latest string from gps_driver rtk_status topic
         self._hacc_mm     = -1.0       # horizontal accuracy from UBX NAV-PVT (mm); -1 = unknown
         self._nav_params: dict[str, float] = {}  # latest nav_params JSON from navigator.py
@@ -189,6 +203,7 @@ class MavlinkBridgeNode(Node):
         self.create_timer(1.0,  self._send_sys_status)
         self.create_timer(1.0,  self._send_named_values)
         self.create_timer(0.5,  self._mission_retry)   # retransmit lost MISSION_REQUEST_INT
+        self.create_timer(1.0,  self._check_resource_levels)  # battery/tank threshold check
 
         self.get_logger().info(
             f'MAVLink bridge sysid={self._rover_id} '
@@ -224,15 +239,32 @@ class MavlinkBridgeNode(Node):
                 self.get_logger().info(f'WP{msg.data} reached — applying servo CH{sn}={pw}')
                 self._apply_servo_cmd(sn, pw)
         if msg.data == -1:
-            # Mission complete — auto-disarm and reset mission state → STATUS → NA
-            self._armed         = False
-            self._mission_count = 0
-            self._mission_buf   = []
             a = Bool(); a.data = False
-            self.armed_pub.publish(a)
             m = String(); m.data = 'MANUAL'
-            self.mode_pub.publish(m)
-            self.get_logger().info('Mission complete — auto-disarmed')
+            if self._resource_state == 'going_to_base':
+                # Base trip complete — wait for user to re-arm before resuming original mission
+                self._resource_state = 'at_base'
+                self._armed          = False
+                self._mission_count  = 0
+                self._mission_buf    = []
+                self._wp_servo_map   = {}
+                self.armed_pub.publish(a)
+                self.mode_pub.publish(m)
+                reason_label = 'battery' if self._resource_reason == 'battery' else 'tank'
+                self.get_logger().info(
+                    f'[RESOURCE] Arrived at base ({reason_label}) — re-arm to resume mission '
+                    f'from WP{self._resume_wp_seq}')
+                self._send_statustext(
+                    f'At base ({reason_label}) — re-arm to resume WP{self._resume_wp_seq}')
+            else:
+                # Normal mission complete — auto-disarm and reset mission state → STATUS → NA
+                self._armed          = False
+                self._mission_count  = 0
+                self._mission_buf    = []
+                self._wp_servo_map   = {}
+                self.armed_pub.publish(a)
+                self.mode_pub.publish(m)
+                self.get_logger().info('Mission complete — auto-disarmed')
 
     def _cb_xte(self, msg: Float32):
         self._xte = msg.data
@@ -521,6 +553,12 @@ class MavlinkBridgeNode(Node):
                     self._last_nav_wp_seq    = None
                     self._mission_retry_count  = 0
                     self._mission_retry_at_seq = None
+                    # Cancel any in-progress resource management — user uploaded a new mission
+                    if self._resource_state in ('going_to_base', 'at_base'):
+                        self.get_logger().info(
+                            '[RESOURCE] Manual mission upload — cancelling resource management')
+                        self._resource_state = 'normal'
+                        self._resume_mission  = []
                     self.get_logger().info(
                         f'Mission upload started: {msg.count} items '
                         f'from sysid={msg.get_srcSystem()}')
@@ -769,6 +807,167 @@ class MavlinkBridgeNode(Node):
             time.sleep(0.02)  # 20 ms gap to avoid UDP burst loss
         self.get_logger().info(f'PARAM_REQUEST_LIST: sent {count} params to GQC')
 
+    # ── Resource management ───────────────────────────────────────────────────
+
+    def _send_statustext(self, text: str, severity: int = 3):
+        """Send MAVLink STATUSTEXT to GQC. severity: 3=WARNING (shown in MK32 log)."""
+        try:
+            msg = self._mav.mav.statustext_encode(severity, text[:50].encode('ascii', errors='ignore'))
+            self._send(msg)
+        except Exception as e:
+            self.get_logger().warn(f'statustext send: {e}')
+
+    def _check_resource_levels(self):
+        """1 Hz: trigger base return if battery or tank falls below threshold during a mission."""
+        if self._resource_state != 'normal':
+            return  # already handling a resource event
+        if not self._armed or self._mode != 'AUTONOMOUS':
+            return  # only trigger during active autonomous operation
+        if self._wp_active < 0:
+            return  # no mission in progress
+
+        batt_low  = self.get_parameter('battery_low_pct').value
+        tank_low  = self.get_parameter('tank_low_frac').value
+
+        batt_pct = (self._test_batt_pct if self._test_batt_pct is not None
+                    else getattr(self._status, 'battery_remaining', -1) * 100)
+        tank     = (self._test_tank if self._test_tank is not None
+                    else self._sensors.tank_level)
+
+        if batt_pct >= 0 and batt_pct < batt_low:
+            self.get_logger().warn(f'[RESOURCE] Battery {batt_pct:.0f}% < {batt_low:.0f}%')
+            self._trigger_return_to_base('battery')
+        elif tank >= 0 and tank < tank_low:
+            self.get_logger().warn(f'[RESOURCE] Tank {tank:.3f} < {tank_low:.3f}')
+            self._trigger_return_to_base('tank')
+
+    def _trigger_return_to_base(self, reason: str):
+        """Disarm rover, save mission progress, upload single-waypoint base trip, notify GQC."""
+        self._resource_state  = 'going_to_base'
+        self._resource_reason = reason
+
+        # Snapshot the current mission and servo map for later resume
+        self._resume_mission  = list(self._mission_buf)
+        self._resume_wp_seq   = self._wp_active
+        # Renumber servo map relative to the resume waypoint (drop entries already passed)
+        self._resume_servo_map = {
+            (seq - self._resume_wp_seq): cmds
+            for seq, cmds in self._wp_servo_map.items()
+            if seq >= self._resume_wp_seq
+        }
+
+        # Disarm and stop navigator
+        self._armed = False
+        self._mode  = 'MANUAL'
+        a = Bool(); a.data = False
+        self.armed_pub.publish(a)
+        m = String(); m.data = 'MANUAL'
+        self.mode_pub.publish(m)
+
+        # Select the appropriate base station
+        if reason == 'battery':
+            station_lat = self.get_parameter('recharge_lat').value
+            station_lon = self.get_parameter('recharge_lon').value
+            label       = 'BATTERY LOW'
+        else:
+            station_lat = self.get_parameter('water_lat').value
+            station_lon = self.get_parameter('water_lon').value
+            label       = 'TANK LOW'
+        accept_r = self.get_parameter('base_acceptance_m').value
+
+        self.get_logger().warn(
+            f'[RESOURCE] {label} — disarmed; base trip to ({station_lat:.6f},{station_lon:.6f}); '
+            f'resume from WP{self._resume_wp_seq}')
+        self._send_statustext(f'{label}: going to base, WP{self._resume_wp_seq} saved')
+
+        # Build a single-waypoint mission to the base station
+        wp           = MissionWaypoint()
+        wp.seq               = 0
+        wp.latitude          = station_lat
+        wp.longitude         = station_lon
+        wp.speed             = 0.5
+        wp.acceptance_radius = float(accept_r)
+        wp.hold_secs         = 0.0
+        self._internal_upload_mission([wp])
+
+    def _internal_upload_mission(self, waypoints: list):
+        """Upload a mission generated internally (not from GQC).
+
+        Publishes waypoints to the navigator via ROS2 topics and broadcasts the
+        MISSION_COUNT + MISSION_ITEM_INT sequence over UDP so GQC and mission_planner
+        display the new mission.
+        """
+        with self._mission_lock:
+            self._mission_count      = len(waypoints)
+            self._mission_buf        = list(waypoints)
+            self._fence_buf          = []
+            self._mission_src        = None
+            self._mission_expect_seq = None
+        self._wp_servo_map    = {}
+        self._last_nav_wp_seq = None
+
+        # Clear navigator and publish new waypoints
+        clr = Bool(); clr.data = True
+        self.mission_clear_pub.publish(clr)
+        for wp in waypoints:
+            self.mission_pub.publish(wp)
+        # Publish empty fence so navigator rebuilds its path (no obstacles for base trip)
+        fence_msg = String()
+        fence_msg.data = json.dumps({'polygons': []})
+        self.fence_pub.publish(fence_msg)
+
+        # Broadcast via MAVLink so GQC and mission_planner see the new mission
+        threading.Thread(
+            target=self._broadcast_mission_mavlink, args=(list(waypoints),), daemon=True
+        ).start()
+
+    def _broadcast_mission_mavlink(self, waypoints: list):
+        """Send MISSION_COUNT + MISSION_ITEM_INT to broadcast so GQC and tools update."""
+        try:
+            count_msg = self._mav.mav.mission_count_encode(0, 0, len(waypoints), 0)
+            self._udp_sock.sendto(count_msg.pack(self._mav.mav), self._gqc_addr)
+            time.sleep(0.15)
+            for i, wp in enumerate(waypoints):
+                item = self._mav.mav.mission_item_int_encode(
+                    target_system=0, target_component=0,
+                    seq=i, frame=6, command=16,
+                    current=0, autocontinue=1,
+                    param1=float(wp.hold_secs), param2=0.0, param3=0.0, param4=0.0,
+                    x=int(wp.latitude  * 1e7), y=int(wp.longitude * 1e7),
+                    z=float(wp.speed), mission_type=0)
+                self._udp_sock.sendto(item.pack(self._mav.mav), self._gqc_addr)
+                time.sleep(0.02)
+        except Exception as e:
+            self.get_logger().warn(f'_broadcast_mission_mavlink: {e}')
+
+    def _upload_resume_mission(self):
+        """Re-upload the saved mission from _resume_wp_seq — called on re-arm at_base."""
+        wps = self._resume_mission[self._resume_wp_seq:]
+        if not wps:
+            self.get_logger().warn('[RESOURCE] Resume mission empty — clearing resource state')
+            self._resource_state = 'normal'
+            return
+        # Renumber seq from 0
+        renumbered = []
+        for i, orig in enumerate(wps):
+            wp               = MissionWaypoint()
+            wp.seq               = i
+            wp.latitude          = orig.latitude
+            wp.longitude         = orig.longitude
+            wp.speed             = orig.speed
+            wp.acceptance_radius = orig.acceptance_radius
+            wp.hold_secs         = orig.hold_secs
+            renumbered.append(wp)
+
+        self._resource_state  = 'normal'
+        # Restore renumbered servo map
+        self._wp_servo_map = dict(self._resume_servo_map)
+        self.get_logger().info(
+            f'[RESOURCE] Resuming from WP{self._resume_wp_seq} '
+            f'({len(renumbered)} waypoints remaining)')
+        self._send_statustext(f'Resuming mission from WP{self._resume_wp_seq}')
+        self._internal_upload_mission(renumbered)
+
     def _on_rc_override(self, msg):
         rc = RCInput()
         raw = [msg.chan1_raw, msg.chan2_raw, msg.chan3_raw, msg.chan4_raw,
@@ -780,7 +979,11 @@ class MavlinkBridgeNode(Node):
 
     def _on_command_long(self, msg):
         if msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
-            self._armed = (msg.param1 == 1.0)
+            arming = (msg.param1 == 1.0)
+            if arming and self._resource_state == 'at_base':
+                # User re-arming after base trip — upload the saved resume mission first
+                self._upload_resume_mission()
+            self._armed = arming
             self.get_logger().info(f'{"ARM" if self._armed else "DISARM"} command received')
             a = Bool(); a.data = self._armed
             self.armed_pub.publish(a)
