@@ -895,9 +895,10 @@ class MavlinkBridgeNode(Node):
         self._resource_state  = 'going_to_base'
         self._resource_reason = reason
 
-        # Snapshot the current mission, servo map, fence, and rover position for later resume
+        # Snapshot the current mission, servo map, fence, and rover position for later resume.
+        # _wp_active is the last REACHED waypoint — resume from the NEXT one.
         self._resume_mission   = list(self._mission_buf)
-        self._resume_wp_seq    = self._wp_active
+        self._resume_wp_seq    = min(self._wp_active + 1, len(self._mission_buf))
         self._resume_fence_buf = list(self._fence_buf)   # save before _internal_upload_mission clears it
         self._resume_position  = (self._fix.latitude, self._fix.longitude)
         # Renumber servo map relative to the resume waypoint (drop entries already passed)
@@ -1098,10 +1099,15 @@ class MavlinkBridgeNode(Node):
 
         n_obs = len(self._resume_fence_buf)
         self.get_logger().info(
-            f'[RESOURCE] Resume mission ready: {len(renumbered)} WPs '
-            f'(base → stopped → WP{self._resume_wp_seq}+), fence={n_obs} vertices')
+            f'[RESOURCE] Resume mission: {len(renumbered)} WPs '
+            f'(base → stopped → WP{self._resume_wp_seq}..WP{self._resume_wp_seq + len(wps) - 1}), '
+            f'fence={n_obs} vertices')
+        for i, wp in enumerate(renumbered):
+            label = 'BASE' if i == 0 else ('STOP' if i == 1 and self._resume_position else f'WP{wp.seq}')
+            self.get_logger().info(
+                f'  resume[{i}] {label}: ({wp.latitude:.7f},{wp.longitude:.7f})')
         self._send_statustext(
-            f'Resume ready — re-arm to continue from WP{self._resume_wp_seq}')
+            f'Resume: {len(renumbered)} WPs from WP{self._resume_wp_seq} — check map')
         self._internal_upload_mission(renumbered, fence_buf=self._resume_fence_buf)
 
         # Restore servo map AFTER _internal_upload_mission (which clears it).
