@@ -2128,19 +2128,23 @@ class NavigatorNode(Node):
             if self._expanded_polygons:
                 self._reroute_path()
 
-        # ── wp0 proximity skip ───────────────────────────────────────────────
-        # If the rover is already at wp0 (e.g. resume mission where wp0 = base
-        # station = rover's current position), the origin→wp0 segment has near-
-        # zero length and steering calculations degenerate. Skip wp0 immediately
-        # if within acceptance radius; otherwise navigate to it normally.
+        # ── wp0 degenerate-segment skip ──────────────────────────────────────
+        # When path_origin ≈ wp0 (e.g. resume mission where both were captured
+        # at the base station), the origin→wp0 segment has near-zero length and
+        # steering degenerates even if the rover drifted a few metres via GPS.
+        # Skip wp0 if (a) the segment itself is short OR (b) the rover is close.
         if self._path_idx == 0 and len(self._path) > 1:
-            rlat, rlon = self._center_pos()
             wp0 = self._path[0]
-            d = haversine(rlat, rlon, wp0.latitude, wp0.longitude)
             ar = wp0.acceptance_radius if wp0.acceptance_radius > 0 else self._accept_r
-            if d < ar:
+            # Check segment length (origin→wp0)
+            seg_len = self._path_s[0] if self._path_s else 0.0
+            # Check rover distance to wp0
+            rlat, rlon = self._center_pos()
+            d = haversine(rlat, rlon, wp0.latitude, wp0.longitude)
+            if seg_len < ar or d < ar:
                 self.get_logger().info(
-                    f'Already at wp0 (seq={wp0.seq}, {d:.2f}m < {ar:.2f}m) — advancing')
+                    f'wp0 skip (seq={wp0.seq}, seg_len={seg_len:.2f}m, '
+                    f'dist={d:.2f}m, accept={ar:.2f}m) — advancing')
                 self._advance_path()
                 return
 

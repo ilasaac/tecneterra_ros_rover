@@ -1288,13 +1288,14 @@ class PathNavigator:
                 self._advance()
             return PPM_CENTER, PPM_CENTER, self.path_idx, False
 
-        # wp0 proximity skip — if already at wp0, advance immediately to avoid
-        # degenerate steering on a near-zero-length origin→wp0 segment.
+        # wp0 degenerate-segment skip — if origin→wp0 segment is near-zero
+        # length or rover is already at wp0, advance to avoid degenerate steering.
         if self.path_idx == 0 and len(self._wps) > 1:
             wp0 = self._wps[0]
-            d = _haversine(rlat, rlon, wp0.lat, wp0.lon)
             ar = wp0.accept if wp0.accept > 0 else self._accept_r
-            if d < ar:
+            seg_len = self._path_s[0] if self._path_s else 0.0
+            d = _haversine(rlat, rlon, wp0.lat, wp0.lon)
+            if seg_len < ar or d < ar:
                 self._advance()
                 if self.path_idx >= len(self._wps):
                     return PPM_CENTER, PPM_CENTER, 0, True
