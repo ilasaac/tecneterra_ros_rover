@@ -244,6 +244,18 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         onConnectionChange = { sysId, connected ->
             runOnUiThread { updateHbDot(sysId, connected) }
+            if (connected) {
+                batteryPoint?.let { pos ->
+                    val p1 = (pos.latitude  * 1e5).toFloat()
+                    val p2 = (pos.longitude * 1e5).toFloat()
+                    roverManager.sendCommand(sysId, 50001, p1, p2)
+                }
+                waterPoint?.let { pos ->
+                    val p1 = (pos.latitude  * 1e5).toFloat()
+                    val p2 = (pos.longitude * 1e5).toFloat()
+                    roverManager.sendCommand(sysId, 50002, p1, p2)
+                }
+            }
         },
 
         // RC_CHANNELS (#65) — PPM µs values from RP2040 (physical RC sticks via HM30/SBUS)
