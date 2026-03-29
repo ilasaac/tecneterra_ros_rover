@@ -1274,16 +1274,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         roverMissions[selectedRoverId]          = ArrayList(routePoints)
         roverMissionVisible[selectedRoverId]    = true
         roverNextWaypointIndex[selectedRoverId] = 0
-        // Clear planner route so the white overlay disappears — mission is now
-        // shown by redrawRoverMissions() in rover color.
-        routePoints.clear()
-        recordedMission.clear()
-        redrawMap()
-        redrawRoverMissions()
 
+        // Build upload payload BEFORE clearing planner state
         val servoCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
-        val actions: List<MissionAction> = if (servoCount > 0) recordedMission
+        val actions: List<MissionAction> = if (servoCount > 0) ArrayList(recordedMission)
             else routePoints.map { MissionAction.Waypoint(it.latitude, it.longitude) }
+        val wpCount = routePoints.size
 
         if (obstaclePolygons.isNotEmpty()) {
             val obsLatLon = obstaclePolygons.map { poly ->
@@ -1291,20 +1287,27 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
             roverManager.uploadMissionWithObstacles(selectedRoverId, actions, obsLatLon)
             Toast.makeText(this,
-                "Uploading ${routePoints.size} WPs + ${obstaclePolygons.size} obstacle(s) to Rover $selectedRoverId…",
+                "Uploading $wpCount WPs + ${obstaclePolygons.size} obstacle(s) to Rover $selectedRoverId…",
                 Toast.LENGTH_SHORT).show()
         } else if (servoCount > 0) {
-            roverManager.uploadRecordedMission(selectedRoverId, recordedMission)
+            roverManager.uploadRecordedMission(selectedRoverId, ArrayList(recordedMission))
             Toast.makeText(this,
-                "Uploading ${routePoints.size} WPs + $servoCount servo cmds to Rover $selectedRoverId…",
+                "Uploading $wpCount WPs + $servoCount servo cmds to Rover $selectedRoverId…",
                 Toast.LENGTH_SHORT).show()
         } else {
             roverManager.uploadMission(selectedRoverId,
                 routePoints.map { Pair(it.latitude, it.longitude) })
             Toast.makeText(this,
-                "Uploading ${routePoints.size} WPs to Rover $selectedRoverId…",
+                "Uploading $wpCount WPs to Rover $selectedRoverId…",
                 Toast.LENGTH_SHORT).show()
         }
+
+        // Clear planner route AFTER upload is dispatched — white overlay disappears,
+        // mission is now shown by redrawRoverMissions() in rover color.
+        routePoints.clear()
+        recordedMission.clear()
+        redrawMap()
+        redrawRoverMissions()
     }
 
     private fun showRerouteConfirmation(sysId: Int) {
