@@ -991,41 +991,35 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         if (path.isEmpty()) return
 
         val overlays = reroutedPathOverlays[roverId]!!
-        // Bypass detour segments shown in rover color; original path in green
+        // Only draw bypass detour segments in rover color (orange RV1, cyan RV2).
+        // Original (non-bypass) path segments are already shown by redrawRoverMissions().
         val roverColor = if (roverId == 1) Color.parseColor("#FF9800")
                          else              Color.parseColor("#00BCD4")
-        val plannedColor = Color.parseColor("#4CAF50")
         val pattern = listOf<com.google.android.gms.maps.model.PatternItem>(
             com.google.android.gms.maps.model.Dot(),
             com.google.android.gms.maps.model.Gap(10f)
         )
 
-        // Walk the path and emit a new polyline segment each time isBypass toggles
+        // Walk the path and emit polyline segments only for bypass (detour) portions
         var segStart = 0
         var segBypass = path[0].third
         for (i in 1..path.size) {
             val flip = i == path.size || path[i].third != segBypass
             if (flip) {
-                val pts = path.slice(segStart until i)
-                    .map { LatLng(it.first, it.second) }
-                val color = if (segBypass) roverColor else plannedColor
-                overlays.add(map.addPolyline(
-                    PolylineOptions().addAll(pts).width(6f).color(color).pattern(pattern).zIndex(2f)
-                ))
+                if (segBypass) {
+                    val pts = path.slice(segStart until i)
+                        .map { LatLng(it.first, it.second) }
+                    overlays.add(map.addPolyline(
+                        PolylineOptions().addAll(pts).width(6f).color(roverColor)
+                            .pattern(pattern).zIndex(2f)
+                    ))
+                }
                 if (i < path.size) {
                     segStart  = i - 1   // overlap by 1 pt so segments connect
                     segBypass = path[i].third
                 }
             }
         }
-
-        // Yellow start marker — always on top of polyline
-        val startPt = LatLng(path[0].first, path[0].second)
-        map.addMarker(
-            MarkerOptions().position(startPt).anchor(0.5f, 0.5f)
-                .icon(createDotBitmap(Color.parseColor("#FFD600"), 14))
-                .flat(true).zIndex(3f)
-        )?.also { overlays.add(it) }
     }
 
     /** Redraw the in-progress obstacle draft as a closed polyline. */
@@ -1280,6 +1274,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         roverMissions[selectedRoverId]          = ArrayList(routePoints)
         roverMissionVisible[selectedRoverId]    = true
         roverNextWaypointIndex[selectedRoverId] = 0
+        // Clear planner route so the white overlay disappears — mission is now
+        // shown by redrawRoverMissions() in rover color.
+        routePoints.clear()
+        recordedMission.clear()
         redrawMap()
         redrawRoverMissions()
 
