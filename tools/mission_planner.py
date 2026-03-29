@@ -312,6 +312,36 @@ def _mavlink_upload(waypoints: list, obstacles: list,
     except Exception as e:
         return {'ok': False, 'message': str(e)}
 
+# ── MAVLink test sensor injection ─────────────────────────────────────────────
+def _mavlink_send_test_sensors(rover_ip: str, rover_port: int, rover_sysid: int,
+                                tank_level: float, batt_v: float) -> dict:
+    """Send PARAM_SET TANK_LEVEL + BATT_V to mavlink_bridge for test injection."""
+    os.environ.setdefault('MAVLINK20', '1')
+    try:
+        from pymavlink.dialects.v20 import ardupilotmega as _mav_def
+    except ImportError:
+        return {'ok': False, 'message': 'pymavlink not installed'}
+    try:
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        mav  = _mav_def.MAVLink(None)
+        mav.srcSystem    = 255
+        mav.srcComponent = 0
+        MAV_PARAM_TYPE_REAL32 = 9
+        def _send(pkt):
+            sock.sendto(pkt.pack(mav), (rover_ip, rover_port))
+        _send(mav.param_set_encode(
+            rover_sysid, 0, b'TANK_LEVEL',
+            float(tank_level), MAV_PARAM_TYPE_REAL32))
+        _time.sleep(0.05)
+        _send(mav.param_set_encode(
+            rover_sysid, 0, b'BATT_V',
+            float(batt_v), MAV_PARAM_TYPE_REAL32))
+        sock.close()
+        return {'ok': True,
+                'message': f'Test sensors → RV{rover_sysid}: tank={tank_level:.2f}  batt={batt_v:.1f} V'}
+    except Exception as e:
+        return {'ok': False, 'message': str(e)}
+
 # ── HTML page (single-file app) ───────────────────────────────────────────────
 _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -421,6 +451,21 @@ tr:hover td{background:#1e1e3a}
                   style="width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 2px;border-radius:2px;font-size:10px;text-align:center"></div>
     </div>
     <div id="servo-live" style="font-size:9px;color:#555;margin-top:3px">Rover: —</div>
+  </div>
+  <div class="section" style="background:#1a0808">
+    <div style="color:#f88;font-size:10px;margin-bottom:3px">&#128290; Test Sensors (inject)</div>
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 6px;align-items:center">
+      <span style="color:#aaa;font-size:10px">Tank (0–1)</span>
+      <input id="ts-tank" type="number" min="0" max="1" step="0.05" value="0.8"
+             style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
+      <span style="color:#aaa;font-size:10px">Battery (V)</span>
+      <input id="ts-batt" type="number" min="0" max="50" step="0.1" value="12.5"
+             style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
+    </div>
+    <div style="display:flex;gap:3px;margin-top:4px">
+      <button class="btn-orange" style="flex:1;padding:3px;font-size:10px" onclick="sendTestSensors(1)">&#9650; RV1</button>
+      <button class="btn-blue"   style="flex:1;padding:3px;font-size:10px" onclick="sendTestSensors(2)">&#9650; RV2</button>
+    </div>
   </div>
   <div class="section" style="background:#1a0d2e">
     <div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
@@ -1535,6 +1580,22 @@ function applyBulkSpeed() {
   status(`Speed set to ${spd} m/s on all ${waypoints.length} waypoints.`);
 }
 
+async function sendTestSensors(roverId) {
+  const tank = parseFloat(document.getElementById('ts-tank').value);
+  const batt = parseFloat(document.getElementById('ts-batt').value);
+  const rover_ip = document.getElementById(`r-ip-rv${roverId}`).value.trim();
+  status(`Sending test sensors to RV${roverId}…`, '#f39c12');
+  try {
+    const resp = await fetch('/send_test_sensors', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rover_ip, rover_port: 14550, rover_sysid: roverId,
+                            tank_level: tank, batt_v: batt}),
+    });
+    const d = await resp.json();
+    status(d.message || (d.ok ? 'Sent' : 'Error'), d.ok ? '#27ae60' : '#e74c3c');
+  } catch(e) { status('Network error: ' + e, '#e74c3c'); }
+}
+
 async function importSnooped() {
   const resp = await fetch('/snooped_mission');
   const d = await resp.json();
@@ -2053,6 +2114,21 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(result)
             except Exception as e:
                 print(f'[upload] handler error: {e}', flush=True)
+                self._json({'ok': False, 'message': f'Server error: {e}'})
+
+        elif self.path == '/send_test_sensors':
+            try:
+                data       = json.loads(raw)
+                rover_ip   = data.get('rover_ip', '192.168.100.19')
+                rover_port = int(data.get('rover_port', 14550))
+                rover_sysid = int(data.get('rover_sysid', 1))
+                tank_level = float(data.get('tank_level', 0.5))
+                batt_v     = float(data.get('batt_v', 12.0))
+                result = _mavlink_send_test_sensors(
+                    rover_ip, rover_port, rover_sysid, tank_level, batt_v)
+                print(f'[test_sensors] {result["message"]}', flush=True)
+                self._json(result)
+            except Exception as e:
                 self._json({'ok': False, 'message': f'Server error: {e}'})
 
         elif self.path == '/analyze':

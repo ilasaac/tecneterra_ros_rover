@@ -114,6 +114,8 @@ class MavlinkBridgeNode(Node):
         self._cmd_str      = 1500        # last cmd_override steering (CH2), for telemetry
         self._cmd_channels: list[int] = []  # full cmd_override channel list
         self._wp_active   = -1    # active waypoint seq from navigator (-1 = none)
+        self._test_tank:   float | None = None  # test-injected tank level (0-1)
+        self._test_batt_v: float | None = None  # test-injected battery voltage (V)
         self._xte         = 0.0   # cross-track error from navigator (metres)
         self._mission_buf: list[MissionWaypoint] = []
         self._mission_count = 0
@@ -411,7 +413,7 @@ class MavlinkBridgeNode(Node):
         self._send(self._mav.mav.sys_status_encode(
             0, 0, 0,
             500,   # load % * 10
-            int(getattr(self._status, 'battery_voltage', 0) * 1000),
+            int((self._test_batt_v if self._test_batt_v is not None else getattr(self._status, 'battery_voltage', 0)) * 1000),
             -1,    # current unknown
             int(getattr(self._status, 'battery_remaining', -1) * 100),
             0, 0, 0, 0, 0, 0,
@@ -421,7 +423,7 @@ class MavlinkBridgeNode(Node):
         t = self._uptime_ms()
         nav_status = 2.0 if self._armed else (1.0 if self._mission_count > 0 else 0.0)
         pairs = [
-            ('TANK',     self._sensors.tank_level),
+            ('TANK',     self._test_tank   if self._test_tank   is not None else self._sensors.tank_level),
             ('TEMP',     self._sensors.temperature),
             ('HUMID',    self._sensors.humidity),
             ('PRESSURE', self._sensors.pressure),
@@ -575,6 +577,15 @@ class MavlinkBridgeNode(Node):
                         continue
                     raw = msg.param_id
                     mav_name = raw.rstrip('\x00') if isinstance(raw, str) else raw.rstrip(b'\x00').decode('ascii', errors='ignore')
+                    # Test sensor injection (from mission_planner or other tools)
+                    if mav_name == 'TANK_LEVEL':
+                        self._test_tank = float(msg.param_value)
+                        self.get_logger().info(f'[TEST] tank_level={self._test_tank:.3f}')
+                        continue
+                    if mav_name == 'BATT_V':
+                        self._test_batt_v = float(msg.param_value)
+                        self.get_logger().info(f'[TEST] battery={self._test_batt_v:.2f} V')
+                        continue
                     ros_name = _MAVLINK_PARAMS.get(mav_name)
                     if ros_name is None:
                         self.get_logger().warn(f'PARAM_SET: unknown param "{mav_name}"')
