@@ -950,7 +950,7 @@ class MavlinkBridgeNode(Node):
         wp_here.seq               = 0
         wp_here.latitude          = self._fix.latitude
         wp_here.longitude         = self._fix.longitude
-        wp_here.speed             = 0.5
+        wp_here.speed             = 0.9
         wp_here.acceptance_radius = float(accept_r)
         wp_here.hold_secs         = 0.0
 
@@ -958,7 +958,7 @@ class MavlinkBridgeNode(Node):
         wp_base.seq               = 1
         wp_base.latitude          = station_lat
         wp_base.longitude         = station_lon
-        wp_base.speed             = 0.5
+        wp_base.speed             = 0.9
         wp_base.acceptance_radius = float(accept_r)
         wp_base.hold_secs         = 0.0
 
