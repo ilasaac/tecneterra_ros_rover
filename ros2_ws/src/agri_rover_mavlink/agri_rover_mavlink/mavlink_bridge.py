@@ -151,6 +151,8 @@ class MavlinkBridgeNode(Node):
         self._resume_mission:  list        = []    # snapshot of _mission_buf at trigger time
         self._resume_wp_seq    = 0                 # wp_active index to resume from
         self._resume_servo_map: dict       = {}    # servo map renumbered for resume mission
+        self._resume_fence_buf: list       = []    # obstacle fence saved at trigger time
+        self._resume_position: tuple | None = None  # (lat, lon) rover position at trigger
         # Runtime station overrides (set via GQC cmd 50001/50002); override YAML params
         self._recharge_lat: float | None = None
         self._recharge_lon: float | None = None
@@ -721,20 +723,21 @@ class MavlinkBridgeNode(Node):
         self.get_logger().info(
             f'Mission download: sent {len(items)} waypoints to GQC (PATH_VER={self._path_version})')
 
-    def _parse_fence_polygons(self) -> list[list[list[float]]]:
+    def _parse_fence_polygons(self, buf=None) -> list[list[list[float]]]:
         """
-        Parse _fence_buf (list of (lat, lon, vertex_count)) into a list of polygons.
+        Parse a fence buffer (list of (lat, lon, vertex_count)) into a list of polygons.
 
         Each polygon is defined by consecutive items with the same vertex_count.
         When vertex_count consecutive vertices have been collected, a polygon is closed
         and the next vertex starts a new polygon.
 
+        buf defaults to self._fence_buf if not provided.
         Returns: [[[lat, lon], ...], ...] — JSON-serialisable list of polygons.
         """
         polygons: list[list[list[float]]] = []
         current: list[list[float]] = []
         expected = 0
-        for (lat, lon, vertex_count) in self._fence_buf:
+        for (lat, lon, vertex_count) in (buf if buf is not None else self._fence_buf):
             if expected == 0:
                 expected = vertex_count
             current.append([lat, lon])
@@ -851,9 +854,11 @@ class MavlinkBridgeNode(Node):
         self._resource_state  = 'going_to_base'
         self._resource_reason = reason
 
-        # Snapshot the current mission and servo map for later resume
-        self._resume_mission  = list(self._mission_buf)
-        self._resume_wp_seq   = self._wp_active
+        # Snapshot the current mission, servo map, fence, and rover position for later resume
+        self._resume_mission   = list(self._mission_buf)
+        self._resume_wp_seq    = self._wp_active
+        self._resume_fence_buf = list(self._fence_buf)   # save before _internal_upload_mission clears it
+        self._resume_position  = (self._fix.latitude, self._fix.longitude)
         # Renumber servo map relative to the resume waypoint (drop entries already passed)
         self._resume_servo_map = {
             (seq - self._resume_wp_seq): cmds
@@ -894,32 +899,49 @@ class MavlinkBridgeNode(Node):
             return
         accept_r = self.get_parameter('base_acceptance_m').value
 
+        n_obs = len(self._resume_fence_buf)
         self.get_logger().warn(
             f'[RESOURCE] {label} — disarmed; base trip to ({station_lat:.6f},{station_lon:.6f}); '
-            f'resume from WP{self._resume_wp_seq}')
+            f'resume from WP{self._resume_wp_seq}; fence={n_obs} vertices')
         self._send_statustext(f'{label}: going to base, WP{self._resume_wp_seq} saved')
 
-        # Build a single-waypoint mission to the base station
-        wp           = MissionWaypoint()
-        wp.seq               = 0
-        wp.latitude          = station_lat
-        wp.longitude         = station_lon
-        wp.speed             = 0.5
-        wp.acceptance_radius = float(accept_r)
-        wp.hold_secs         = 0.0
-        self._internal_upload_mission([wp])
+        # Build base-trip mission: WP0 = rover's current position, WP1 = base station.
+        # Starting from the rover's own position lets the navigator reroute around any
+        # obstacles that lie between the rover and the station.
+        wp_here = MissionWaypoint()
+        wp_here.seq               = 0
+        wp_here.latitude          = self._fix.latitude
+        wp_here.longitude         = self._fix.longitude
+        wp_here.speed             = 0.5
+        wp_here.acceptance_radius = float(accept_r)
+        wp_here.hold_secs         = 0.0
 
-    def _internal_upload_mission(self, waypoints: list):
+        wp_base = MissionWaypoint()
+        wp_base.seq               = 1
+        wp_base.latitude          = station_lat
+        wp_base.longitude         = station_lon
+        wp_base.speed             = 0.5
+        wp_base.acceptance_radius = float(accept_r)
+        wp_base.hold_secs         = 0.0
+
+        self._internal_upload_mission([wp_here, wp_base],
+                                      fence_buf=self._resume_fence_buf)
+
+    def _internal_upload_mission(self, waypoints: list, fence_buf: list | None = None):
         """Upload a mission generated internally (not from GQC).
 
-        Publishes waypoints to the navigator via ROS2 topics and broadcasts the
-        MISSION_COUNT + MISSION_ITEM_INT sequence over UDP so GQC and mission_planner
-        display the new mission.
+        Publishes waypoints and optional obstacle fence to the navigator via ROS2 topics
+        and broadcasts MISSION_COUNT + MISSION_ITEM_INT (+ fence items) over UDP so GQC
+        and mission_planner display the new mission with obstacles.
+
+        fence_buf: list of (lat, lon, vertex_count) tuples — same format as self._fence_buf.
+                   Pass the saved _resume_fence_buf so the navigator reroutes around
+                   obstacles on both the base trip and the resume leg.
         """
         with self._mission_lock:
             self._mission_count      = len(waypoints)
             self._mission_buf        = list(waypoints)
-            self._fence_buf          = []
+            self._fence_buf          = list(fence_buf) if fence_buf else []
             self._mission_src        = None
             self._mission_expect_seq = None
         self._wp_servo_map    = {}
@@ -930,35 +952,54 @@ class MavlinkBridgeNode(Node):
         self.mission_clear_pub.publish(clr)
         for wp in waypoints:
             self.mission_pub.publish(wp)
-        # Publish empty fence so navigator rebuilds its path (no obstacles for base trip)
+        # Publish fence (may be empty for base trip without obstacles)
+        polys = self._parse_fence_polygons(fence_buf) if fence_buf else []
         fence_msg = String()
-        fence_msg.data = json.dumps({'polygons': []})
+        fence_msg.data = json.dumps({'polygons': polys})
         self.fence_pub.publish(fence_msg)
 
-        # Broadcast via MAVLink so GQC and mission_planner see the new mission
+        # Broadcast via MAVLink so GQC and mission_planner see the new mission + obstacles
         threading.Thread(
-            target=self._broadcast_mission_mavlink, args=(list(waypoints),), daemon=True
+            target=self._broadcast_mission_mavlink,
+            args=(list(waypoints), list(fence_buf) if fence_buf else []),
+            daemon=True
         ).start()
 
-    def _broadcast_mission_mavlink(self, waypoints: list):
-        """Send MISSION_COUNT + MISSION_ITEM_INT to broadcast AND unicast so GQC updates."""
+    def _broadcast_mission_mavlink(self, waypoints: list, fence_buf: list | None = None):
+        """Send MISSION_COUNT + fence items + MISSION_ITEM_INT to broadcast AND unicast."""
+        fence_buf = fence_buf or []
         def _sendto(buf):
             self._udp_sock.sendto(buf, self._gqc_addr)
             if self._gqc_unicast:
                 self._udp_sock.sendto(buf, self._gqc_unicast)
         try:
-            count_msg = self._mav.mav.mission_count_encode(0, 0, len(waypoints), 0)
+            total = len(fence_buf) + len(waypoints)
+            count_msg = self._mav.mav.mission_count_encode(0, 0, total, 0)
             _sendto(count_msg.pack(self._mav.mav))
             time.sleep(0.15)
-            for i, wp in enumerate(waypoints):
+            seq = 0
+            # Fence vertices first (cmd=5003) so GQC/planner reconstruct obstacle polygons
+            for (lat, lon, vertex_count) in fence_buf:
                 item = self._mav.mav.mission_item_int_encode(
                     target_system=0, target_component=0,
-                    seq=i, frame=6, command=16,
+                    seq=seq, frame=0, command=5003,
+                    current=0, autocontinue=1,
+                    param1=float(vertex_count), param2=0.0, param3=0.0, param4=0.0,
+                    x=int(lat * 1e7), y=int(lon * 1e7), z=0.0, mission_type=0)
+                _sendto(item.pack(self._mav.mav))
+                seq += 1
+                time.sleep(0.02)
+            # Waypoints
+            for wp in waypoints:
+                item = self._mav.mav.mission_item_int_encode(
+                    target_system=0, target_component=0,
+                    seq=seq, frame=6, command=16,
                     current=0, autocontinue=1,
                     param1=float(wp.hold_secs), param2=0.0, param3=0.0, param4=0.0,
                     x=int(wp.latitude  * 1e7), y=int(wp.longitude * 1e7),
                     z=float(wp.speed), mission_type=0)
                 _sendto(item.pack(self._mav.mav))
+                seq += 1
                 time.sleep(0.02)
         except Exception as e:
             self.get_logger().warn(f'_broadcast_mission_mavlink: {e}')
@@ -985,11 +1026,12 @@ class MavlinkBridgeNode(Node):
         self._resource_state  = 'normal'
         # Restore renumbered servo map
         self._wp_servo_map = dict(self._resume_servo_map)
+        n_obs = len(self._resume_fence_buf)
         self.get_logger().info(
             f'[RESOURCE] Resuming from WP{self._resume_wp_seq} '
-            f'({len(renumbered)} waypoints remaining)')
+            f'({len(renumbered)} waypoints remaining, fence={n_obs} vertices)')
         self._send_statustext(f'Resuming mission from WP{self._resume_wp_seq}')
-        self._internal_upload_mission(renumbered)
+        self._internal_upload_mission(renumbered, fence_buf=self._resume_fence_buf)
 
     def _on_rc_override(self, msg):
         rc = RCInput()
