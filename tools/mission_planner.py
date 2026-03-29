@@ -338,7 +338,7 @@ def _mavlink_send_test_sensors(rover_ip: str, rover_port: int, rover_sysid: int,
             float(batt_pct), MAV_PARAM_TYPE_REAL32))
         sock.close()
         return {'ok': True,
-                'message': f'Test sensors → RV{rover_sysid}: tank={tank_level:.2f}  batt={batt_pct:.0f}%'}
+                'message': f'Test sensors → RV{rover_sysid}: tank={tank_level:.0f}%  batt={batt_pct:.0f}%'}
     except Exception as e:
         return {'ok': False, 'message': str(e)}
 
@@ -455,8 +455,8 @@ tr:hover td{background:#1e1e3a}
   <div class="section" style="background:#1a0808">
     <div style="color:#f88;font-size:10px;margin-bottom:3px">&#128290; Test Sensors (inject)</div>
     <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 6px;align-items:center">
-      <span style="color:#aaa;font-size:10px">Tank (0–1)</span>
-      <input id="ts-tank" type="number" min="0" max="1" step="0.05" value="0.8"
+      <span style="color:#aaa;font-size:10px">Tank (%)</span>
+      <input id="ts-tank" type="number" min="0" max="100" step="1" value="80"
              style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
       <span style="color:#aaa;font-size:10px">Battery (%)</span>
       <input id="ts-batt" type="number" min="0" max="100" step="1" value="85"
@@ -2122,7 +2122,7 @@ class _Handler(BaseHTTPRequestHandler):
                 rover_ip   = data.get('rover_ip', '192.168.100.19')
                 rover_port = int(data.get('rover_port', 14550))
                 rover_sysid = int(data.get('rover_sysid', 1))
-                tank_level = float(data.get('tank_level', 0.5))
+                tank_level = float(data.get('tank_level', 50.0))
                 batt_pct   = float(data.get('batt_pct', 85.0))
                 result = _mavlink_send_test_sensors(
                     rover_ip, rover_port, rover_sysid, tank_level, batt_pct)

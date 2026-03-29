@@ -88,7 +88,7 @@ class MavlinkBridgeNode(Node):
         self.declare_parameter('water_lat',         0.0)
         self.declare_parameter('water_lon',         0.0)
         self.declare_parameter('battery_low_pct',  15.0)
-        self.declare_parameter('tank_low_frac',     0.05)
+        self.declare_parameter('tank_low_pct',       5.0)
         self.declare_parameter('base_acceptance_m', 1.5)
 
         self._rover_id   = self.get_parameter('rover_id').value
@@ -122,7 +122,7 @@ class MavlinkBridgeNode(Node):
         self._cmd_str      = 1500        # last cmd_override steering (CH2), for telemetry
         self._cmd_channels: list[int] = []  # full cmd_override channel list
         self._wp_active   = -1    # active waypoint seq from navigator (-1 = none)
-        self._test_tank:     float | None = None  # test-injected tank level (0-1)
+        self._test_tank:     float | None = None  # test-injected tank level (0-100 %)
         self._test_batt_pct: float | None = None  # test-injected battery charge (0-100 %)
         self._xte         = 0.0   # cross-track error from navigator (metres)
         self._mission_buf: list[MissionWaypoint] = []
@@ -622,8 +622,8 @@ class MavlinkBridgeNode(Node):
                     mav_name = raw.rstrip('\x00') if isinstance(raw, str) else raw.rstrip(b'\x00').decode('ascii', errors='ignore')
                     # Test sensor injection (from mission_planner or other tools)
                     if mav_name == 'TANK_LEVEL':
-                        self._test_tank = float(msg.param_value)
-                        self.get_logger().info(f'[TEST] tank_level={self._test_tank:.3f}')
+                        self._test_tank = max(0.0, min(100.0, float(msg.param_value)))
+                        self.get_logger().info(f'[TEST] tank={self._test_tank:.0f}%')
                         continue
                     if mav_name == 'BATT_PCT':
                         self._test_batt_pct = max(0.0, min(100.0, float(msg.param_value)))
@@ -832,7 +832,7 @@ class MavlinkBridgeNode(Node):
             return  # no mission in progress
 
         batt_low  = self.get_parameter('battery_low_pct').value
-        tank_low  = self.get_parameter('tank_low_frac').value
+        tank_low  = self.get_parameter('tank_low_pct').value
 
         batt_pct = (self._test_batt_pct if self._test_batt_pct is not None
                     else getattr(self._status, 'battery_remaining', -1) * 100)
@@ -843,7 +843,7 @@ class MavlinkBridgeNode(Node):
             self.get_logger().warn(f'[RESOURCE] Battery {batt_pct:.0f}% < {batt_low:.0f}%')
             self._trigger_return_to_base('battery')
         elif tank >= 0 and tank < tank_low:
-            self.get_logger().warn(f'[RESOURCE] Tank {tank:.3f} < {tank_low:.3f}')
+            self.get_logger().warn(f'[RESOURCE] Tank {tank:.0f}% < {tank_low:.0f}%')
             self._trigger_return_to_base('tank')
 
     def _trigger_return_to_base(self, reason: str):
