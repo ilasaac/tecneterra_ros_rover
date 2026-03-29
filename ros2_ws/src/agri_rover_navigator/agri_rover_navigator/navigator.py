@@ -460,6 +460,7 @@ class NavigatorNode(Node):
         self._obstacle_polygons: list[list[tuple[float, float]]]   = []
         self._expanded_polygons: list[list[tuple[float, float]]]   = []
         self._bypass_indices:    set[int]                          = set()
+        self._needs_chunk_split: bool                              = False
 
         # Hold state — rover waits at a waypoint for hold_secs before advancing.
         self._holding:  bool  = False
@@ -789,6 +790,7 @@ class NavigatorNode(Node):
         self._expanded_polygons      = []
         self._obstacle_polygons      = []
         self._reroute_pending        = False
+        self._needs_chunk_split      = False
         clr_msg = String(); clr_msg.data = '[]'
         self.rerouted_pub.publish(clr_msg)
         self._publish_halt()
@@ -815,6 +817,7 @@ class NavigatorNode(Node):
             self._expanded_polygons      = []
             self._obstacle_polygons      = []
             self._reroute_pending        = False
+            self._needs_chunk_split      = False
             # Record rover centre as path origin (start of virtual segment → wp[0]).
             if self._fix is not None:
                 self._path_origin_lat, self._path_origin_lon = self._center_pos()
@@ -840,8 +843,8 @@ class NavigatorNode(Node):
             self._path_s.append(self._path_s[-1] + d)
 
         self.get_logger().info(
-            f'Waypoint {msg.seq} loaded '
-            f'({len(self._path)} total, path length {self._path_s[-1]:.1f} m)')
+            f'WP seq={msg.seq} loaded ({msg.latitude:.7f},{msg.longitude:.7f}) '
+            f'— {len(self._path)} total, path {self._path_s[-1]:.1f} m')
 
         # If expanded obstacle polygons are already available (fence arrived before
         # the last waypoint), reroute incrementally so the final path is correct.
@@ -1263,9 +1266,10 @@ class NavigatorNode(Node):
                 tag = 'BYPASS' if k in new_bypass_indices else 'orig'
                 self.get_logger().info(f'  path[{k}] {tag}: seq={wp.seq} {wp.latitude:.7f},{wp.longitude:.7f}')
 
-        # Split the complete rerouted path into sub-mission chunks at pivot turns.
-        # _path is replaced with the first chunk; the rest queue in _pending_path_chunks.
-        self._split_path_into_chunks()
+        # Defer chunk splitting to the first control tick — at that point all
+        # WPs are guaranteed received.  Splitting here would scramble the path
+        # if the fence arrived mid-stream via DDS before all WPs were processed.
+        self._needs_chunk_split = True
 
         # If rover was actively navigating and bypass was inserted, pause for
         # user confirmation via GQC before proceeding with the new route.
@@ -2134,6 +2138,19 @@ class NavigatorNode(Node):
                 f'— {step_m:.1f} m behind wp0 on bearing {rev_brg:.0f}°')
             if self._expanded_polygons:
                 self._reroute_path()
+
+        # ── Deferred chunk split ─────────────────────────────────────────────
+        # Splitting is deferred from _reroute_path() to here because DDS does not
+        # guarantee all waypoints have been delivered when the fence arrives.
+        # By the first control tick the user has armed → all WPs are loaded.
+        if self._needs_chunk_split:
+            self._needs_chunk_split = False
+            self.get_logger().info(
+                f'Deferred chunk split: {len(self._path)} wps in path')
+            for k, wp in enumerate(self._path):
+                self.get_logger().info(
+                    f'  path[{k}] seq={wp.seq} ({wp.latitude:.7f},{wp.longitude:.7f})')
+            self._split_path_into_chunks()
 
         # ── wp0 degenerate-segment skip ──────────────────────────────────────
         # When path_origin ≈ wp0 (e.g. resume mission where both were captured
