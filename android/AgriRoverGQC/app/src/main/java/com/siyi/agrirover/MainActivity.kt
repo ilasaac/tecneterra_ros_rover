@@ -244,16 +244,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         onConnectionChange = { sysId: Int, connected: Boolean ->
             runOnUiThread { updateHbDot(sysId, connected) }
-            if (connected) {
-                val bp: LatLng? = batteryPoint
-                if (bp != null) {
-                    roverManager.sendCommand(sysId, 50001, (bp.latitude  * 1e5).toFloat(), (bp.longitude * 1e5).toFloat())
-                }
-                val wp: LatLng? = waterPoint
-                if (wp != null) {
-                    roverManager.sendCommand(sysId, 50002, (wp.latitude  * 1e5).toFloat(), (wp.longitude * 1e5).toFloat())
-                }
-            }
+            if (connected) sendSavedStations(sysId)
         },
 
         // RC_CHANNELS (#65) — PPM µs values from RP2040 (physical RC sticks via HM30/SBUS)
@@ -578,6 +569,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 lastAuxPwm[i] = newPwm
                 recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = newPwm))
             }
+        }
+    }
+
+    private fun sendSavedStations(sysId: Int) {
+        val bp: LatLng? = batteryPoint
+        if (bp != null) {
+            roverManager.sendCommand(sysId, 50001, (bp.latitude * 1e5).toFloat(), (bp.longitude * 1e5).toFloat())
+        }
+        val wp: LatLng? = waterPoint
+        if (wp != null) {
+            roverManager.sendCommand(sysId, 50002, (wp.latitude * 1e5).toFloat(), (wp.longitude * 1e5).toFloat())
         }
     }
 
