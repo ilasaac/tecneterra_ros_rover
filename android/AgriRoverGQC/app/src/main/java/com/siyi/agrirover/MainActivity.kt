@@ -305,9 +305,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         onMissionDownloaded = { sysId, waypoints ->
             runOnUiThread {
                 if (waypoints.isNotEmpty()) {
-                    roverMissions[sysId] = waypoints.map { (lat, lon) -> LatLng(lat, lon) }
+                    roverMissions[sysId]        = waypoints.map { (lat, lon) -> LatLng(lat, lon) }
+                    roverMissionVisible[sysId]  = true
+                    roverNextWaypointIndex[sysId] = 0
                 } else {
                     roverMissions.remove(sysId)
+                    roverMissionVisible.remove(sysId)
                 }
                 redrawRoverMissions()
             }

@@ -882,6 +882,16 @@ class MavlinkBridgeNode(Node):
             station_lon = self._water_lon if self._water_lon is not None \
                           else self.get_parameter('water_lon').value
             label       = 'TANK LOW'
+
+        # Guard: abort if station has not been configured (default 0,0 means no station set)
+        if station_lat == 0.0 and station_lon == 0.0:
+            self.get_logger().error(
+                f'[RESOURCE] {label} but {reason} station not configured — '
+                f'set it in the GQC planner menu before running missions')
+            self._send_statustext(f'{label}: no station set — configure in GQC')
+            # Revert state so the check fires again next second (user must configure and re-arm)
+            self._resource_state = 'normal'
+            return
         accept_r = self.get_parameter('base_acceptance_m').value
 
         self.get_logger().warn(
@@ -931,10 +941,14 @@ class MavlinkBridgeNode(Node):
         ).start()
 
     def _broadcast_mission_mavlink(self, waypoints: list):
-        """Send MISSION_COUNT + MISSION_ITEM_INT to broadcast so GQC and tools update."""
+        """Send MISSION_COUNT + MISSION_ITEM_INT to broadcast AND unicast so GQC updates."""
+        def _sendto(buf):
+            self._udp_sock.sendto(buf, self._gqc_addr)
+            if self._gqc_unicast:
+                self._udp_sock.sendto(buf, self._gqc_unicast)
         try:
             count_msg = self._mav.mav.mission_count_encode(0, 0, len(waypoints), 0)
-            self._udp_sock.sendto(count_msg.pack(self._mav.mav), self._gqc_addr)
+            _sendto(count_msg.pack(self._mav.mav))
             time.sleep(0.15)
             for i, wp in enumerate(waypoints):
                 item = self._mav.mav.mission_item_int_encode(
@@ -944,7 +958,7 @@ class MavlinkBridgeNode(Node):
                     param1=float(wp.hold_secs), param2=0.0, param3=0.0, param4=0.0,
                     x=int(wp.latitude  * 1e7), y=int(wp.longitude * 1e7),
                     z=float(wp.speed), mission_type=0)
-                self._udp_sock.sendto(item.pack(self._mav.mav), self._gqc_addr)
+                _sendto(item.pack(self._mav.mav))
                 time.sleep(0.02)
         except Exception as e:
             self.get_logger().warn(f'_broadcast_mission_mavlink: {e}')
