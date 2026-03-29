@@ -440,7 +440,10 @@ class MavlinkBridgeNode(Node):
             sbus_sim[11] = _p(5)   # servo6
             sbus_sim[6]  = 3000 - _p(6)   # servo7 un-invert (CH7 inverted in ppm_map)
             sbus_sim[7]  = 3000 - _p(7)   # servo8 un-invert (CH8 inverted in ppm_map)
-            sbus_sim[8]  = _p(8)   # rover select (CH9)
+            # CH9 is a physical switch (rover select) — always read from raw RC,
+            # not from navigator cmd_override which only has 8 channels.
+            rc_chs = self._rc.channels
+            sbus_sim[8]  = rc_chs[8] if len(rc_chs) > 8 else 1500
             src = sbus_sim
         else:
             src = list(self._rc.channels)
