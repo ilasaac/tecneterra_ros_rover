@@ -654,7 +654,6 @@ class PathNavigator:
         self._afs_phase:          str   = 'straight'  # 'straight' | 'approach' | 'spin'
         self._afs_closest_dist:   float = float('inf')
         self._afs_spin_hdg:       float = 0.0
-        self._wp0_advanced:       bool  = False
         self._pivot_closest_dist: float = float('inf')
         self._ttr_apid   = _PID(nav.get('ttr_angle_kp', 3.0),
                                  nav.get('ttr_angle_ki', 0.0),
@@ -1287,15 +1286,6 @@ class PathNavigator:
             if t_mono >= self._hold_end:
                 self._holding = False
                 self._advance()
-            return PPM_CENTER, PPM_CENTER, self.path_idx, False
-
-        # Mission start: wp[0] is the starting position — auto-advance to wp[1].
-        # Flag is reset on mission load, NOT on chunk load, so only fires once.
-        if self.path_idx == 0 and not self._wp0_advanced:
-            self._wp0_advanced = True
-            self._advance()
-            if self.path_idx >= len(self._wps):
-                return PPM_CENTER, PPM_CENTER, 0, True
             return PPM_CENTER, PPM_CENTER, self.path_idx, False
 
         # AFS algorithm

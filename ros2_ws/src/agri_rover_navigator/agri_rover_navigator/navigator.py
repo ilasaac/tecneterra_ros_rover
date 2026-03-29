@@ -482,7 +482,6 @@ class NavigatorNode(Node):
         self._afs_phase:        str   = 'straight'
         self._afs_closest_dist: float = float('inf')
         self._afs_spin_hdg:     float = 0.0
-        self._wp0_advanced: bool  = False
 
         # Spin-bearing freeze for large heading errors (applies to all algorithms).
         # Initialized here so _control_loop never hits AttributeError on first tick.
@@ -784,7 +783,6 @@ class NavigatorNode(Node):
         self._spin_target_brg        = None
         self._afs_phase              = 'straight'
         self._afs_closest_dist       = float('inf')
-        self._wp0_advanced           = False
         self._mpc_prev_steers        = []
         self._pending_path_chunks    = []
         self._chunk_end_pivot_target = None
@@ -808,7 +806,6 @@ class NavigatorNode(Node):
             self._spin_target_brg        = None
             self._afs_phase              = 'straight'
             self._afs_closest_dist       = float('inf')
-            self._wp0_advanced           = False
             self._mpc_prev_steers        = []
             self._pending_path_chunks    = []
             self._chunk_end_pivot_target = None
@@ -2130,21 +2127,6 @@ class NavigatorNode(Node):
                 f'— {step_m:.1f} m behind wp0 on bearing {rev_brg:.0f}°')
             if self._expanded_polygons:
                 self._reroute_path()
-
-        # ── Mission start: wp[0] is the starting position — auto-advance ─────
-        # wp[0] is where the rover was when the mission was uploaded; the rover
-        # is already there.  Immediately mark it reached so the rover computes
-        # heading toward wp[1] (spinning if needed) rather than aiming at wp[0].
-        # The flag is reset on each fresh mission upload and NOT reset on chunk
-        # boundaries, so subsequent chunks are not affected.
-        if self._path_idx == 0 and not self._wp0_advanced:
-            self._wp0_advanced = True
-            nxt = f'wp[1] (seq={self._path[1].seq})' if len(self._path) > 1 else 'end of path'
-            self.get_logger().info(
-                f'Mission start: wp[0] (seq={self._path[0].seq}) auto-reached — '
-                f'heading for {nxt}')
-            self._advance_path()
-            return
 
         # ── Hold at waypoint ─────────────────────────────────────────────────
         if self._holding:
