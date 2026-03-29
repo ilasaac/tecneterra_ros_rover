@@ -459,7 +459,7 @@ tr:hover td{background:#1e1e3a}
       <input id="ts-tank" type="number" min="0" max="100" step="1" value="80"
              style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
       <span style="color:#aaa;font-size:10px">Battery (%)</span>
-      <input id="ts-batt" type="number" min="0" max="100" step="1" value="85"
+      <input id="ts-batt" type="number" min="0" max="100" step="1" value="100"
              style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
     </div>
     <div style="display:flex;gap:3px;margin-top:4px">
