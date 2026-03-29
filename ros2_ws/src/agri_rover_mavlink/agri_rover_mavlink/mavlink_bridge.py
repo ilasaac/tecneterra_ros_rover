@@ -837,12 +837,18 @@ class MavlinkBridgeNode(Node):
         batt_low  = self.get_parameter('battery_low_pct').value
         tank_low  = self.get_parameter('tank_low_pct').value
 
-        batt_pct = (self._test_batt_pct if self._test_batt_pct is not None
-                    else getattr(self._status, 'battery_remaining', -1) * 100)
-        tank     = (self._test_tank if self._test_tank is not None
-                    else self._sensors.tank_level)
+        # battery_remaining defaults to 0.0 in RoverStatus() when no real sensor is connected.
+        # Treat 0.0 the same as -1 (unknown) — only check when the sensor reports a positive value.
+        if self._test_batt_pct is not None:
+            batt_pct: float | None = self._test_batt_pct
+        else:
+            raw = getattr(self._status, 'battery_remaining', -1)
+            batt_pct = raw * 100 if raw > 0 else None
 
-        if batt_pct >= 0 and batt_pct < batt_low:
+        tank = (self._test_tank if self._test_tank is not None
+                else self._sensors.tank_level)
+
+        if batt_pct is not None and batt_pct < batt_low:
             self.get_logger().warn(f'[RESOURCE] Battery {batt_pct:.0f}% < {batt_low:.0f}%')
             self._trigger_return_to_base('battery')
         elif tank >= 0 and tank < tank_low:
