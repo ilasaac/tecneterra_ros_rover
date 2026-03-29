@@ -41,7 +41,7 @@ class SensorNode(Node):
 
     def _read_tank(self) -> float:
         # TODO: ADC → distance → volume → percent
-        return 100.0
+        return 0.0
 
     def _read_temperature(self) -> float:
         # TODO: DHT22 / BME280

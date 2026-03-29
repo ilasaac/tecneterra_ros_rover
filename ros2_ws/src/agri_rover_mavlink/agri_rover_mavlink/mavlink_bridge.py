@@ -462,7 +462,7 @@ class MavlinkBridgeNode(Node):
             500,   # load % * 10
             int(getattr(self._status, 'battery_voltage', 0) * 1000),
             -1,    # current unknown
-            int(self._test_batt_pct if self._test_batt_pct is not None else getattr(self._status, 'battery_remaining', -1) * 100),
+            int(self._test_batt_pct if self._test_batt_pct is not None else (self._status.battery_remaining * 100 if self._status.battery_remaining > 0 else -1)),
             0, 0, 0, 0, 0, 0,
         ))
 
