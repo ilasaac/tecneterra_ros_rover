@@ -433,6 +433,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         // START — arm then set AUTO mode
         btnStart.setOnClickListener {
+            val ch9Start = roverPpmChannels[1]?.getOrNull(8) ?: 65535
+            if (ch9Start in 1250..1750 || ch9Start == 65535) {
+                Toast.makeText(this, "Choose a rover (CH9 switch)", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             // Primary gate: rover telemetry must confirm mission is loaded.
             // This allows missions uploaded from mission_planner.py (not just GQC).
             if (roverNavStatus[selectedRoverId].let { it == null || it == "NA" }) {
@@ -1284,6 +1289,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun doUploadMission() {
         if (isRecording) stopRecording()
+        // Guard: CH9 must explicitly select a rover (low=RV1, high=RV2).
+        // Mid position means neither rover is chosen — upload would go to stale default.
+        val ch9 = roverPpmChannels[1]?.getOrNull(8) ?: 65535
+        if (ch9 in 1250..1750 || ch9 == 65535) {
+            Toast.makeText(this, "Choose a rover (CH9 switch)", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (routePoints.isEmpty()) {
             Toast.makeText(this, "No waypoints to upload", Toast.LENGTH_SHORT).show()
             return
