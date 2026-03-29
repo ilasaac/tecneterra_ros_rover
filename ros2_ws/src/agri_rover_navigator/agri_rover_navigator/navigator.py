@@ -536,6 +536,9 @@ class NavigatorNode(Node):
         self.rerouted_pub       = self.create_publisher(String,   'rerouted_path',   10)
         self.path_version_pub   = self.create_publisher(Int32,    'path_version',    10)
         self._path_version      = 0
+        self.reroute_pending_pub = self.create_publisher(Bool,    'reroute_pending', 10)
+        self.create_subscription(Bool, 'reroute_response', self._cb_reroute_response, 10)
+        self._reroute_pending    = False
         self.nav_params_pub     = self.create_publisher(String,   'nav_params',      10)
         self.create_subscription(String, 'nav_param_set', self._cb_nav_param_set, 10)
         self.add_on_set_parameters_callback(self._on_set_parameters_callback)
@@ -643,8 +646,47 @@ class NavigatorNode(Node):
     def _cb_mode(self, msg: String):
         self._mode = msg.data
 
+    def _cb_reroute_response(self, msg: Bool):
+        if not self._reroute_pending:
+            return
+        self._reroute_pending = False
+        rp = Bool(); rp.data = False
+        self.reroute_pending_pub.publish(rp)
+        if msg.data:
+            self.get_logger().info('Reroute confirmed — resuming navigation')
+        else:
+            self.get_logger().info('Reroute rejected — reverting to original path')
+            self._path = list(self._path_original)
+            self._bypass_indices = set()
+            # Rebuild arc-lengths
+            self._path_s = []
+            for k, wp in enumerate(self._path):
+                if k == 0:
+                    if self._path_origin_lat is not None:
+                        d = haversine(self._path_origin_lat, self._path_origin_lon,
+                                      wp.latitude, wp.longitude)
+                    else:
+                        d = 0.0
+                    self._path_s.append(d)
+                else:
+                    prev = self._path[k - 1]
+                    d = haversine(prev.latitude, prev.longitude,
+                                  wp.latitude, wp.longitude)
+                    self._path_s.append(self._path_s[-1] + d)
+            self._path_version += 1
+            pv = Int32(); pv.data = self._path_version
+            self.path_version_pub.publish(pv)
+
     def _cb_armed(self, msg: Bool):
+        was_armed = self._armed
         self._armed = msg.data
+        # Resume from waiting point on re-arm
+        if msg.data and not was_armed and self._path_idx < len(self._path):
+            wp = self._path[self._path_idx]
+            if wp.hold_secs < 0.0:
+                self.get_logger().info(
+                    f'Re-armed at waiting point WP{wp.seq} — advancing')
+                self._advance_path()
 
     def _cb_servo_state(self, msg: RCInput):
         changed = False
@@ -1038,12 +1080,11 @@ class NavigatorNode(Node):
         Handles polygons that span across a waypoint (entry and exit on different
         segments) via cross-segment scan-ahead.
 
-        Skipped if the rover is currently navigating autonomously (path_idx > 0
-        while armed and in AUTONOMOUS mode) to avoid disrupting an active mission.
+        If the rover is actively navigating (armed + AUTONOMOUS + path_idx > 0),
+        the reroute is applied but the rover pauses for user confirmation via GQC.
         """
-        if self._mode == 'AUTONOMOUS' and self._armed and self._path_idx > 0:
-            self.get_logger().warn('Obstacle reroute skipped — rover is navigating')
-            return
+        was_navigating = (self._mode == 'AUTONOMOUS' and self._armed
+                          and self._path_idx > 0)
 
         if not self._path_original:
             return
@@ -1221,6 +1262,16 @@ class NavigatorNode(Node):
         # Split the complete rerouted path into sub-mission chunks at pivot turns.
         # _path is replaced with the first chunk; the rest queue in _pending_path_chunks.
         self._split_path_into_chunks()
+
+        # If rover was actively navigating and bypass was inserted, pause for
+        # user confirmation via GQC before proceeding with the new route.
+        if was_navigating and n_bypass > 0:
+            self._reroute_pending = True
+            rp = Bool(); rp.data = True
+            self.reroute_pending_pub.publish(rp)
+            self._publish_halt()
+            self.get_logger().info(
+                'Reroute pending — waiting for user confirmation via GQC')
 
     def _split_path_into_chunks(self):
         """Split self._path at pivot turns into sequential sub-missions.
@@ -1915,6 +1966,14 @@ class NavigatorNode(Node):
                        and self._past_waypoint(rlat, rlon))
             reached = dist_to_wp < accept or past_wp
             if reached:
+                if not is_bypass and wp.hold_secs < 0.0:
+                    # Waiting point — signal disarm, keep mission
+                    self.get_logger().info(
+                        f'AFS wp{wp.seq} reached — WAITING POINT')
+                    self._publish_halt()
+                    m = Int32(); m.data = -(wp.seq + 1000)
+                    self.wp_pub.publish(m)
+                    return PPM_CENTER, PPM_CENTER
                 if not is_bypass and wp.hold_secs > 0.0:
                     self._holding  = True
                     self._hold_end = time.monotonic() + wp.hold_secs
@@ -2009,6 +2068,9 @@ class NavigatorNode(Node):
 
     def _control_loop(self):
         if self._mode != 'AUTONOMOUS' or not self._armed or self._paused:
+            return
+        if self._reroute_pending:
+            self._publish_halt()
             return
         if not self._path:
             return
@@ -2184,6 +2246,14 @@ class NavigatorNode(Node):
         reached = dist_to_wp < accept or past_wp or pivot_overshot
 
         if reached:
+            if not is_bypass and wp.hold_secs < 0.0:
+                # Waiting point — signal disarm, keep mission
+                self.get_logger().info(
+                    f'Waypoint {wp.seq} reached — WAITING POINT')
+                self._publish_halt()
+                m = Int32(); m.data = -(wp.seq + 1000)
+                self.wp_pub.publish(m)
+                return
             if not is_bypass and wp.hold_secs > 0.0:
                 self.get_logger().info(
                     f'Waypoint {wp.seq} reached — holding {wp.hold_secs:.1f} s')

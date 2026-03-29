@@ -325,6 +325,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         onHaccStatus = { sysId, haccMm ->
             runOnUiThread { handleHaccChange(sysId, haccMm) }
         },
+        onReroutePending = { sysId, pending ->
+            runOnUiThread {
+                if (pending && sysId == selectedRoverId) showRerouteConfirmation(sysId)
+            }
+        },
     )
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -439,43 +444,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 return@setOnClickListener
             }
             // Primary gate: rover telemetry must confirm mission is loaded.
-            // This allows missions uploaded from mission_planner.py (not just GQC).
             if (roverNavStatus[selectedRoverId].let { it == null || it == "NA" }) {
                 Toast.makeText(this, "No mission loaded on rover", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
-            }
-            // Distance check: only required when starting fresh (WP_ACT == 0 or unknown).
-            // If the rover is already past wp[0] (WP_ACT > 0) it is mid-mission — allow
-            // re-arm at current position so the mission can resume after an RTK alarm.
-            val wpReached = roverNextWaypointIndex[selectedRoverId] ?: -1
-            if (wpReached <= 0) {
-                // Fresh start: rover must be near wp[0].
-                // Prefer local upload positions; fall back to TUNNEL rerouted path
-                // so external uploads (e.g. mission_planner.py) are also gated on proximity.
-                val missionStart = roverMissions[selectedRoverId]?.firstOrNull()
-                    ?: roverReroutedPaths[selectedRoverId]?.firstOrNull()
-                        ?.let { (lat, lon, _) -> LatLng(lat, lon) }
-                val roverPos = roverPositions[selectedRoverId]
-                if (missionStart != null && (roverPos == null || distanceMeters(roverPos, missionStart) > 0.5)) {
-                    AlertDialog.Builder(this)
-                        .setTitle("Too far from start")
-                        .setMessage("Move the rover manually to the starting position")
-                        .setPositiveButton("OK", null)
-                        .show()
-                    return@setOnClickListener
-                }
             }
             if (!hasGoodAccuracy(selectedRoverId)) {
                 Toast.makeText(this, "GPS accuracy insufficient — cannot start autonomous", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            roverManager.sendCommand(selectedRoverId, 400, 1f, 0f)  // ARM
-            Handler(Looper.getMainLooper()).postDelayed({
-                roverManager.sendCommand(selectedRoverId, 176, 1f, 3f)  // AUTO
-                roverModes[selectedRoverId] = AppMode.AUTO
-                Toast.makeText(this,
-                    "Rover $selectedRoverId: Armed & AUTO", Toast.LENGTH_SHORT).show()
-            }, 500)
+            // Mid-mission resume (WP_ACT > 0): arm directly, no approach confirmation
+            val wpReached = roverNextWaypointIndex[selectedRoverId] ?: -1
+            if (wpReached > 0) {
+                armAndStart()
+            } else {
+                showApproachPathConfirmation()
+            }
         }
 
         // STOP/PAUSE — set manual mode
@@ -911,27 +894,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
 
         if (routePoints.isNotEmpty()) {
-            if (nextWaypointIndex > 0) {
-                val passed = (0..min(nextWaypointIndex, routePoints.size - 1))
-                    .map { routePoints[it] }
-                routeOverlays.add(map.addPolyline(
-                    PolylineOptions().addAll(passed).width(8f).color(Color.parseColor("#4CAF50")).zIndex(2f)))
-            }
-            if (nextWaypointIndex < routePoints.size) {
-                val pending = (max(0, nextWaypointIndex - 1) until routePoints.size)
-                    .map { routePoints[it] }
-                routeOverlays.add(map.addPolyline(
-                    PolylineOptions().addAll(pending).width(8f).color(Color.parseColor("#F44336")).zIndex(2f)))
-            }
-            routePoints.forEachIndexed { i, pt ->
-                val dotColor = when {
-                    i == 0              -> Color.parseColor("#FFD600")
-                    i < nextWaypointIndex -> Color.parseColor("#4CAF50")
-                    else                -> Color.parseColor("#F44336")
-                }
-                val sizeDp   = if (i == 0) 12 else 7
+            // Planner route — white (not yet uploaded to rover)
+            routeOverlays.add(map.addPolyline(
+                PolylineOptions().addAll(routePoints).width(8f).color(Color.WHITE).zIndex(2f)))
+            routePoints.forEachIndexed { _, pt ->
                 map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
-                    .icon(createDotBitmap(dotColor, sizeDp)).flat(true).zIndex(2f))
+                    .icon(createDotBitmap(Color.WHITE, 7)).flat(true).zIndex(2f))
                     ?.also { routeOverlays.add(it) }
             }
         }
@@ -954,28 +922,28 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             val overlays     = roverMissionOverlays.getOrPut(roverId) { mutableListOf() }
             val pendingColor = if (roverId == 1) Color.parseColor("#F44336")
                                else              Color.parseColor("#2196F3")
+            val walkedColor  = if (roverId == 1) Color.parseColor("#FFCDD2")
+                               else              Color.parseColor("#BBDEFB")
             val walkedIdx    = roverNextWaypointIndex[roverId] ?: 0
 
-            // Walked portion — gray
+            // Walked portion — light rover color
             if (walkedIdx > 0) {
                 val walked = (0..min(walkedIdx, points.size - 1)).map { points[it] }
                 overlays.add(map.addPolyline(
                     PolylineOptions().addAll(walked).width(8f)
-                        .color(Color.argb(200, 160, 160, 160)).zIndex(2f)))
+                        .color(walkedColor).zIndex(2f)))
             }
-            // Pending portion — rover color; starts one point before walkedIdx to avoid a gap
+            // Pending portion — full rover color
             if (walkedIdx < points.size) {
                 val pending = (max(0, walkedIdx - 1) until points.size).map { points[it] }
                 overlays.add(map.addPolyline(
                     PolylineOptions().addAll(pending).width(8f).color(pendingColor).zIndex(2f)))
             }
-            // Waypoint dots — skip already-passed waypoints (rover decides via WP_ACT)
+            // Waypoint dots — all visible, walked in light color, pending in full color
             points.forEachIndexed { i, pt ->
-                if (i > 0 && i < walkedIdx) return@forEachIndexed  // erased by rover
-                val dotColor = if (i == 0) Color.parseColor("#FFD600") else pendingColor
-                val sizeDp   = if (i == 0) 12 else 7
+                val dotColor = if (i < walkedIdx) walkedColor else pendingColor
                 map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
-                    .icon(createDotBitmap(dotColor, sizeDp)).flat(true).zIndex(2f))
+                    .icon(createDotBitmap(dotColor, 7)).flat(true).zIndex(2f))
                     ?.also { overlays.add(it) }
             }
         }
@@ -1202,6 +1170,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun showPlannerMenu(view: View) {
         val popup = PopupMenu(this, view)
         popup.menu.add("Upload Mission")
+        popup.menu.add("Add Wait Point")
         popup.menu.add("Save")
         popup.menu.add("Load")
         popup.menu.add("Clear")
@@ -1210,6 +1179,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         popup.setOnMenuItemClickListener { item ->
             when (item.title) {
                 "Upload Mission"      -> doUploadMission()
+                "Add Wait Point"      -> addWaitPoint()
                 "Save"                -> showSaveDialog()
                 "Load"                -> showLoadDialog()
                 "Clear"               -> clearMission()
@@ -1293,6 +1263,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             Toast.makeText(this, "Choose a rover (CH9 switch)", Toast.LENGTH_SHORT).show()
             return
         }
+        // Reject upload if rover already has a mission loaded — user must clear first
+        val navSt = roverNavStatus[selectedRoverId]
+        if (navSt == "MSL" || navSt == "ARM") {
+            AlertDialog.Builder(this)
+                .setTitle("Mission Already Loaded")
+                .setMessage("Clear mission first — Rover $selectedRoverId has mission uploaded")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
         if (routePoints.isEmpty()) {
             Toast.makeText(this, "No waypoints to upload", Toast.LENGTH_SHORT).show()
             return
@@ -1326,6 +1306,74 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             Toast.makeText(this,
                 "Uploading ${routePoints.size} WPs to Rover $selectedRoverId…",
                 Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun showRerouteConfirmation(sysId: Int) {
+        AlertDialog.Builder(this)
+            .setTitle("Route Changed")
+            .setMessage("Rover $sysId has recalculated its route around an obstacle.\nConfirm to proceed with new route.")
+            .setPositiveButton("Confirm") { _, _ ->
+                roverManager.sendCommand(sysId, 50003, 1f, 0f)
+            }
+            .setNegativeButton("Reject") { _, _ ->
+                roverManager.sendCommand(sysId, 50003, 0f, 0f)
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun armAndStart() {
+        roverManager.sendCommand(selectedRoverId, 400, 1f, 0f)  // ARM
+        Handler(Looper.getMainLooper()).postDelayed({
+            roverManager.sendCommand(selectedRoverId, 176, 1f, 3f)  // AUTO
+            roverModes[selectedRoverId] = AppMode.AUTO
+            Toast.makeText(this,
+                "Rover $selectedRoverId: Armed & AUTO", Toast.LENGTH_SHORT).show()
+        }, 500)
+    }
+
+    private fun showApproachPathConfirmation() {
+        val roverPos = roverPositions[selectedRoverId]
+        val missionStart = roverMissions[selectedRoverId]?.firstOrNull()
+        if (roverPos == null || missionStart == null) {
+            armAndStart()
+            return
+        }
+        val dist = distanceMeters(roverPos, missionStart)
+        // If very close already, skip the dialog
+        if (dist < 1.0) {
+            armAndStart()
+            return
+        }
+        // Draw dashed approach line on map
+        val approachLine = map.addPolyline(
+            PolylineOptions().add(roverPos, missionStart).width(6f)
+                .color(Color.parseColor("#4CAF50"))
+                .pattern(listOf(Dot(), Gap(10f))).zIndex(3f))
+        AlertDialog.Builder(this)
+            .setTitle("Confirm Approach Route")
+            .setMessage("Rover will travel ${"%.1f".format(dist)} m to the first waypoint.\nConfirm to arm and start.")
+            .setPositiveButton("Confirm") { _, _ ->
+                approachLine.remove()
+                armAndStart()
+            }
+            .setNegativeButton("Cancel") { _, _ ->
+                approachLine.remove()
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun addWaitPoint() {
+        val pos = roverPositions[selectedRoverId]
+        if (pos != null) {
+            recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, 0f, -1f))
+            routePoints.add(pos)
+            redrawMap()
+            Toast.makeText(this, "Wait point added", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "No rover position available", Toast.LENGTH_SHORT).show()
         }
     }
 

@@ -92,6 +92,8 @@ class RoverPositionManager(
      * sysId: rover system ID.  haccMm: horizontal accuracy estimate in mm (-1 = unknown).
      */
     private val onHaccStatus: (Int, Float) -> Unit,
+    /** Called when NAMED_VALUE_FLOAT "REROUTE" is received. pending=true means rover awaits confirmation. */
+    private val onReroutePending: (Int, Boolean) -> Unit,
 ) {
     private val PORT        = 14550
     private val MASTER_SYSID = 1
@@ -696,6 +698,11 @@ class RoverPositionManager(
                         if (newVer != oldVer) {
                             roverPathVersion[senderId] = newVer
                             scope.launch(Dispatchers.IO) { requestMissionFromRover(senderId) }
+                        }
+                    }
+                    "REROUTE" -> {
+                        scope.launch(Dispatchers.Main) {
+                            onReroutePending(senderId, value > 0.5f)
                         }
                     }
                 }

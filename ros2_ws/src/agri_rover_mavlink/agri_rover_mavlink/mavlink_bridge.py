@@ -162,6 +162,7 @@ class MavlinkBridgeNode(Node):
         self._hacc_mm     = -1.0       # horizontal accuracy from UBX NAV-PVT (mm); -1 = unknown
         self._nav_params: dict[str, float] = {}  # latest nav_params JSON from navigator.py
         self._path_version        = 0
+        self._reroute_pending     = False
         self._last_rerouted_json  = '[]'
         self._reroute_retries     = 0
         self._reroute_timer       = None
@@ -188,10 +189,12 @@ class MavlinkBridgeNode(Node):
         self.create_subscription(String,       'rtk_status',    self._cb_rtk_status,     10)
         self.create_subscription(Float32,      'hacc',          self._cb_hacc,           10)
         self.create_subscription(String,       'nav_params',    self._cb_nav_params,     10)
+        self.create_subscription(Bool,         'reroute_pending', self._cb_reroute_pending, 10)
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
         self.cmd_pub           = self.create_publisher(RCInput,          'cmd_override',   10)
         self.mission_pub       = self.create_publisher(MissionWaypoint,  'mission',        10)
+        self.reroute_response_pub = self.create_publisher(Bool,          'reroute_response', 10)
         self.fence_pub         = self.create_publisher(String,           'mission_fence',  10)
         self.servo_pub         = self.create_publisher(RCInput,          'servo_state',    10)
         self.mode_pub          = self.create_publisher(String,           'mode',           10)
@@ -241,6 +244,20 @@ class MavlinkBridgeNode(Node):
 
     def _cb_wp(self, msg: Int32):
         self._wp_active = msg.data
+        # Waiting point signal: navigator encodes as -(seq + 1000)
+        if msg.data <= -1000:
+            wp_seq = -(msg.data + 1000)
+            self._wp_active = wp_seq          # show correct WP in telemetry
+            self._armed = False
+            self._mode  = 'MANUAL'
+            a = Bool(); a.data = False
+            m = String(); m.data = 'MANUAL'
+            self.armed_pub.publish(a)
+            self.mode_pub.publish(m)
+            self.get_logger().info(
+                f'Waiting point WP{wp_seq} — disarmed, mission kept (re-arm to continue)')
+            self._send_statustext(f'Waiting at WP{wp_seq} — re-arm to continue')
+            return  # _mission_count stays → STATUS=MSL
         if msg.data >= 0 and msg.data in self._wp_servo_map:
             for sn, pw in self._wp_servo_map[msg.data].items():
                 self.get_logger().info(f'WP{msg.data} reached — applying servo CH{sn}={pw}')
@@ -282,6 +299,11 @@ class MavlinkBridgeNode(Node):
 
     def _cb_path_version(self, msg: Int32):
         self._path_version = msg.data
+
+    def _cb_reroute_pending(self, msg: Bool):
+        self._reroute_pending = msg.data
+        if msg.data:
+            self._send_statustext('Route changed — confirm in GQC')
 
     def _cb_rerouted_path(self, msg: String):
         """
@@ -484,6 +506,7 @@ class MavlinkBridgeNode(Node):
             ('RTK',      float(self._RTK_FIX_TYPE.get(self._rtk_status, 0))),
             ('HACC',     self._hacc_mm),
             ('PATH_VER', float(self._path_version)),
+            ('REROUTE',  1.0 if self._reroute_pending else 0.0),
         ]
         for name, value in pairs:
             self._send(self._mav.mav.named_value_float_encode(
@@ -1144,6 +1167,15 @@ class MavlinkBridgeNode(Node):
             self.get_logger().info(
                 f'[RESOURCE] Water station set: ({self._water_lat:.5f},{self._water_lon:.5f})')
             self._send_statustext(f'Water station updated')
+            self._send(self._mav.mav.command_ack_encode(
+                msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
+        elif msg.command == 50003:  # Reroute response from GQC (confirm/reject)
+            accepted = (msg.param1 == 1.0)
+            resp = Bool(); resp.data = accepted
+            self.reroute_response_pub.publish(resp)
+            self._reroute_pending = False
+            self.get_logger().info(
+                f'Reroute {"accepted" if accepted else "rejected"} by user')
             self._send(self._mav.mav.command_ack_encode(
                 msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
 

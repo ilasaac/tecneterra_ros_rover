@@ -353,23 +353,31 @@ Note: `GpsRawInt` is sent but java-mavlink 1.1.9 rejects it (pymavlink truncates
 - **ADD** (overflow menu) — inserts selected rover's current GPS position.
 - **REC** — samples GPS @ 500 ms; appends ServoCmd on any PPM CH5–CH8 change > 100 µs.
 - **OBS** — tap vertices to draw obstacle polygon; DONE closes it (min 3 vertices); red semi-transparent overlay.
-- **UPLOAD** — sends DISARM × 3 before MISSION_COUNT. Dispatches: `uploadMissionWithObstacles()` if OBS polygons exist, `uploadRecordedMission()` if ServoCmd items, else `uploadMission()`. Fence vertices sent as cmd=5003.
+- **UPLOAD** — sends DISARM × 3 before MISSION_COUNT. Dispatches: `uploadMissionWithObstacles()` if OBS polygons exist, `uploadRecordedMission()` if ServoCmd items, else `uploadMission()`. Fence vertices sent as cmd=5003. **Upload gate:** if rover already has a mission loaded (STATUS=MSL or ARM), upload is rejected with a dialog — user must CLEAR first.
+- **Add Wait Point** — inserts rover's current position as a waiting point (`holdSecs = -1`). On arrival the rover disarms and waits; re-arm to continue.
 
 ```kotlin
 sealed class MissionAction {
-    data class Waypoint(val lat: Double, val lon: Double, val speed: Float) : MissionAction()
+    data class Waypoint(val lat: Double, val lon: Double, val speed: Float,
+                        val holdSecs: Float = 0f) : MissionAction()
     data class ServoCmd(val servo: Int, val pwm: Int) : MissionAction()
 }
 ```
 
-Waypoint speed = `dist_m / 0.5s`, clamped [0.3, 1.5] m/s; sent as `z` field of NAV_WAYPOINT; first WP uses 0 (navigator default).
+Waypoint speed = `dist_m / 0.5s`, clamped [0.3, 1.5] m/s; sent as `z` field of NAV_WAYPOINT; first WP uses 0 (navigator default). `holdSecs = -1` marks a **waiting point** (rover disarms on arrival).
 
 **Safety:**
 - E-STOP → `sendCriticalCommand` DISARM (cmd 400, p1=0) to all rovers.
 - `checkLinkMismatch()` → auto-disarm after 2 s RC switch ≠ slave HEARTBEAT mismatch.
-- **ARM gate (START):** mission must be loaded + STATUS ≠ NA + rover within **0.5 m** of first waypoint + CH9 must select a rover (not mid-position).
+- **ARM gate (START):** mission must be loaded + STATUS ≠ NA + CH9 must select a rover. No proximity gate — instead, approach path shown with distance + Confirm/Cancel dialog. Mid-mission resume (WP_ACT > 0) skips the dialog.
+
+**Waiting points:** `hold_secs = -1.0` on a MissionWaypoint. Navigator publishes `wp_active = -(seq + 1000)`, mavlink_bridge disarms without clearing mission (STATUS stays MSL). On re-arm, navigator advances past the waiting point.
+
+**Reroute confirmation:** When navigator reroutes mid-mission (obstacles), it pauses and publishes `reroute_pending=True`. mavlink_bridge relays as `NAMED_VALUE_FLOAT 'REROUTE' = 1.0`. GQC shows Confirm/Reject dialog. User response sent via `COMMAND_LONG cmd=50003 param1=1|0`. Navigator resumes or reverts to original path.
 
 **Mission auto-disarm:** `wp_active = -1` → mavlink_bridge auto-disarms, clears mission, publishes MANUAL.
+
+**Waypoint colors:** Planner route = white (not yet uploaded). After upload: pending = full rover color (red RV1, blue RV2), walked = light rover color (light red / light blue). All waypoint dots visible.
 
 **Resource management state machine** (`mavlink_bridge._check_resource_levels`, 1 Hz):
 ```
