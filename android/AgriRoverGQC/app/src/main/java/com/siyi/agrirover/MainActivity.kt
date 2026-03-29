@@ -1257,13 +1257,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             Toast.makeText(this, "Choose a rover (CH9 switch)", Toast.LENGTH_SHORT).show()
             return
         }
-        // Reject upload if rover already has a mission loaded — user must clear first
+        // Warn if rover already has a mission loaded — offer to clear and upload
         val navSt = roverNavStatus[selectedRoverId]
         if (navSt == "MSL" || navSt == "ARM") {
             AlertDialog.Builder(this)
                 .setTitle("Mission Already Loaded")
-                .setMessage("Clear mission first — Rover $selectedRoverId has mission uploaded")
-                .setPositiveButton("OK", null)
+                .setMessage("Rover $selectedRoverId has a mission. Clear and upload new one?")
+                .setPositiveButton("Clear & Upload") { _, _ ->
+                    roverManager.uploadMission(selectedRoverId, emptyList())
+                    roverMissions.remove(selectedRoverId)
+                    roverNavStatus[selectedRoverId] = "NA"
+                    Handler(Looper.getMainLooper()).postDelayed({ doUploadMission() }, 300)
+                }
+                .setNegativeButton("Cancel", null)
                 .show()
             return
         }
