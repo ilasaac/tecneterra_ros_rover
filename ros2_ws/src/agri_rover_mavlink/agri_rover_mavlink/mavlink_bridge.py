@@ -193,7 +193,7 @@ class MavlinkBridgeNode(Node):
 
         # ── Publishers (inbound MAVLink → ROS2) ──────────────────────────────
         self.cmd_pub           = self.create_publisher(RCInput,          'cmd_override',   10)
-        self.mission_pub       = self.create_publisher(MissionWaypoint,  'mission',        10)
+        self.mission_pub       = self.create_publisher(MissionWaypoint,  'mission',        200)
         self.reroute_response_pub = self.create_publisher(Bool,          'reroute_response', 10)
         self.fence_pub         = self.create_publisher(String,           'mission_fence',  10)
         self.servo_pub         = self.create_publisher(RCInput,          'servo_state',    10)

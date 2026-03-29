@@ -511,7 +511,7 @@ class NavigatorNode(Node):
         self.create_subscription(Float32,         'heading',       self._cb_heading,      10)
         self.create_subscription(String,          'mode',          self._cb_mode,         10)
         self.create_subscription(Bool,            'armed',         self._cb_armed,        10)
-        self.create_subscription(MissionWaypoint, 'mission',       self._cb_mission,      10)
+        self.create_subscription(MissionWaypoint, 'mission',       self._cb_mission,      200)
         self.create_subscription(RCInput,         'servo_state',   self._cb_servo_state,  10)
         self.create_subscription(Bool,            'mission_clear', self._cb_mission_clear, 10)
         self.create_subscription(String,          'mission_fence', self._cb_mission_fence, 10)
