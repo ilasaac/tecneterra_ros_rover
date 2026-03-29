@@ -786,6 +786,9 @@ class NavigatorNode(Node):
         self._mpc_prev_steers        = []
         self._pending_path_chunks    = []
         self._chunk_end_pivot_target = None
+        self._expanded_polygons      = []
+        self._obstacle_polygons      = []
+        self._reroute_pending        = False
         clr_msg = String(); clr_msg.data = '[]'
         self.rerouted_pub.publish(clr_msg)
         self._publish_halt()
@@ -809,6 +812,9 @@ class NavigatorNode(Node):
             self._mpc_prev_steers        = []
             self._pending_path_chunks    = []
             self._chunk_end_pivot_target = None
+            self._expanded_polygons      = []
+            self._obstacle_polygons      = []
+            self._reroute_pending        = False
             # Record rover centre as path origin (start of virtual segment → wp[0]).
             if self._fix is not None:
                 self._path_origin_lat, self._path_origin_lon = self._center_pos()
