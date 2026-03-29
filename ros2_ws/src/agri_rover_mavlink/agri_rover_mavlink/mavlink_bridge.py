@@ -253,7 +253,11 @@ class MavlinkBridgeNode(Node):
                 self._resource_state = 'at_base'
                 self._armed          = False
                 self._mode           = 'MANUAL'
-                self._mission_count  = 0
+                # Keep _mission_count > 0 so STATUS=MSL (not NA) — GQC START
+                # gate requires a loaded mission.  The resume mission will be
+                # uploaded on re-arm; count reflects the remaining waypoints.
+                resume_len = len(self._resume_mission) - self._resume_wp_seq
+                self._mission_count  = max(resume_len, 1)
                 self._mission_buf    = []
                 self._wp_servo_map   = {}
                 self.armed_pub.publish(a)
