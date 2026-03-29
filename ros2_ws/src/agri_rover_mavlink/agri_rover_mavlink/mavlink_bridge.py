@@ -114,8 +114,8 @@ class MavlinkBridgeNode(Node):
         self._cmd_str      = 1500        # last cmd_override steering (CH2), for telemetry
         self._cmd_channels: list[int] = []  # full cmd_override channel list
         self._wp_active   = -1    # active waypoint seq from navigator (-1 = none)
-        self._test_tank:   float | None = None  # test-injected tank level (0-1)
-        self._test_batt_v: float | None = None  # test-injected battery voltage (V)
+        self._test_tank:     float | None = None  # test-injected tank level (0-1)
+        self._test_batt_pct: float | None = None  # test-injected battery charge (0-100 %)
         self._xte         = 0.0   # cross-track error from navigator (metres)
         self._mission_buf: list[MissionWaypoint] = []
         self._mission_count = 0
@@ -413,9 +413,9 @@ class MavlinkBridgeNode(Node):
         self._send(self._mav.mav.sys_status_encode(
             0, 0, 0,
             500,   # load % * 10
-            int((self._test_batt_v if self._test_batt_v is not None else getattr(self._status, 'battery_voltage', 0)) * 1000),
+            int(getattr(self._status, 'battery_voltage', 0) * 1000),
             -1,    # current unknown
-            int(getattr(self._status, 'battery_remaining', -1) * 100),
+            int(self._test_batt_pct if self._test_batt_pct is not None else getattr(self._status, 'battery_remaining', -1) * 100),
             0, 0, 0, 0, 0, 0,
         ))
 
@@ -582,9 +582,9 @@ class MavlinkBridgeNode(Node):
                         self._test_tank = float(msg.param_value)
                         self.get_logger().info(f'[TEST] tank_level={self._test_tank:.3f}')
                         continue
-                    if mav_name == 'BATT_V':
-                        self._test_batt_v = float(msg.param_value)
-                        self.get_logger().info(f'[TEST] battery={self._test_batt_v:.2f} V')
+                    if mav_name == 'BATT_PCT':
+                        self._test_batt_pct = max(0.0, min(100.0, float(msg.param_value)))
+                        self.get_logger().info(f'[TEST] battery={self._test_batt_pct:.0f}%')
                         continue
                     ros_name = _MAVLINK_PARAMS.get(mav_name)
                     if ros_name is None:

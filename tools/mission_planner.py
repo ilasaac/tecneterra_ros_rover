@@ -314,8 +314,8 @@ def _mavlink_upload(waypoints: list, obstacles: list,
 
 # ── MAVLink test sensor injection ─────────────────────────────────────────────
 def _mavlink_send_test_sensors(rover_ip: str, rover_port: int, rover_sysid: int,
-                                tank_level: float, batt_v: float) -> dict:
-    """Send PARAM_SET TANK_LEVEL + BATT_V to mavlink_bridge for test injection."""
+                                tank_level: float, batt_pct: float) -> dict:
+    """Send PARAM_SET TANK_LEVEL + BATT_PCT to mavlink_bridge for test injection."""
     os.environ.setdefault('MAVLINK20', '1')
     try:
         from pymavlink.dialects.v20 import ardupilotmega as _mav_def
@@ -334,11 +334,11 @@ def _mavlink_send_test_sensors(rover_ip: str, rover_port: int, rover_sysid: int,
             float(tank_level), MAV_PARAM_TYPE_REAL32))
         _time.sleep(0.05)
         _send(mav.param_set_encode(
-            rover_sysid, 0, b'BATT_V',
-            float(batt_v), MAV_PARAM_TYPE_REAL32))
+            rover_sysid, 0, b'BATT_PCT',
+            float(batt_pct), MAV_PARAM_TYPE_REAL32))
         sock.close()
         return {'ok': True,
-                'message': f'Test sensors → RV{rover_sysid}: tank={tank_level:.2f}  batt={batt_v:.1f} V'}
+                'message': f'Test sensors → RV{rover_sysid}: tank={tank_level:.2f}  batt={batt_pct:.0f}%'}
     except Exception as e:
         return {'ok': False, 'message': str(e)}
 
@@ -458,8 +458,8 @@ tr:hover td{background:#1e1e3a}
       <span style="color:#aaa;font-size:10px">Tank (0–1)</span>
       <input id="ts-tank" type="number" min="0" max="1" step="0.05" value="0.8"
              style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
-      <span style="color:#aaa;font-size:10px">Battery (V)</span>
-      <input id="ts-batt" type="number" min="0" max="50" step="0.1" value="12.5"
+      <span style="color:#aaa;font-size:10px">Battery (%)</span>
+      <input id="ts-batt" type="number" min="0" max="100" step="1" value="85"
              style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
     </div>
     <div style="display:flex;gap:3px;margin-top:4px">
@@ -1589,7 +1589,7 @@ async function sendTestSensors(roverId) {
     const resp = await fetch('/send_test_sensors', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({rover_ip, rover_port: 14550, rover_sysid: roverId,
-                            tank_level: tank, batt_v: batt}),
+                            tank_level: tank, batt_pct: batt}),
     });
     const d = await resp.json();
     status(d.message || (d.ok ? 'Sent' : 'Error'), d.ok ? '#27ae60' : '#e74c3c');
@@ -2123,9 +2123,9 @@ class _Handler(BaseHTTPRequestHandler):
                 rover_port = int(data.get('rover_port', 14550))
                 rover_sysid = int(data.get('rover_sysid', 1))
                 tank_level = float(data.get('tank_level', 0.5))
-                batt_v     = float(data.get('batt_v', 12.0))
+                batt_pct   = float(data.get('batt_pct', 85.0))
                 result = _mavlink_send_test_sensors(
-                    rover_ip, rover_port, rover_sysid, tank_level, batt_v)
+                    rover_ip, rover_port, rover_sysid, tank_level, batt_pct)
                 print(f'[test_sensors] {result["message"]}', flush=True)
                 self._json(result)
             except Exception as e:
