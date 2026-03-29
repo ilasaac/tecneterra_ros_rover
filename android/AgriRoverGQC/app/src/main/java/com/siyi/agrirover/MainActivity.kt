@@ -242,14 +242,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
         },
 
-        onConnectionChange = { sysId, connected ->
+        onConnectionChange = { sysId: Int, connected: Boolean ->
             runOnUiThread { updateHbDot(sysId, connected) }
             if (connected) {
-                val bp = batteryPoint
+                val bp: LatLng? = batteryPoint
                 if (bp != null) {
                     roverManager.sendCommand(sysId, 50001, (bp.latitude  * 1e5).toFloat(), (bp.longitude * 1e5).toFloat())
                 }
-                val wp = waterPoint
+                val wp: LatLng? = waterPoint
                 if (wp != null) {
                     roverManager.sendCommand(sysId, 50002, (wp.latitude  * 1e5).toFloat(), (wp.longitude * 1e5).toFloat())
                 }
