@@ -1185,16 +1185,85 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         popup.menu.add("Save")
         popup.menu.add("Load")
         popup.menu.add("Clear")
+        popup.menu.add("Set Battery Station")
+        popup.menu.add("Set Water Station")
         popup.setOnMenuItemClickListener { item ->
             when (item.title) {
-                "Upload Mission" -> doUploadMission()
-                "Save"           -> showSaveDialog()
-                "Load"           -> showLoadDialog()
-                "Clear"          -> clearMission()
+                "Upload Mission"      -> doUploadMission()
+                "Save"                -> showSaveDialog()
+                "Load"                -> showLoadDialog()
+                "Clear"               -> clearMission()
+                "Set Battery Station" -> showSetStationDialog("Battery")
+                "Set Water Station"   -> showSetStationDialog("Water")
             }
             true
         }
         popup.show()
+    }
+
+    private fun showSetStationDialog(type: String) {
+        val roverPos = roverPositions[selectedRoverId]
+        val options  = if (roverPos != null)
+            arrayOf("Use Rover $selectedRoverId position", "Enter coordinates")
+        else
+            arrayOf("Enter coordinates")
+        AlertDialog.Builder(this)
+            .setTitle("Set $type Station")
+            .setItems(options) { _, which ->
+                val realWhich = if (roverPos != null) which else which + 1
+                when (realWhich) {
+                    0 -> applyStation(type, roverPos!!)
+                    1 -> showStationCoordInput(type)
+                }
+            }
+            .show()
+    }
+
+    private fun showStationCoordInput(type: String) {
+        val dp = resources.displayMetrics.density.toInt()
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp * 24, dp * 8, dp * 24, 0)
+        }
+        val latInput = EditText(this).apply {
+            hint = "Latitude  (e.g. 20.7277)"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or
+                        android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or
+                        android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+        }
+        val lonInput = EditText(this).apply {
+            hint = "Longitude  (e.g. -103.5668)"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or
+                        android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or
+                        android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+        }
+        layout.addView(latInput)
+        layout.addView(lonInput)
+        AlertDialog.Builder(this)
+            .setTitle("Set $type Station")
+            .setView(layout)
+            .setPositiveButton("Set") { _, _ ->
+                val lat = latInput.text.toString().toDoubleOrNull()
+                val lon = lonInput.text.toString().toDoubleOrNull()
+                if (lat != null && lon != null) applyStation(type, LatLng(lat, lon))
+                else Toast.makeText(this, "Invalid coordinates", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun applyStation(type: String, pos: LatLng) {
+        val cmdId = if (type == "Battery") 50001 else 50002
+        if (type == "Battery") batteryPoint = pos else waterPoint = pos
+        saveStations()
+        redrawMap()
+        // Send to rover — lat/lon encoded as units of 1e-5 degrees (~1 m precision, fits float32)
+        val p1 = (pos.latitude  * 1e5).toFloat()
+        val p2 = (pos.longitude * 1e5).toFloat()
+        roverManager.sendCommand(selectedRoverId, cmdId, p1, p2)
+        Toast.makeText(this,
+            "$type station set: ${"%.5f".format(pos.latitude)}, ${"%.5f".format(pos.longitude)}",
+            Toast.LENGTH_SHORT).show()
     }
 
     private fun doUploadMission() {

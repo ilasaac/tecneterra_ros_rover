@@ -151,6 +151,11 @@ class MavlinkBridgeNode(Node):
         self._resume_mission:  list        = []    # snapshot of _mission_buf at trigger time
         self._resume_wp_seq    = 0                 # wp_active index to resume from
         self._resume_servo_map: dict       = {}    # servo map renumbered for resume mission
+        # Runtime station overrides (set via GQC cmd 50001/50002); override YAML params
+        self._recharge_lat: float | None = None
+        self._recharge_lon: float | None = None
+        self._water_lat:    float | None = None
+        self._water_lon:    float | None = None
         self._rtk_status  = 'NO_FIX'   # latest string from gps_driver rtk_status topic
         self._hacc_mm     = -1.0       # horizontal accuracy from UBX NAV-PVT (mm); -1 = unknown
         self._nav_params: dict[str, float] = {}  # latest nav_params JSON from navigator.py
@@ -864,14 +869,18 @@ class MavlinkBridgeNode(Node):
         m = String(); m.data = 'MANUAL'
         self.mode_pub.publish(m)
 
-        # Select the appropriate base station
+        # Select the appropriate base station — runtime override takes priority over YAML
         if reason == 'battery':
-            station_lat = self.get_parameter('recharge_lat').value
-            station_lon = self.get_parameter('recharge_lon').value
+            station_lat = self._recharge_lat if self._recharge_lat is not None \
+                          else self.get_parameter('recharge_lat').value
+            station_lon = self._recharge_lon if self._recharge_lon is not None \
+                          else self.get_parameter('recharge_lon').value
             label       = 'BATTERY LOW'
         else:
-            station_lat = self.get_parameter('water_lat').value
-            station_lon = self.get_parameter('water_lon').value
+            station_lat = self._water_lat if self._water_lat is not None \
+                          else self.get_parameter('water_lat').value
+            station_lon = self._water_lon if self._water_lon is not None \
+                          else self.get_parameter('water_lon').value
             label       = 'TANK LOW'
         accept_r = self.get_parameter('base_acceptance_m').value
 
@@ -1007,6 +1016,22 @@ class MavlinkBridgeNode(Node):
                 msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
         elif msg.command == 183:  # MAV_CMD_DO_SET_SERVO
             self._apply_servo_cmd(int(msg.param1), int(msg.param2))
+            self._send(self._mav.mav.command_ack_encode(
+                msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
+        elif msg.command == 50001:  # Set battery/recharge station (from GQC Set Battery Station)
+            self._recharge_lat = float(msg.param1) / 1e5
+            self._recharge_lon = float(msg.param2) / 1e5
+            self.get_logger().info(
+                f'[RESOURCE] Battery station set: ({self._recharge_lat:.5f},{self._recharge_lon:.5f})')
+            self._send_statustext(f'Battery station updated')
+            self._send(self._mav.mav.command_ack_encode(
+                msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
+        elif msg.command == 50002:  # Set water/tank station (from GQC Set Water Station)
+            self._water_lat = float(msg.param1) / 1e5
+            self._water_lon = float(msg.param2) / 1e5
+            self.get_logger().info(
+                f'[RESOURCE] Water station set: ({self._water_lat:.5f},{self._water_lon:.5f})')
+            self._send_statustext(f'Water station updated')
             self._send(self._mav.mav.command_ack_encode(
                 msg.command, mavutil.mavlink.MAV_RESULT_ACCEPTED))
 
