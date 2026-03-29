@@ -1015,6 +1015,10 @@ class MavlinkBridgeNode(Node):
                 _sendto(item.pack(self._mav.mav))
                 seq += 1
                 time.sleep(0.02)
+            # Follow up with a clean waypoints-only download so GQC reliably
+            # updates roverMissions even if a broadcast packet was lost.
+            time.sleep(0.10)
+            self._send_mission_to_gqc()
         except Exception as e:
             self.get_logger().warn(f'_broadcast_mission_mavlink: {e}')
 
@@ -1069,13 +1073,6 @@ class MavlinkBridgeNode(Node):
             renumbered.append(wp)
             seq += 1
 
-        # Servo map was renumbered relative to _resume_wp_seq (0-based).
-        # Shift keys up by the number of prepended waypoints.
-        prepended = seq - len(wps)
-        self._wp_servo_map = {
-            (k + prepended): v for k, v in self._resume_servo_map.items()
-        }
-
         n_obs = len(self._resume_fence_buf)
         self.get_logger().info(
             f'[RESOURCE] Resume mission ready: {len(renumbered)} WPs '
@@ -1083,6 +1080,13 @@ class MavlinkBridgeNode(Node):
         self._send_statustext(
             f'Resume ready — re-arm to continue from WP{self._resume_wp_seq}')
         self._internal_upload_mission(renumbered, fence_buf=self._resume_fence_buf)
+
+        # Restore servo map AFTER _internal_upload_mission (which clears it).
+        # Shift keys up by the number of prepended waypoints (base + stopped pos).
+        prepended = seq - len(wps)
+        self._wp_servo_map = {
+            (k + prepended): v for k, v in self._resume_servo_map.items()
+        }
 
     def _on_rc_override(self, msg):
         rc = RCInput()
