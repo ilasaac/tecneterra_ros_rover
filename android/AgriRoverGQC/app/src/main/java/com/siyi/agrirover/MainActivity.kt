@@ -1260,10 +1260,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         if (type == "Battery") batteryPoint = pos else waterPoint = pos
         saveStations()
         redrawMap()
-        // Send to rover — lat/lon encoded as units of 1e-5 degrees (~1 m precision, fits float32)
+        // Send to both rovers — stations are field infrastructure, both need to know
         val p1 = (pos.latitude  * 1e5).toFloat()
         val p2 = (pos.longitude * 1e5).toFloat()
-        roverManager.sendCommand(selectedRoverId, cmdId, p1, p2)
+        roverManager.sendCommand(1, cmdId, p1, p2)
+        roverManager.sendCommand(2, cmdId, p1, p2)
         Toast.makeText(this,
             "$type station set: ${"%.5f".format(pos.latitude)}, ${"%.5f".format(pos.longitude)}",
             Toast.LENGTH_SHORT).show()
