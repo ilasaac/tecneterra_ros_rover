@@ -377,8 +377,8 @@ normal → going_to_base → at_base → normal
 ```
 - `normal` + armed + AUTONOMOUS + `wp_active >= 0` + (battery < threshold OR tank < threshold) → `going_to_base`. Saves mission state, uploads 2-WP base trip (rover pos → station) via `_internal_upload_mission`. Rover stays armed+autonomous — navigator seamlessly switches to base trip.
 - Battery/tank default 0.0 treated as unknown (skip check) — prevents false-trigger before sensors publish.
-- `going_to_base` + `wp_active == -1` → `at_base`: disarm + MANUAL, STATUSTEXT "re-arm to resume".
-- `at_base` + ARM → `_upload_resume_mission()` → uploads remaining WPs from saved seq, restores servo map + fence → `normal`. GQC START sends ARM + 500 ms + SET_MODE.
+- `going_to_base` + `wp_active == -1` → `at_base`: disarm + MANUAL, then immediately `_upload_resume_mission()` which builds the resume route (base station → stopped position → remaining WPs) and broadcasts to GQC via `_internal_upload_mission`. This ensures GQC's proximity check passes (WP0 = base = rover's current position).
+- `at_base` + ARM → `_resource_state = 'normal'`. Resume mission is already loaded — navigator starts when SET_MODE AUTO arrives. GQC START sends ARM + 500 ms + SET_MODE.
 - `_internal_upload_mission` does NOT publish `mission_clear` — seq=0 resets navigator path. DDS inter-topic ordering is not guaranteed; a separate clear races with wp[0].
 
 **Planned path overlay:** navigator publishes rerouted path via TUNNEL → GQC renders as green dotted line. Bypass segments in rover color (orange RV1, cyan RV2). Fires for all missions (mavlink_bridge always publishes `mission_fence` on ACK).

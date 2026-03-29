@@ -249,17 +249,12 @@ class MavlinkBridgeNode(Node):
             a = Bool(); a.data = False
             m = String(); m.data = 'MANUAL'
             if self._resource_state == 'going_to_base':
-                # Base trip complete — wait for user to re-arm before resuming original mission
+                # Base trip complete — disarm, then upload resume mission immediately
+                # so GQC has it ready (WP0 = base station = rover's current position,
+                # proximity check will pass on START).
                 self._resource_state = 'at_base'
                 self._armed          = False
                 self._mode           = 'MANUAL'
-                # Keep _mission_count > 0 so STATUS=MSL (not NA) — GQC START
-                # gate requires a loaded mission.  The resume mission will be
-                # uploaded on re-arm; count reflects the remaining waypoints.
-                resume_len = len(self._resume_mission) - self._resume_wp_seq
-                self._mission_count  = max(resume_len, 1)
-                self._mission_buf    = []
-                self._wp_servo_map   = {}
                 self.armed_pub.publish(a)
                 self.mode_pub.publish(m)
                 reason_label = 'battery' if self._resource_reason == 'battery' else 'tank'
@@ -268,6 +263,10 @@ class MavlinkBridgeNode(Node):
                     f'from WP{self._resume_wp_seq}')
                 self._send_statustext(
                     f'At base ({reason_label}) — re-arm to resume WP{self._resume_wp_seq}')
+                # Upload resume mission (base → stopped pos → remaining WPs).
+                # _internal_upload_mission sets _mission_count/_mission_buf and
+                # broadcasts to GQC so the map shows the resume route.
+                self._upload_resume_mission()
             else:
                 # Normal mission complete — auto-disarm and reset mission state → STATUS → NA
                 self._armed          = False
@@ -1020,32 +1019,69 @@ class MavlinkBridgeNode(Node):
             self.get_logger().warn(f'_broadcast_mission_mavlink: {e}')
 
     def _upload_resume_mission(self):
-        """Re-upload the saved mission from _resume_wp_seq — called on re-arm at_base."""
+        """Build resume mission: base station → stopped position → remaining WPs.
+
+        Called at the at_base transition so GQC has the mission ready for the
+        proximity check (WP0 = rover's current position at the base station).
+        Does NOT reset _resource_state — the ARM handler does that.
+        """
         wps = self._resume_mission[self._resume_wp_seq:]
         if not wps:
             self.get_logger().warn('[RESOURCE] Resume mission empty — clearing resource state')
             self._resource_state = 'normal'
             return
-        # Renumber seq from 0
+
         renumbered = []
-        for i, orig in enumerate(wps):
+        seq = 0
+
+        # WP0 — rover's current position (base station) so GQC proximity check passes
+        wp_here               = MissionWaypoint()
+        wp_here.seq               = seq
+        wp_here.latitude          = self._fix.latitude
+        wp_here.longitude         = self._fix.longitude
+        wp_here.speed             = wps[0].speed
+        wp_here.acceptance_radius = wps[0].acceptance_radius
+        wp_here.hold_secs         = 0.0
+        renumbered.append(wp_here)
+        seq += 1
+
+        # WP1 — position where rover stopped (return there before continuing)
+        if self._resume_position is not None:
+            wp_return               = MissionWaypoint()
+            wp_return.seq               = seq
+            wp_return.latitude          = self._resume_position[0]
+            wp_return.longitude         = self._resume_position[1]
+            wp_return.speed             = wps[0].speed
+            wp_return.acceptance_radius = wps[0].acceptance_radius
+            wp_return.hold_secs         = 0.0
+            renumbered.append(wp_return)
+            seq += 1
+
+        # Remaining original waypoints
+        for orig in wps:
             wp               = MissionWaypoint()
-            wp.seq               = i
+            wp.seq               = seq
             wp.latitude          = orig.latitude
             wp.longitude         = orig.longitude
             wp.speed             = orig.speed
             wp.acceptance_radius = orig.acceptance_radius
             wp.hold_secs         = orig.hold_secs
             renumbered.append(wp)
+            seq += 1
 
-        self._resource_state  = 'normal'
-        # Restore renumbered servo map
-        self._wp_servo_map = dict(self._resume_servo_map)
+        # Servo map was renumbered relative to _resume_wp_seq (0-based).
+        # Shift keys up by the number of prepended waypoints.
+        prepended = seq - len(wps)
+        self._wp_servo_map = {
+            (k + prepended): v for k, v in self._resume_servo_map.items()
+        }
+
         n_obs = len(self._resume_fence_buf)
         self.get_logger().info(
-            f'[RESOURCE] Resuming from WP{self._resume_wp_seq} '
-            f'({len(renumbered)} waypoints remaining, fence={n_obs} vertices)')
-        self._send_statustext(f'Resuming mission from WP{self._resume_wp_seq}')
+            f'[RESOURCE] Resume mission ready: {len(renumbered)} WPs '
+            f'(base → stopped → WP{self._resume_wp_seq}+), fence={n_obs} vertices')
+        self._send_statustext(
+            f'Resume ready — re-arm to continue from WP{self._resume_wp_seq}')
         self._internal_upload_mission(renumbered, fence_buf=self._resume_fence_buf)
 
     def _on_rc_override(self, msg):
@@ -1061,8 +1097,9 @@ class MavlinkBridgeNode(Node):
         if msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
             arming = (msg.param1 == 1.0)
             if arming and self._resource_state == 'at_base':
-                # User re-arming after base trip — upload the saved resume mission first
-                self._upload_resume_mission()
+                # Resume mission was already uploaded at at_base transition —
+                # just clear resource state so _check_resource_levels resumes.
+                self._resource_state = 'normal'
             self._armed = arming
             self.get_logger().info(f'{"ARM" if self._armed else "DISARM"} command received')
             a = Bool(); a.data = self._armed
