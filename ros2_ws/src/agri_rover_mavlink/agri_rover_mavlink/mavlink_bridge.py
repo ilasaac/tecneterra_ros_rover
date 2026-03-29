@@ -252,6 +252,7 @@ class MavlinkBridgeNode(Node):
                 # Base trip complete — wait for user to re-arm before resuming original mission
                 self._resource_state = 'at_base'
                 self._armed          = False
+                self._mode           = 'MANUAL'
                 self._mission_count  = 0
                 self._mission_buf    = []
                 self._wp_servo_map   = {}
@@ -845,13 +846,18 @@ class MavlinkBridgeNode(Node):
             raw = getattr(self._status, 'battery_remaining', -1)
             batt_pct = raw * 100 if raw > 0 else None
 
-        tank = (self._test_tank if self._test_tank is not None
-                else self._sensors.tank_level)
+        # tank_level defaults to 0.0 in SensorData() when no sensor is connected.
+        # Treat 0.0 the same as unknown — only check when test-injected OR sensor > 0.
+        if self._test_tank is not None:
+            tank: float | None = self._test_tank
+        else:
+            raw_tank = self._sensors.tank_level
+            tank = raw_tank if raw_tank > 0 else None
 
         if batt_pct is not None and batt_pct < batt_low:
             self.get_logger().warn(f'[RESOURCE] Battery {batt_pct:.0f}% < {batt_low:.0f}%')
             self._trigger_return_to_base('battery')
-        elif tank >= 0 and tank < tank_low:
+        elif tank is not None and tank < tank_low:
             self.get_logger().warn(f'[RESOURCE] Tank {tank:.0f}% < {tank_low:.0f}%')
             self._trigger_return_to_base('tank')
 
@@ -872,13 +878,9 @@ class MavlinkBridgeNode(Node):
             if seq >= self._resume_wp_seq
         }
 
-        # Disarm and stop navigator
-        self._armed = False
-        self._mode  = 'MANUAL'
-        a = Bool(); a.data = False
-        self.armed_pub.publish(a)
-        m = String(); m.data = 'MANUAL'
-        self.mode_pub.publish(m)
+        # Stay armed + autonomous — the navigator will seamlessly switch to the
+        # base-trip mission when the new seq=0 waypoint arrives.  Disarm only
+        # happens when the rover reaches the base (wp_active=-1 in going_to_base).
 
         # Select the appropriate base station — runtime override takes priority over YAML
         if reason == 'battery':
@@ -953,9 +955,9 @@ class MavlinkBridgeNode(Node):
         self._wp_servo_map    = {}
         self._last_nav_wp_seq = None
 
-        # Clear navigator and publish new waypoints
-        clr = Bool(); clr.data = True
-        self.mission_clear_pub.publish(clr)
+        # Publish new waypoints — seq=0 resets the navigator's path automatically.
+        # Do NOT publish mission_clear here: DDS does not guarantee inter-topic
+        # ordering, so the clear may arrive AFTER wp[0] and wipe it out.
         for wp in waypoints:
             self.mission_pub.publish(wp)
         # Publish fence (may be empty for base trip without obstacles)

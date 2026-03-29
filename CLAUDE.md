@@ -367,9 +367,19 @@ Waypoint speed = `dist_m / 0.5s`, clamped [0.3, 1.5] m/s; sent as `z` field of N
 **Safety:**
 - E-STOP → `sendCriticalCommand` DISARM (cmd 400, p1=0) to all rovers.
 - `checkLinkMismatch()` → auto-disarm after 2 s RC switch ≠ slave HEARTBEAT mismatch.
-- **ARM gate (START):** mission must be loaded + STATUS ≠ NA + rover within **0.5 m** of first waypoint.
+- **ARM gate (START):** mission must be loaded + STATUS ≠ NA + rover within **0.5 m** of first waypoint + CH9 must select a rover (not mid-position).
 
-**Mission auto-disarm:** `wp_active = -1` → mavlink_bridge auto-disarms, clears mission, publishes MANUAL. Only fires when `_pending_path_chunks` is empty.
+**Mission auto-disarm:** `wp_active = -1` → mavlink_bridge auto-disarms, clears mission, publishes MANUAL.
+
+**Resource management state machine** (`mavlink_bridge._check_resource_levels`, 1 Hz):
+```
+normal → going_to_base → at_base → normal
+```
+- `normal` + armed + AUTONOMOUS + `wp_active >= 0` + (battery < threshold OR tank < threshold) → `going_to_base`. Saves mission state, uploads 2-WP base trip (rover pos → station) via `_internal_upload_mission`. Rover stays armed+autonomous — navigator seamlessly switches to base trip.
+- Battery/tank default 0.0 treated as unknown (skip check) — prevents false-trigger before sensors publish.
+- `going_to_base` + `wp_active == -1` → `at_base`: disarm + MANUAL, STATUSTEXT "re-arm to resume".
+- `at_base` + ARM → `_upload_resume_mission()` → uploads remaining WPs from saved seq, restores servo map + fence → `normal`. GQC START sends ARM + 500 ms + SET_MODE.
+- `_internal_upload_mission` does NOT publish `mission_clear` — seq=0 resets navigator path. DDS inter-topic ordering is not guaranteed; a separate clear races with wp[0].
 
 **Planned path overlay:** navigator publishes rerouted path via TUNNEL → GQC renders as green dotted line. Bypass segments in rover color (orange RV1, cyan RV2). Fires for all missions (mavlink_bridge always publishes `mission_fence` on ACK).
 
