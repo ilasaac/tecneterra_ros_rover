@@ -1049,11 +1049,12 @@ class MavlinkBridgeNode(Node):
             self.get_logger().warn(f'_broadcast_mission_mavlink: {e}')
 
     def _upload_resume_mission(self):
-        """Build resume mission: base station → stopped position → remaining WPs.
+        """Build resume mission and broadcast to GQC (but NOT to navigator yet).
 
-        Called at the at_base transition so GQC has the mission ready for the
-        proximity check (WP0 = rover's current position at the base station).
-        Does NOT reset _resource_state — the ARM handler does that.
+        Called at the at_base transition so GQC has the mission for its map and
+        proximity check.  The navigator receives the WPs only when the user
+        re-arms (via _publish_resume_to_navigator), preventing a race where
+        the navigator processes partial WPs while still armed+autonomous.
         """
         wps = self._resume_mission[self._resume_wp_seq:]
         if not wps:
@@ -1064,7 +1065,7 @@ class MavlinkBridgeNode(Node):
         renumbered = []
         seq = 0
 
-        # WP0 — rover's current position (base station) so GQC proximity check passes
+        # WP0 — rover's current position (base station)
         wp_here               = MissionWaypoint()
         wp_here.seq               = seq
         wp_here.latitude          = self._fix.latitude
@@ -1110,14 +1111,45 @@ class MavlinkBridgeNode(Node):
                 f'  resume[{i}] {label}: ({wp.latitude:.7f},{wp.longitude:.7f})')
         self._send_statustext(
             f'Resume: {len(renumbered)} WPs from WP{self._resume_wp_seq} — check map')
-        self._internal_upload_mission(renumbered, fence_buf=self._resume_fence_buf)
 
-        # Restore servo map AFTER _internal_upload_mission (which clears it).
-        # Shift keys up by the number of prepended waypoints (base + stopped pos).
+        # Store for deferred navigator upload on re-arm
+        self._resume_nav_wps   = renumbered
+        self._resume_nav_fence = list(self._resume_fence_buf)
+
+        # Set mission state so STATUS=MSL (GQC START gate passes)
+        with self._mission_lock:
+            self._mission_count = len(renumbered)
+            self._mission_buf   = list(renumbered)
+        # Servo map
         prepended = seq - len(wps)
         self._wp_servo_map = {
             (k + prepended): v for k, v in self._resume_servo_map.items()
         }
+
+        # Broadcast to GQC for map display (no navigator publication)
+        threading.Thread(
+            target=self._broadcast_mission_mavlink,
+            args=(list(renumbered), list(self._resume_fence_buf) if self._resume_fence_buf else []),
+            daemon=True
+        ).start()
+
+    def _publish_resume_to_navigator(self):
+        """Publish stored resume mission to navigator — called on re-arm."""
+        wps = getattr(self, '_resume_nav_wps', None)
+        if not wps:
+            return
+        fence = getattr(self, '_resume_nav_fence', [])
+        self.get_logger().info(
+            f'[RESOURCE] Publishing {len(wps)} resume WPs to navigator')
+        for wp in wps:
+            self.mission_pub.publish(wp)
+        if fence:
+            polys = self._parse_fence_polygons(fence)
+            fence_msg = String()
+            fence_msg.data = json.dumps({'polygons': polys})
+            self.fence_pub.publish(fence_msg)
+        self._resume_nav_wps   = None
+        self._resume_nav_fence = None
 
     def _on_rc_override(self, msg):
         rc = RCInput()
@@ -1132,9 +1164,10 @@ class MavlinkBridgeNode(Node):
         if msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
             arming = (msg.param1 == 1.0)
             if arming and self._resource_state == 'at_base':
-                # Resume mission was already uploaded at at_base transition —
-                # just clear resource state so _check_resource_levels resumes.
+                # Resume mission was broadcast to GQC at at_base transition.
+                # NOW publish to navigator (rover is confirmed disarmed, no race).
                 self._resource_state = 'normal'
+                self._publish_resume_to_navigator()
             self._armed = arming
             self.get_logger().info(f'{"ARM" if self._armed else "DISARM"} command received')
             a = Bool(); a.data = self._armed
