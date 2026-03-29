@@ -2128,6 +2128,22 @@ class NavigatorNode(Node):
             if self._expanded_polygons:
                 self._reroute_path()
 
+        # ── wp0 proximity skip ───────────────────────────────────────────────
+        # If the rover is already at wp0 (e.g. resume mission where wp0 = base
+        # station = rover's current position), the origin→wp0 segment has near-
+        # zero length and steering calculations degenerate. Skip wp0 immediately
+        # if within acceptance radius; otherwise navigate to it normally.
+        if self._path_idx == 0 and len(self._path) > 1:
+            rlat, rlon = self._center_pos()
+            wp0 = self._path[0]
+            d = haversine(rlat, rlon, wp0.latitude, wp0.longitude)
+            ar = wp0.acceptance_radius if wp0.acceptance_radius > 0 else self._accept_r
+            if d < ar:
+                self.get_logger().info(
+                    f'Already at wp0 (seq={wp0.seq}, {d:.2f}m < {ar:.2f}m) — advancing')
+                self._advance_path()
+                return
+
         # ── Hold at waypoint ─────────────────────────────────────────────────
         if self._holding:
             self._publish_halt()

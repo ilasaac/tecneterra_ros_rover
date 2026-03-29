@@ -1288,6 +1288,18 @@ class PathNavigator:
                 self._advance()
             return PPM_CENTER, PPM_CENTER, self.path_idx, False
 
+        # wp0 proximity skip — if already at wp0, advance immediately to avoid
+        # degenerate steering on a near-zero-length origin→wp0 segment.
+        if self.path_idx == 0 and len(self._wps) > 1:
+            wp0 = self._wps[0]
+            d = _haversine(rlat, rlon, wp0.lat, wp0.lon)
+            ar = wp0.accept if wp0.accept > 0 else self._accept_r
+            if d < ar:
+                self._advance()
+                if self.path_idx >= len(self._wps):
+                    return PPM_CENTER, PPM_CENTER, 0, True
+                return PPM_CENTER, PPM_CENTER, self.path_idx, False
+
         # AFS algorithm
         if self._algo == 'afs':
             thr, steer, done = self._afs_step(rlat, rlon, flat, flon, heading, t_mono)
