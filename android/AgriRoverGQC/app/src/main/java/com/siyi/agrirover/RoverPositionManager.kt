@@ -453,8 +453,11 @@ class RoverPositionManager(
      * AP DTIM window instead of N separate wake cycles.
      */
     private suspend fun streamMission(sysId: Int, items: List<MissionItemInt>) {
+        Log.i("RoverMgr", "streamMission START: sysId=$sysId, ${items.size} items")
+        try {
         pendingMissions[sysId] = items
         val ip = roverIp(sysId)
+        Log.i("RoverMgr", "streamMission target IP: $ip")
         // Safety: disarm before uploading — rover must not start navigating during upload.
         // 3× retries (confirmation=0,1,2) per MAVLink spec for critical commands.
         repeat(3) { attempt ->
@@ -466,6 +469,7 @@ class RoverPositionManager(
                 .build())
             if (attempt < 2) delay(100L)
         }
+        Log.i("RoverMgr", "streamMission DISARM sent")
         // Allow rover to process disarm before mission upload begins.
         delay(100L)
         // Send MISSION_COUNT 3× to survive WiFi packet loss — rover ignores
@@ -478,9 +482,14 @@ class RoverPositionManager(
         }
         // Brief pause so rover processes MISSION_COUNT before items start arriving.
         delay(100L)
+        Log.i("RoverMgr", "streamMission MISSION_COUNT sent, streaming ${items.size} items")
         for (item in items) {
             sendMavlinkTo(ip, item)
             delay(20L)   // 20 ms gap: avoids flooding rover's socket buffer
+        }
+        Log.i("RoverMgr", "streamMission DONE: all ${items.size} items sent")
+        } catch (e: Exception) {
+            Log.e("RoverMgr", "streamMission CRASHED: ${e.message}", e)
         }
     }
 
