@@ -485,7 +485,7 @@ class RoverPositionManager(
         Log.i("RoverMgr", "streamMission MISSION_COUNT sent, streaming ${items.size} items")
         for (item in items) {
             sendMavlinkTo(ip, item)
-            delay(20L)   // 20 ms gap: avoids flooding rover's socket buffer
+            delay(50L)   // 50 ms gap: gives WiFi driver time to transmit each packet
         }
         Log.i("RoverMgr", "streamMission DONE: all ${items.size} items sent")
         } catch (e: Exception) {
