@@ -530,6 +530,10 @@ class MavlinkBridgeNode(Node):
                     self._gqc_unicast = (src_ip, self._gqc_addr[1])
 
                 mt = msg.get_type()
+                if mt in ('COMMAND_LONG', 'MISSION_COUNT', 'MISSION_ITEM_INT'):
+                    self.get_logger().info(
+                        f'RX {mt} src={msg.get_srcSystem()} '
+                        f'tgt={msg.target_system} from={src_ip}')
                 if mt == 'RC_CHANNELS_OVERRIDE':
                     self._on_rc_override(msg)
                 elif mt == 'COMMAND_LONG':
