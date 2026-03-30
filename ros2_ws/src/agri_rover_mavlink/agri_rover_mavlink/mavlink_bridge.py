@@ -222,9 +222,6 @@ class MavlinkBridgeNode(Node):
         self._cmd_channels = list(msg.channels)
 
     def _cb_wp(self, msg: Int32):
-        self.get_logger().info(
-            f'wp_active={msg.data} armed={self._armed} '
-            f'mission_count={self._mission_count}')
         self._wp_active = msg.data
         # Waiting point signal: navigator encodes as -(seq + 1000)
         if msg.data <= -1000:
@@ -529,10 +526,6 @@ class MavlinkBridgeNode(Node):
                     self._gqc_unicast = (src_ip, self._gqc_addr[1])
 
                 mt = msg.get_type()
-                if mt in ('COMMAND_LONG', 'MISSION_COUNT', 'MISSION_ITEM_INT'):
-                    self.get_logger().info(
-                        f'RX {mt} src={msg.get_srcSystem()} '
-                        f'tgt={msg.target_system} from={src_ip}')
                 if mt == 'RC_CHANNELS_OVERRIDE':
                     self._on_rc_override(msg)
                 elif mt == 'COMMAND_LONG':
