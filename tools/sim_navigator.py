@@ -643,7 +643,7 @@ class PathNavigator:
         self._nav        = nav
         self._algo       = nav.get('control_algorithm', 'stanley')
         self.path_idx    = 0
-        self.total_advanced = 0   # monotonically counts _advance() calls across all chunks
+        self.total_advanced = 0   # monotonically counts _advance() calls
         self._pivoting   = False
         self._pivot_hdg  = 0.0
         self._holding    = False
@@ -662,81 +662,14 @@ class PathNavigator:
                                  nav.get('ttr_hight_ki', 0.0),
                                  nav.get('ttr_hight_kd', 0.0))
         self._step_info: dict = {}
+        self._accept_r = nav.get('default_acceptance_radius', 0.3)
 
-        # Split the full waypoint list into chunks that end at each pivot turn.
-        # Each chunk is navigated as an independent sub-mission: the rover follows
-        # waypoints in the chunk, stops-and-spins at the last one (the pivot), then
-        # loads the next chunk.  This prevents _nearest_on_path from ever seeing
-        # segments that belong to a different side of a sharp turn.
-        #
-        # Each entry: (wps, origin_lat, origin_lon, pivot_target_or_None)
-        # pivot_target: first SimWaypoint of the next chunk — used for pivot aim
-        #               bearing when the pivot is the last wp of the current chunk.
-        self._pending_chunks: list[tuple[list[SimWaypoint], float, float,
-                                         'SimWaypoint | None']] = []
-        chunks = self._split_at_pivots(waypoints, nav.get('pivot_threshold', 25.0))
-        origin = (origin_lat, origin_lon)
-        for i, chunk in enumerate(chunks):
-            pivot_target = chunks[i + 1][0] if i + 1 < len(chunks) else None
-            self._pending_chunks.append((chunk, origin[0], origin[1], pivot_target))
-            origin = (chunk[-1].lat, chunk[-1].lon)   # next chunk starts at pivot
-
-        # Load first chunk
-        self._wps, self._origin_lat, self._origin_lon, \
-            self._chunk_end_pivot_target = self._pending_chunks.pop(0)
-        self._path_s = self._compute_arclens()
-
-    @staticmethod
-    def _split_at_pivots(waypoints: list[SimWaypoint],
-                         pivot_thresh: float) -> list[list[SimWaypoint]]:
-        """Split waypoints into groups ending at each pivot turn.
-
-        The pivot waypoint is the LAST element of its chunk.  After the rover
-        completes the pivot spin and _advance() fires, path_idx reaches
-        len(chunk) which triggers the next chunk to be loaded with origin set
-        to the pivot waypoint's position.
-        """
-        if not waypoints:
-            return []
-        chunks: list[list[SimWaypoint]] = []
-        current: list[SimWaypoint] = []
-        n = len(waypoints)
-        for i, wp in enumerate(waypoints):
-            current.append(wp)
-            if i < n - 1:
-                # Compute turn angle at this waypoint using its neighbours
-                if i == 0:
-                    in_brg = _bearing_to(waypoints[0].lat, waypoints[0].lon,
-                                         waypoints[1].lat, waypoints[1].lon)
-                else:
-                    in_brg = _bearing_to(waypoints[i - 1].lat, waypoints[i - 1].lon,
-                                         waypoints[i].lat,     waypoints[i].lon)
-                out_brg = _bearing_to(waypoints[i].lat,     waypoints[i].lon,
-                                      waypoints[i + 1].lat, waypoints[i + 1].lon)
-                ta = abs(((out_brg - in_brg + 180) % 360) - 180)
-                if ta >= pivot_thresh:
-                    chunks.append(current)
-                    current = []
-        if current:
-            chunks.append(current)
-        return chunks
-
-    def _load_next_chunk(self) -> bool:
-        """Load the next pending chunk.  Returns True if one was available."""
-        if not self._pending_chunks:
-            return False
-        self._wps, self._origin_lat, self._origin_lon, \
-            self._chunk_end_pivot_target = self._pending_chunks.pop(0)
-        self._path_s           = self._compute_arclens()
-        self.path_idx          = 0
-        self._mpc_prev_steers    = []
-        self._spin_target_brg    = None
-        self._pivoting           = False
-        self._pivot_closest_dist = float('inf')
-        self._holding            = False
-        self._afs_phase          = 'straight'
-        self._afs_closest_dist   = float('inf')
-        return True
+        # Full path — no chunk splitting.  _turn_angle_at() and pivot
+        # detection work on the complete waypoint list.
+        self._wps        = list(waypoints)
+        self._origin_lat = origin_lat
+        self._origin_lon = origin_lon
+        self._path_s     = self._compute_arclens()
 
     # ── Arc-length ─────────────────────────────────────────────────────────
 
@@ -842,7 +775,7 @@ class PathNavigator:
 
     def _min_clamped_cte(self, lat: float, lon: float) -> float:
         """Minimum clamped perpendicular distance from (lat,lon) to any segment
-        in the current chunk.  Matches what the mission-planner measure tool
+        in the current path.  Matches what the mission-planner measure tool
         shows: distance to the nearest point *on* the route (not on its infinite
         line extension), measured from the rover centre."""
         m_lat = 111_320.0
@@ -1093,22 +1026,10 @@ class PathNavigator:
         accept           = wp.acceptance_radius if wp.acceptance_radius > 0 else accept_r
         dist_to_wp       = _haversine(rlat, rlon, wp.lat, wp.lon)
         is_bypass        = wp.is_bypass
-        is_last_in_chunk = (self.path_idx == len(self._wps) - 1)
-        chunk_pivot_nxt  = self._chunk_end_pivot_target
 
-        # Turn detection (mirrors navigator.py._afs_step)
-        if is_last_in_chunk and chunk_pivot_nxt is not None:
-            if len(self._wps) > 1:
-                in_brg = _bearing_to(self._wps[-2].lat, self._wps[-2].lon, wp.lat, wp.lon)
-            else:
-                in_brg = _bearing_to(self._origin_lat, self._origin_lon, wp.lat, wp.lon)
-            out_brg    = _bearing_to(wp.lat, wp.lon,
-                                     chunk_pivot_nxt.lat, chunk_pivot_nxt.lon)
-            turn_angle = abs(((out_brg - in_brg + 180) % 360) - 180)
-            needs_turn = turn_angle >= pivot_thresh
-        else:
-            turn_angle = self._turn_angle_at(self.path_idx)
-            needs_turn = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
+        # Turn detection — _turn_angle_at() works on the full path.
+        turn_angle = self._turn_angle_at(self.path_idx)
+        needs_turn = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
 
         # ── Spin phase ──────────────────────────────────────────────────
         if self._afs_phase == 'spin':
@@ -1120,8 +1041,7 @@ class PathNavigator:
                 self._ttr_hpid.clear()
                 self._advance()
                 if self.path_idx >= len(self._wps):
-                    if not self._load_next_chunk():
-                        return PPM_CENTER, PPM_CENTER, True
+                    return PPM_CENTER, PPM_CENTER, True
                 # Halt one tick — next call to _afs_step() will use fresh path_idx
                 return PPM_CENTER, PPM_CENTER, False
             else:
@@ -1138,13 +1058,8 @@ class PathNavigator:
                 self._afs_closest_dist = dist_to_wp
             if dist_to_wp > self._afs_closest_dist + 0.1:
                 self._afs_phase = 'spin'
-                if is_last_in_chunk and chunk_pivot_nxt is not None:
-                    nxt_lat, nxt_lon = chunk_pivot_nxt.lat, chunk_pivot_nxt.lon
-                elif not is_last_in_chunk:
-                    nxt = self._wps[self.path_idx + 1]
-                    nxt_lat, nxt_lon = nxt.lat, nxt.lon
-                else:
-                    nxt_lat, nxt_lon = wp.lat, wp.lon
+                nxt = self._wps[self.path_idx + 1]
+                nxt_lat, nxt_lon = nxt.lat, nxt.lon
                 self._afs_spin_hdg = _bearing_to(rlat, rlon, nxt_lat, nxt_lon)
                 return PPM_CENTER, PPM_CENTER, False
             target_brg  = _bearing_to(rlat, rlon, wp.lat, wp.lon)
@@ -1186,8 +1101,7 @@ class PathNavigator:
                     return PPM_CENTER, PPM_CENTER, False
                 self._advance()
                 if self.path_idx >= len(self._wps):
-                    if not self._load_next_chunk():
-                        return PPM_CENTER, PPM_CENTER, True
+                    return PPM_CENTER, PPM_CENTER, True
                 # Refresh for new target
                 wp         = self._wps[self.path_idx]
                 is_bypass  = wp.is_bypass
@@ -1276,10 +1190,7 @@ class PathNavigator:
         self._step_info = {'t': t_mono, 'pivoting': self._pivoting, 'holding': self._holding}
 
         if self.path_idx >= len(self._wps):
-            if self._load_next_chunk():
-                pass   # continue with new chunk this tick
-            else:
-                return PPM_CENTER, PPM_CENTER, 0, True
+            return PPM_CENTER, PPM_CENTER, 0, True
 
         # Hold
         if self._holding:
@@ -1320,8 +1231,7 @@ class PathNavigator:
                 self._ttr_apid.clear(); self._ttr_hpid.clear()
                 self._advance()
                 if self.path_idx >= len(self._wps):
-                    if not self._load_next_chunk():
-                        return PPM_CENTER, PPM_CENTER, 0, True
+                    return PPM_CENTER, PPM_CENTER, 0, True
                 # Fall through to controller — don't return neutral.
             else:
                 # Proportional spin: full speed above 45°, linear ramp below.
@@ -1335,25 +1245,9 @@ class PathNavigator:
         accept      = wp.acceptance_radius if wp.acceptance_radius > 0 else accept_r
         is_bypass   = wp.is_bypass
 
-        # Pivot detection — special case for the last wp in a chunk:
-        # _turn_angle_at() returns 0 for the last element (no outgoing segment in
-        # _wps), so we must look at the first wp of the next chunk instead.
-        is_last_in_chunk    = (self.path_idx == len(self._wps) - 1)
-        chunk_pivot_nxt     = self._chunk_end_pivot_target   # SimWaypoint | None
-        if is_last_in_chunk and chunk_pivot_nxt is not None:
-            if len(self._wps) > 1:
-                in_brg = _bearing_to(self._wps[-2].lat, self._wps[-2].lon,
-                                     wp.lat, wp.lon)
-            else:
-                in_brg = _bearing_to(self._origin_lat, self._origin_lon,
-                                     wp.lat, wp.lon)
-            out_brg    = _bearing_to(wp.lat, wp.lon,
-                                     chunk_pivot_nxt.lat, chunk_pivot_nxt.lon)
-            turn_angle = abs(((out_brg - in_brg + 180) % 360) - 180)
-            needs_pivot = turn_angle >= pivot_thresh
-        else:
-            turn_angle  = self._turn_angle_at(self.path_idx)
-            needs_pivot = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
+        # Pivot detection — _turn_angle_at() works on the full path.
+        turn_angle  = self._turn_angle_at(self.path_idx)
+        needs_pivot = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
 
         s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
         wp_s                = self._path_s[self.path_idx]
@@ -1395,14 +1289,10 @@ class PathNavigator:
                 self._hold_end = t_mono + wp.hold_secs
                 return PPM_CENTER, PPM_CENTER, best_seg, False
             elif needs_pivot:
-                # Aim toward first wp of the next chunk when at chunk boundary.
-                # Bearing from rover's ACTUAL position (not from the waypoint itself)
-                # because "reached" may fire up to accept_r metres short of the wp.
-                if is_last_in_chunk and chunk_pivot_nxt is not None:
-                    nxt_lat, nxt_lon = chunk_pivot_nxt.lat, chunk_pivot_nxt.lon
-                else:
-                    nxt = self._wps[self.path_idx + 1]
-                    nxt_lat, nxt_lon = nxt.lat, nxt.lon
+                # Bearing from rover's ACTUAL position to the next WP (not from the
+                # waypoint itself — "reached" may fire up to accept_r metres short).
+                nxt = self._wps[self.path_idx + 1]
+                nxt_lat, nxt_lon = nxt.lat, nxt.lon
                 self._pivot_hdg       = _bearing_to(rlat, rlon, nxt_lat, nxt_lon)
                 self._pivoting        = True
                 self._mpc_prev_steers = []
@@ -1411,8 +1301,7 @@ class PathNavigator:
             else:
                 self._advance()
                 if self.path_idx >= len(self._wps):
-                    if not self._load_next_chunk():
-                        return PPM_CENTER, PPM_CENTER, best_seg, True
+                    return PPM_CENTER, PPM_CENTER, best_seg, True
                 # Don't stop — fall through to the controller so the rover
                 # seamlessly continues toward the next waypoint.
                 # Refresh state for the new target waypoint.
@@ -1514,10 +1403,7 @@ def compute_pivot_wps(waypoints: list[SimWaypoint],
                       pivot_threshold: float) -> list[dict]:
     """Return all pivot waypoints across the full flat waypoint list.
 
-    PathNavigator.__init__ splits waypoints into chunks and pops the first
-    chunk, so _turn_angle_at() only sees chunk-local waypoints.  This function
-    scans the complete list and correctly identifies every pivot, including
-    those in later chunks.
+    Scans the complete list and correctly identifies every pivot.
     """
     result = []
     n = len(waypoints)
@@ -1657,7 +1543,7 @@ def simulate(waypoints:       list[SimWaypoint],
     xte_all:           list[float]               = []     # one per step (for rms/max/avg stats)
     wps_reached:       list[int]                 = []
     t_mono             = 0.0
-    prev_advanced      = 0        # tracks path_n.total_advanced (cross-chunk monotonic)
+    prev_advanced      = 0        # tracks path_n.total_advanced (monotonic)
     completed_normally = False
 
     max_steps = int(nav['max_timeout'] / dt)
@@ -1697,8 +1583,7 @@ def simulate(waypoints:       list[SimWaypoint],
                   f'{si.get("mode", "?"):>7}  '
                   f'{s_clip_str:>8}')
 
-        # Track newly reached waypoints using total_advanced (monotonic across chunks).
-        # path_n.path_idx resets to 0 on each chunk load so it cannot be used here.
+        # Track newly reached waypoints using total_advanced (monotonic counter).
         while prev_advanced < path_n.total_advanced and prev_advanced < len(effective_wps):
             wp = effective_wps[prev_advanced]
             if wp.seq <= max(w.seq for w in waypoints):

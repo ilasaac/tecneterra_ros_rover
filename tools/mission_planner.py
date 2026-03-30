@@ -2065,7 +2065,7 @@ class _Handler(BaseHTTPRequestHandler):
                               nav_params=nav_p, phys_params=phys_p,
                               obstacles=obstacles if obstacles else None)
 
-            # Compute pivot waypoints for the frontend (all chunks, not just first)
+            # Compute pivot waypoints for the frontend
             pivot_wps = compute_pivot_wps(
                 _rerouted_as_wps(result.rerouted_wps, wps),
                 start_lat, start_lon,
