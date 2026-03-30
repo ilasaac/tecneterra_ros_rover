@@ -91,6 +91,7 @@ ros_agri_rover/
 | sensors      | agri_rover_interfaces/SensorData      | sensor_node                 | mavlink_bridge            |
 | mission      | agri_rover_interfaces/MissionWaypoint | mavlink_bridge              | navigator                 |
 | mission_fence| std_msgs/String (JSON)                | mavlink_bridge              | navigator                 |
+| station_update| std_msgs/String (JSON)               | mavlink_bridge              | navigator                 |
 
 **Cross-namespace topics (inter-rover proximity, absolute paths — no /rvN/ prefix):**
 
@@ -379,15 +380,15 @@ Waypoint speed = `dist_m / 0.5s`, clamped [0.3, 1.5] m/s; sent as `z` field of N
 
 **Waypoint colors:** Planner route = white (not yet uploaded). After upload: pending = full rover color (red RV1, blue RV2), walked = light rover color (light red / light blue). All waypoint dots visible.
 
-**Resource management state machine** (`mavlink_bridge._check_resource_levels`, 1 Hz):
+**Resource management state machine** (`navigator._check_resources`, 1 Hz):
 ```
 normal → going_to_base → at_base → normal
 ```
-- `normal` + armed + AUTONOMOUS + `wp_active >= 0` + (battery < threshold OR tank < threshold) → `going_to_base`. Saves mission state, uploads 2-WP base trip (rover pos → station) via `_internal_upload_mission`. Rover stays armed+autonomous — navigator seamlessly switches to base trip.
-- Battery/tank default 0.0 treated as unknown (skip check) — prevents false-trigger before sensors publish.
-- `going_to_base` + `wp_active == -1` → `at_base`: disarm + MANUAL, then immediately `_upload_resume_mission()` which builds the resume route (base station → stopped position → remaining WPs) and broadcasts to GQC via `_internal_upload_mission`. This ensures GQC's proximity check passes (WP0 = base = rover's current position).
-- `at_base` + ARM → `_resource_state = 'normal'`. Resume mission is already loaded — navigator starts when SET_MODE AUTO arrives. GQC START sends ARM + 500 ms + SET_MODE.
-- `_internal_upload_mission` does NOT publish `mission_clear` — seq=0 resets navigator path. DDS inter-topic ordering is not guaranteed; a separate clear races with wp[0].
+- `normal` + armed + AUTONOMOUS + `path_idx > 0` + (battery < threshold OR tank < threshold) → `going_to_base`. Navigator saves mission state (`_saved_path_original`, `_saved_wp_idx`, `_saved_fence`), builds 2-WP base trip (rover pos → station) internally, stays armed+autonomous for seamless path switch. Publishes `wp_active = -2` to signal mavlink_bridge.
+- Battery/tank default 0.0 treated as unknown (skip check) — prevents false-trigger before sensors publish. Test injection via `station_update` topic (`test_tank`, `test_batt` keys) or ROS2 params (`test_tank_pct`, `test_batt_pct`).
+- `going_to_base` + mission complete → `_arrive_at_base()`: builds resume mission (base → remaining saved WPs), restores saved obstacles for rerouting, publishes `wp_active = -3`. mavlink_bridge responds: disarm + MANUAL, keeps `_mission_count > 0` so STATUS=MSL.
+- `at_base` + ARM → `_resource_state = 'normal'`. Resume mission is already loaded in navigator path — starts when SET_MODE AUTO arrives. GQC START sends ARM + 500 ms + SET_MODE.
+- Station coordinates forwarded from mavlink_bridge to navigator via `station_update` topic (JSON: `{type, lat, lon}`). GQC commands 50001/50002 no longer stored in mavlink_bridge.
 
 **Planned path overlay:** navigator publishes rerouted path via TUNNEL → GQC renders as green dotted line. Bypass segments in rover color (orange RV1, cyan RV2). Fires for all missions (mavlink_bridge always publishes `mission_fence` on ACK).
 

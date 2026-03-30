@@ -90,7 +90,7 @@ from std_msgs.msg import Bool, Float32, Int32, String
 from sensor_msgs.msg import NavSatFix
 from std_srvs.srv import Trigger
 
-from agri_rover_interfaces.msg import RCInput, MissionWaypoint
+from agri_rover_interfaces.msg import RCInput, MissionWaypoint, SensorData, RoverStatus
 
 PPM_CENTER = 1500
 PPM_MIN    = 1000
@@ -350,6 +350,18 @@ class NavigatorNode(Node):
         self.declare_parameter('proximity_halt_m',          1.0)
         self.declare_parameter('proximity_estop_m',         0.5)
 
+        # ── Resource management parameters ───────────────────────────────────
+        self.declare_parameter('recharge_lat',      0.0)
+        self.declare_parameter('recharge_lon',      0.0)
+        self.declare_parameter('water_lat',         0.0)
+        self.declare_parameter('water_lon',         0.0)
+        self.declare_parameter('battery_low_pct',  15.0)
+        self.declare_parameter('tank_low_pct',      5.0)
+        self.declare_parameter('base_speed',        0.9)
+        self.declare_parameter('base_acceptance_m', 1.5)
+        self.declare_parameter('test_tank_pct',    -1.0)   # -1 = use real sensor
+        self.declare_parameter('test_batt_pct',    -1.0)   # -1 = use real sensor
+
         self._lookahead           = self.get_parameter('lookahead_distance').value
         self._accept_r            = self.get_parameter('default_acceptance_radius').value
         self._max_speed           = self.get_parameter('max_speed').value
@@ -400,6 +412,16 @@ class NavigatorNode(Node):
         self._prox_slow_m   = self.get_parameter('proximity_slow_m').value
         self._prox_halt_m   = self.get_parameter('proximity_halt_m').value
         self._prox_estop_m  = self.get_parameter('proximity_estop_m').value
+
+        # Resource management values
+        self._recharge_lat    = self.get_parameter('recharge_lat').value
+        self._recharge_lon    = self.get_parameter('recharge_lon').value
+        self._water_lat       = self.get_parameter('water_lat').value
+        self._water_lon       = self.get_parameter('water_lon').value
+        self._battery_low_pct = self.get_parameter('battery_low_pct').value
+        self._tank_low_pct    = self.get_parameter('tank_low_pct').value
+        self._base_speed      = self.get_parameter('base_speed').value
+        self._base_accept     = self.get_parameter('base_acceptance_m').value
         self.get_logger().info(
             f'Rover bounding box: front_ov={self._prox_front_ov:.3f} m, '
             f'rear_ov={self._prox_rear_ov:.3f} m, half_w={self._prox_half_w:.3f} m')
@@ -487,6 +509,16 @@ class NavigatorNode(Node):
         # Initialized here so _control_loop never hits AttributeError on first tick.
         self._spin_target_brg:  float | None = None
 
+        # Resource management state machine: 'normal' → 'going_to_base' → 'at_base' → 'normal'
+        self._resource_state:  str        = 'normal'
+        self._resource_reason: str | None = None       # 'battery' | 'tank'
+        self._saved_path_original: list   = []         # snapshot of _path_original at trigger
+        self._saved_wp_idx:    int        = 0          # _path_idx at trigger (next unvisited)
+        self._saved_bypass:    set        = set()      # bypass indices
+        self._saved_fence:     list       = []         # expanded polygons
+        self._battery_pct:     float | None = None     # latest battery % (None = unknown)
+        self._tank_pct:        float | None = None     # latest tank % (None = unknown)
+
         self._dt = 1.0 / self.get_parameter('control_rate').value
 
         # MPC warm-start: previous horizon steer sequence (N steer_frac values)
@@ -507,6 +539,9 @@ class NavigatorNode(Node):
         self.create_subscription(Bool,            'mission_clear', self._cb_mission_clear, 10)
         self.create_subscription(String,          'mission_fence', self._cb_mission_fence, 10)
         self.create_subscription(Float32,         'hacc',          self._cb_hacc,          10)
+        self.create_subscription(SensorData,      'sensors',       self._cb_sensors,       10)
+        self.create_subscription(RoverStatus,     'status',        self._cb_status,        10)
+        self.create_subscription(String,          'station_update', self._cb_station_update, 10)
 
         # ── Inter-rover proximity subscriptions (cross-namespace, absolute paths) ──
         peer_ns = self.get_parameter('peer_rover_ns').value
@@ -536,6 +571,7 @@ class NavigatorNode(Node):
         # Publish current params periodically so mavlink_bridge always has fresh values.
         # Also fires immediately so the first subscriber (after any node restart) gets them.
         self.create_timer(5.0, self._publish_nav_params)
+        self.create_timer(1.0, self._check_resources)
 
         # ── Services ─────────────────────────────────────────────────────────
         self.create_service(Trigger, 'pause_mission',  self._svc_pause)
@@ -634,6 +670,40 @@ class NavigatorNode(Node):
     def _cb_hacc(self, msg: Float32):
         self._hacc_mm = msg.data
 
+    def _cb_sensors(self, msg: SensorData):
+        raw = msg.tank_level
+        self._tank_pct = raw if raw > 0 else None
+
+    def _cb_status(self, msg: RoverStatus):
+        raw = msg.battery_remaining
+        self._battery_pct = (raw * 100) if raw > 0 else None
+
+    def _cb_station_update(self, msg: String):
+        """Update station coordinates or test sensor values from mavlink_bridge."""
+        try:
+            data = json.loads(msg.data)
+            stype = data.get('type', '')
+            if stype == 'battery':
+                lat = float(data.get('lat', 0.0))
+                lon = float(data.get('lon', 0.0))
+                self._recharge_lat = lat
+                self._recharge_lon = lon
+                self.get_logger().info(f'[RESOURCE] Battery station: ({lat:.5f},{lon:.5f})')
+            elif stype == 'water':
+                lat = float(data.get('lat', 0.0))
+                lon = float(data.get('lon', 0.0))
+                self._water_lat = lat
+                self._water_lon = lon
+                self.get_logger().info(f'[RESOURCE] Water station: ({lat:.5f},{lon:.5f})')
+            if 'test_tank' in data:
+                self._tank_pct = float(data['test_tank'])
+                self.get_logger().info(f'[TEST] tank={self._tank_pct:.0f}%')
+            if 'test_batt' in data:
+                self._battery_pct = float(data['test_batt'])
+                self.get_logger().info(f'[TEST] battery={self._battery_pct:.0f}%')
+        except Exception as e:
+            self.get_logger().warn(f'station_update parse error: {e}')
+
     def _cb_mode(self, msg: String):
         self._mode = msg.data
 
@@ -678,6 +748,10 @@ class NavigatorNode(Node):
                 self.get_logger().info(
                     f'Re-armed at waiting point WP{wp.seq} — advancing')
                 self._advance_path()
+        # Resume from base on re-arm
+        if msg.data and not was_armed and self._resource_state == 'at_base':
+            self._resource_state = 'normal'
+            self.get_logger().info('[RESOURCE] Re-armed at base — resuming mission')
 
     def _cb_servo_state(self, msg: RCInput):
         changed = False
@@ -1497,15 +1571,201 @@ class NavigatorNode(Node):
         self._pivot_closest_dist = float('inf')   # reset for next waypoint
 
         if self._path_idx >= len(self._path):
-            self.get_logger().info('Mission complete')
-            m = Int32(); m.data = -1
-            self.wp_pub.publish(m)
-            self._publish_halt()
+            if self._resource_state == 'going_to_base':
+                # Base trip complete — build resume mission and wait for re-arm
+                self._arrive_at_base()
+            else:
+                self.get_logger().info('Mission complete')
+                m = Int32(); m.data = -1
+                self.wp_pub.publish(m)
+                self._publish_halt()
         else:
             nxt = self._path[self._path_idx]
             if self._path_idx - 1 not in self._bypass_indices:
                 self.get_logger().info(
                     f'Waypoint {wp.seq} reached — navigating to {nxt.seq}')
+
+    # ── Resource management ──────────────────────────────────────────────────
+
+    def _check_resources(self):
+        """1 Hz: trigger base return if battery or tank falls below threshold."""
+        if self._resource_state != 'normal':
+            return
+        if not self._armed or self._mode != 'AUTONOMOUS':
+            return
+        if not self._path or self._path_idx <= 0 or self._path_idx >= len(self._path):
+            return
+
+        test_tank = self.get_parameter('test_tank_pct').value
+        test_batt = self.get_parameter('test_batt_pct').value
+        batt = test_batt if test_batt >= 0 else self._battery_pct
+        tank = test_tank if test_tank >= 0 else self._tank_pct
+        batt_low = self._battery_low_pct
+        tank_low = self._tank_low_pct
+
+        if batt is not None and batt < batt_low:
+            self.get_logger().warn(f'[RESOURCE] Battery {batt:.0f}% < {batt_low:.0f}%')
+            self._go_to_base('battery')
+        elif tank is not None and tank < tank_low:
+            self.get_logger().warn(f'[RESOURCE] Tank {tank:.0f}% < {tank_low:.0f}%')
+            self._go_to_base('tank')
+
+    def _go_to_base(self, reason: str):
+        """Save mission state and navigate to recharge/water station."""
+        self._resource_reason = reason
+
+        if reason == 'battery':
+            station_lat = self._recharge_lat
+            station_lon = self._recharge_lon
+            label = 'BATTERY LOW'
+        else:
+            station_lat = self._water_lat
+            station_lon = self._water_lon
+            label = 'TANK LOW'
+
+        if station_lat == 0.0 and station_lon == 0.0:
+            self.get_logger().error(
+                f'[RESOURCE] {label} but station not configured')
+            return
+
+        # Save current mission for later resume
+        self._saved_path_original = list(self._path_original)
+        self._saved_wp_idx        = self._path_idx
+        self._saved_bypass        = set(self._bypass_indices)
+        self._saved_fence         = list(self._expanded_polygons)
+        self._resource_state      = 'going_to_base'
+
+        # Build 2-WP base trip: current position -> station
+        rlat, rlon = self._center_pos()
+        wp_here = MissionWaypoint()
+        wp_here.seq               = 0
+        wp_here.latitude          = rlat
+        wp_here.longitude         = rlon
+        wp_here.speed             = self._base_speed
+        wp_here.acceptance_radius = self._base_accept
+        wp_here.hold_secs         = 0.0
+
+        wp_base = MissionWaypoint()
+        wp_base.seq               = 1
+        wp_base.latitude          = station_lat
+        wp_base.longitude         = station_lon
+        wp_base.speed             = self._base_speed
+        wp_base.acceptance_radius = self._base_accept
+        wp_base.hold_secs         = 0.0
+
+        # Replace current path with base trip
+        self._path.clear()
+        self._path_s.clear()
+        self._path_original.clear()
+        self._bypass_indices.clear()
+        self._expanded_polygons.clear()
+        self._obstacle_polygons.clear()
+
+        self._path_origin_lat, self._path_origin_lon = rlat, rlon
+        self._path.extend([wp_here, wp_base])
+        self._path_original.extend([wp_here, wp_base])
+        self._path_s = self._rebuild_path_s(self._path, rlat, rlon)
+        self._path_idx = 0
+        self._holding = False
+        self._pivoting = False
+        self._reroute_pending = False
+
+        # Publish status signals
+        m = Int32(); m.data = -2  # "going to base" signal
+        self.wp_pub.publish(m)
+
+        self.get_logger().warn(
+            f'[RESOURCE] {label} — navigating to base '
+            f'({station_lat:.6f},{station_lon:.6f}), '
+            f'resume from path_idx={self._saved_wp_idx}')
+
+        # Publish path version so GQC updates the map
+        self._path_version += 1
+        pv = Int32(); pv.data = self._path_version
+        self.path_version_pub.publish(pv)
+        # Publish rerouted path for GQC overlay
+        path_data = [[round(wp.latitude, 7), round(wp.longitude, 7), 0]
+                     for wp in self._path]
+        rp_msg = String(); rp_msg.data = json.dumps(path_data, separators=(',', ':'))
+        self.rerouted_pub.publish(rp_msg)
+
+    def _arrive_at_base(self):
+        """Base trip complete. Build resume mission, disarm, wait for re-arm."""
+        self._resource_state = 'at_base'
+        reason_label = 'battery' if self._resource_reason == 'battery' else 'tank'
+
+        # Build resume: base position -> remaining saved WPs
+        rlat, rlon = self._center_pos()
+        remaining = self._saved_path_original[self._saved_wp_idx:]
+        if not remaining:
+            self.get_logger().warn('[RESOURCE] No waypoints to resume — mission complete')
+            m = Int32(); m.data = -1
+            self.wp_pub.publish(m)
+            self._publish_halt()
+            self._resource_state = 'normal'
+            return
+
+        renumbered = []
+        seq = 0
+        # WP0 — base station (current position)
+        wp_here = MissionWaypoint()
+        wp_here.seq               = seq
+        wp_here.latitude          = rlat
+        wp_here.longitude         = rlon
+        wp_here.speed             = remaining[0].speed
+        wp_here.acceptance_radius = remaining[0].acceptance_radius
+        wp_here.hold_secs         = 0.0
+        renumbered.append(wp_here)
+        seq += 1
+
+        for orig in remaining:
+            wp = MissionWaypoint()
+            wp.seq               = seq
+            wp.latitude          = orig.latitude
+            wp.longitude         = orig.longitude
+            wp.speed             = orig.speed
+            wp.acceptance_radius = orig.acceptance_radius
+            wp.hold_secs         = orig.hold_secs
+            renumbered.append(wp)
+            seq += 1
+
+        # Install resume path (ready for when user re-arms)
+        self._path.clear()
+        self._path_s.clear()
+        self._path_original.clear()
+        self._bypass_indices.clear()
+
+        self._path_origin_lat = rlat
+        self._path_origin_lon = rlon
+        self._path.extend(renumbered)
+        self._path_original.extend(renumbered)
+        self._path_s = self._rebuild_path_s(renumbered, rlat, rlon)
+        self._path_idx = 0
+        self._holding = False
+        self._pivoting = False
+
+        # Restore saved obstacles for resume rerouting
+        if self._saved_fence:
+            self._expanded_polygons = list(self._saved_fence)
+            self._reroute_path()
+
+        self.get_logger().info(
+            f'[RESOURCE] At base ({reason_label}) — resume mission: '
+            f'{len(renumbered)} WPs, re-arm to continue')
+
+        # Signal mavlink_bridge: disarm + keep mission loaded
+        m = Int32(); m.data = -3  # "at base" signal
+        self.wp_pub.publish(m)
+        self._publish_halt()
+
+        # Publish path version so GQC updates map with resume route
+        self._path_version += 1
+        pv = Int32(); pv.data = self._path_version
+        self.path_version_pub.publish(pv)
+        path_data = [[round(wp.latitude, 7), round(wp.longitude, 7), 0]
+                     for wp in self._path]
+        rp_msg = String(); rp_msg.data = json.dumps(path_data, separators=(',', ':'))
+        self.rerouted_pub.publish(rp_msg)
 
     # ── MPC controller ────────────────────────────────────────────────────────
 
@@ -1905,6 +2165,9 @@ class NavigatorNode(Node):
         if self._mode != 'AUTONOMOUS' or not self._armed or self._paused:
             return
         if self._reroute_pending:
+            self._publish_halt()
+            return
+        if self._resource_state == 'at_base':
             self._publish_halt()
             return
         if not self._path:
