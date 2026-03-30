@@ -222,6 +222,9 @@ class MavlinkBridgeNode(Node):
         self._cmd_channels = list(msg.channels)
 
     def _cb_wp(self, msg: Int32):
+        self.get_logger().info(
+            f'wp_active={msg.data} armed={self._armed} '
+            f'mission_count={self._mission_count}')
         self._wp_active = msg.data
         # Waiting point signal: navigator encodes as -(seq + 1000)
         if msg.data <= -1000:
@@ -992,9 +995,11 @@ class MavlinkBridgeNode(Node):
                 self._udp_sock.sendto(packed, addr)
             except Exception as e:
                 self.get_logger().warn(f'mission_ack send error: {e}')
+            nav_status = 2.0 if self._armed else (1.0 if self._mission_count > 0 else 0.0)
             self.get_logger().info(
                 f'Mission received: {self._mission_count} items '
-                f'({len(self._mission_buf)} waypoints, {len(self._fence_buf)} fence vertices)')
+                f'({len(self._mission_buf)} waypoints, {len(self._fence_buf)} fence vertices) '
+                f'armed={self._armed} STATUS={nav_status}')
             # Publish fence polygons to navigator — always, even if empty.
             # An empty polygon list signals mission-complete so the navigator
             # publishes its planned path back to GQC for the map overlay.
