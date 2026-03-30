@@ -271,16 +271,19 @@ class RoverPositionManager(
      */
     fun sendCommand(sysId: Int, commandId: Int, p1: Float, p2: Float) {
         scope.launch {
-            sendMavlinkTo(
-                roverIp(sysId),
-                CommandLong.builder()
+            val ip = roverIp(sysId)
+            // Send 2× to survive WiFi packet loss — rover ignores duplicate
+            // COMMAND_LONG with same confirmation (idempotent ARM/MODE/etc).
+            repeat(2) { attempt ->
+                sendMavlinkTo(ip, CommandLong.builder()
                     .targetSystem(sysId).targetComponent(1)
                     .command(EnumValue.create(MavCmd::class.java, commandId))
-                    .confirmation(0)
+                    .confirmation(attempt)
                     .param1(p1).param2(p2).param3(0f).param4(0f)
                     .param5(0f).param6(0f).param7(0f)
-                    .build()
-            )
+                    .build())
+                if (attempt < 1) delay(80L)
+            }
         }
     }
 
@@ -465,11 +468,16 @@ class RoverPositionManager(
         }
         // Allow rover to process disarm before mission upload begins.
         delay(100L)
-        sendMavlinkTo(ip, MissionCount.builder()
-            .targetSystem(sysId).targetComponent(1)
-            .count(items.size).build())
+        // Send MISSION_COUNT 3× to survive WiFi packet loss — rover ignores
+        // duplicates (second MISSION_COUNT resets the same upload state).
+        repeat(3) { attempt ->
+            sendMavlinkTo(ip, MissionCount.builder()
+                .targetSystem(sysId).targetComponent(1)
+                .count(items.size).build())
+            if (attempt < 2) delay(50L)
+        }
         // Brief pause so rover processes MISSION_COUNT before items start arriving.
-        delay(150L)
+        delay(100L)
         for (item in items) {
             sendMavlinkTo(ip, item)
             delay(20L)   // 20 ms gap: avoids flooding rover's socket buffer
