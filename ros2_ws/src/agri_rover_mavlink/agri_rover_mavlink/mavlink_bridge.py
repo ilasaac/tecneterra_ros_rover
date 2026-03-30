@@ -579,14 +579,8 @@ class MavlinkBridgeNode(Node):
                     self.get_logger().info(
                         f'Mission upload started: {msg.count} items '
                         f'from sysid={msg.get_srcSystem()}')
-                    # Re-broadcast for passive tools (monitor.py).
-                    # GQC sends unicast to our IP so tools on other hosts won't see it.
-                    try:
-                        fwd = self._mav.mav.mission_count_encode(
-                            0, 0, msg.count, getattr(msg, 'mission_type', 0))
-                        self._udp_sock.sendto(fwd.pack(self._mav.mav), self._gqc_addr)
-                    except Exception:
-                        pass
+                    # Re-broadcast skipped — causes WiFi half-duplex collisions
+                    # during upload. Passive tools get mission via PATH_VER download.
                     # Delay first REQUEST_INT slightly — GQC needs time to switch its
                     # coroutine back to Dispatchers.IO and start waiting for requests.
                     # Without this the first request arrives before GQC is listening.
@@ -919,15 +913,10 @@ class MavlinkBridgeNode(Node):
         if expected is None or msg.seq != expected:
             return  # duplicate or out-of-order — ignore
         self.get_logger().info(f'ITEM seq={msg.seq} RTT={rtt_ms:.0f}ms')
-        # Re-broadcast for passive tools (monitor.py) — GQC sends unicast.
-        try:
-            fwd = self._mav.mav.mission_item_int_encode(
-                0, 0, msg.seq, msg.frame, msg.command, msg.current,
-                msg.autocontinue, msg.param1, msg.param2, msg.param3, msg.param4,
-                msg.x, msg.y, msg.z, getattr(msg, 'mission_type', 0))
-            self._udp_sock.sendto(fwd.pack(self._mav.mav), self._gqc_addr)
-        except Exception:
-            pass
+        # Re-broadcast skipped during upload — sending packets back through a
+        # WiFi extender while items are still arriving causes half-duplex
+        # collisions and drops.  Passive tools get the mission via PATH_VER
+        # download after upload completes.
 
         if msg.command == 183:  # MAV_CMD_DO_SET_SERVO
             sn, pw = int(msg.param1), int(msg.param2)
