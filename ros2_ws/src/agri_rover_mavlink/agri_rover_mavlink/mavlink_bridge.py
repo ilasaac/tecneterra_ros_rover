@@ -242,16 +242,14 @@ class MavlinkBridgeNode(Node):
                 self.get_logger().info(f'WP{msg.data} reached — applying servo CH{sn}={pw}')
                 self._apply_servo_cmd(sn, pw)
         if msg.data == -1:
-            # Ignore mission-complete if an upload is still in progress — the
-            # navigator may have raced through partial WPs before ARMED=False
-            # arrived (DDS cross-topic ordering not guaranteed).
-            with self._mission_lock:
-                uploading = self._mission_expect_seq is not None
-            if uploading:
+            # Only auto-disarm if the rover was actually navigating (armed).
+            # A stale -1 from a DDS race during upload (rover is disarmed)
+            # must NOT clear _mission_count — that would wipe STATUS to NA.
+            if not self._armed:
                 self.get_logger().info(
-                    'Ignoring wp_active=-1 — mission upload in progress')
+                    'Ignoring wp_active=-1 — rover not armed (stale or upload race)')
                 return
-            # Normal mission complete
+            # Normal mission complete — rover was armed and navigating
             a = Bool(); a.data = False
             m = String(); m.data = 'MANUAL'
             self._armed = False
