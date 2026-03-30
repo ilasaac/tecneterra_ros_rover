@@ -566,7 +566,13 @@ class MavlinkBridgeNode(Node):
                         self.mode_pub.publish(m)
                         self.get_logger().info('Empty mission received — navigator cleared')
                         continue
+                    # Ignore duplicate MISSION_COUNT if upload already in progress
+                    # with the same count — GQC sends 3× for reliability, but a
+                    # second arrival mid-stream would wipe already-received items.
                     with self._mission_lock:
+                        if (self._mission_expect_seq is not None
+                                and self._mission_count == msg.count):
+                            continue  # duplicate, upload already running
                         self._mission_count      = msg.count
                         self._mission_buf        = []
                         self._fence_buf          = []   # clear fence data for new mission
