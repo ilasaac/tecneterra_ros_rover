@@ -242,6 +242,15 @@ class MavlinkBridgeNode(Node):
                 self.get_logger().info(f'WP{msg.data} reached — applying servo CH{sn}={pw}')
                 self._apply_servo_cmd(sn, pw)
         if msg.data == -1:
+            # Ignore mission-complete if an upload is still in progress — the
+            # navigator may have raced through partial WPs before ARMED=False
+            # arrived (DDS cross-topic ordering not guaranteed).
+            with self._mission_lock:
+                uploading = self._mission_expect_seq is not None
+            if uploading:
+                self.get_logger().info(
+                    'Ignoring wp_active=-1 — mission upload in progress')
+                return
             # Normal mission complete
             a = Bool(); a.data = False
             m = String(); m.data = 'MANUAL'
