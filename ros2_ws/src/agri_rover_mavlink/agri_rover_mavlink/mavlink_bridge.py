@@ -481,9 +481,20 @@ class MavlinkBridgeNode(Node):
             ('PATH_VER', float(self._path_version)),
             ('REROUTE',  1.0 if self._reroute_pending else 0.0),
         ]
-        for name, value in pairs:
-            self._send(self._mav.mav.named_value_float_encode(
-                t, name.encode(), value))
+        # Send unicast only (skip broadcast) to halve WiFi traffic — 16 named values
+        # at 2 packets each = 32 packets/burst that can drown out GQC commands.
+        if self._gqc_unicast:
+            for name, value in pairs:
+                buf = self._mav.mav.named_value_float_encode(
+                    t, name.encode(), value).pack(self._mav.mav)
+                try:
+                    self._udp_sock.sendto(buf, self._gqc_unicast)
+                except Exception:
+                    pass
+        else:
+            for name, value in pairs:
+                self._send(self._mav.mav.named_value_float_encode(
+                    t, name.encode(), value))
 
     # ── MAVLink receive loop ──────────────────────────────────────────────────
 
