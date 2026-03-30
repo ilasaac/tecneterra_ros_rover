@@ -3,7 +3,6 @@ package com.siyi.agrirover
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.*
-import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -335,18 +334,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────
 
-    private lateinit var wifiLock: WifiManager.WifiLock
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
-        // Hold a high-performance WifiLock so Android doesn't throttle/batch
-        // UDP sends. Without this, mission uploads and commands drop randomly.
-        val wifiMgr = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        wifiLock = wifiMgr.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AgriRoverGQC")
-        wifiLock.acquire()
 
         touchOverlay          = findViewById(R.id.touchOverlay)
         btnModeMenu           = findViewById(R.id.btnModeMenu)
