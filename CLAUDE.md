@@ -384,7 +384,7 @@ Waypoint speed: recorded with timestamps during REC, then smoothed post-hoc via 
 ```
 normal → going_to_base → at_base → normal
 ```
-- `normal` + armed + AUTONOMOUS + `path_idx > 0` + (battery < threshold OR tank < threshold) → `going_to_base`. Navigator saves mission state (`_saved_path_original`, `_saved_wp_idx`, `_saved_fence`), builds 2-WP base trip (rover pos → station) internally, stays armed+autonomous for seamless path switch. Publishes `wp_active = -2` to signal mavlink_bridge.
+- `normal` + armed + AUTONOMOUS + `path_idx > 0` + (battery < threshold OR tank < threshold) → `going_to_base`. Navigator saves mission state (`_saved_path_original`, `_saved_wp_idx`, `_saved_fence`), builds 2-WP base trip (rover pos → station) internally, restores saved obstacle polygons and reroutes the base trip around them, stays armed+autonomous for seamless path switch. Publishes `wp_active = -2` to signal mavlink_bridge.
 - Battery/tank default 0.0 treated as unknown (skip check) — prevents false-trigger before sensors publish. Test injection via `station_update` topic (`test_tank`, `test_batt` keys) or ROS2 params (`test_tank_pct`, `test_batt_pct`).
 - `going_to_base` + mission complete → `_arrive_at_base()`: builds resume mission (base → remaining saved WPs), restores saved obstacles for rerouting, publishes `wp_active = -3`. mavlink_bridge responds: disarm + MANUAL, keeps `_mission_count > 0` so STATUS=MSL.
 - `at_base` + ARM → `_resource_state = 'normal'`. Resume mission is already loaded in navigator path — starts when SET_MODE AUTO arrives. GQC START sends ARM + 500 ms + SET_MODE.
