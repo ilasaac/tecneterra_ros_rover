@@ -567,6 +567,7 @@ tr:hover td{background:#1e1e3a}
     <option value="zigzag">Zigzag — sharp diagonal turns</option>
     <option value="scatter">Scatter — random points</option>
     <option value="spiral">Spiral — outward arc</option>
+    <option value="corridor">Corridor Grid — rows with arc/spin turns</option>
   </select>
 
   <div id="gen-grid-fields">
@@ -591,6 +592,20 @@ tr:hover td{background:#1e1e3a}
     <label>Turns</label><input id="gen-turns" type="number" value="3" min="1" max="10" step="0.5">
     <label>Arm spacing (m)</label><input id="gen-arm-sp" type="number" value="5" min="1">
     <label>Points per turn</label><input id="gen-pts-turn" type="number" value="10" min="4" max="32">
+  </div>
+  <div id="gen-corridor-fields" style="display:none">
+    <label>Rows</label><input id="gen-c-rows" type="number" value="4" min="2" max="30">
+    <label>Row length (m)</label><input id="gen-c-len" type="number" value="20" min="5">
+    <label>Row spacing (m)</label><input id="gen-c-sp" type="number" value="3" min="1" step="0.5">
+    <label>Corridor width (m)</label><input id="gen-c-w" type="number" value="1.0" min="0.3" max="3" step="0.1">
+    <label>Min turn radius (m)</label><input id="gen-c-rad" type="number" value="2.0" min="0.5" step="0.5">
+    <label>Heading &deg;</label><input id="gen-c-hdg" type="number" value="0" min="0" max="359">
+    <label>Turn type</label>
+    <select id="gen-c-turn">
+      <option value="auto">Auto (arc or spin)</option>
+      <option value="arc">Arc only</option>
+      <option value="spin">Spin only</option>
+    </select>
   </div>
 
   <label style="margin-top:7px">Speed (m/s, 0 = navigator default)</label>
@@ -1469,7 +1484,7 @@ function toggleGenPanel() {
 
 function updateGenFields() {
   const pat = document.getElementById('gen-pattern').value;
-  ['grid', 'zigzag', 'scatter', 'spiral'].forEach(t =>
+  ['grid', 'zigzag', 'scatter', 'spiral', 'corridor'].forEach(t =>
     document.getElementById(`gen-${t}-fields`).style.display = t === pat ? 'block' : 'none');
 }
 
@@ -1550,6 +1565,31 @@ function applyGenerate(append) {
         r * Math.cos(theta - Math.PI / 2), r * Math.sin(theta - Math.PI / 2));
       newWps.push({lat, lon, speed: spd, hold_secs: 0});
     }
+
+  } else if (pat === 'corridor') {
+    // Corridor generation is server-side (arc geometry in Python)
+    const body = {
+      lat: cLat, lon: cLon,
+      heading: parseFloat(document.getElementById('gen-c-hdg').value) || 0,
+      rows:       parseInt(document.getElementById('gen-c-rows').value) || 4,
+      row_length: parseFloat(document.getElementById('gen-c-len').value) || 20,
+      row_spacing: parseFloat(document.getElementById('gen-c-sp').value) || 3,
+      width:      parseFloat(document.getElementById('gen-c-w').value) || 1.0,
+      min_turn_radius: parseFloat(document.getElementById('gen-c-rad').value) || 2.0,
+      speed: spd,
+      turn_type: document.getElementById('gen-c-turn').value,
+    };
+    fetch('/generate_corridor', {method:'POST', body:JSON.stringify(body)})
+      .then(r => r.json())
+      .then(d => {
+        if (!d.ok) { alert('Corridor error: ' + d.error); return; }
+        if (!append) { waypoints = []; simResult = null; }
+        waypoints.push(...d.waypoints);
+        window._lastCorridorJson = d.corridor_json;
+        redraw();
+        document.getElementById('gen-panel').style.display = 'none';
+      });
+    return; // async — don't fall through to synchronous append below
   }
 
   if (document.getElementById('gen-anchor').checked && newWps.length > 0) {
@@ -2115,6 +2155,38 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f'[upload] handler error: {e}', flush=True)
                 self._json({'ok': False, 'message': f'Server error: {e}'})
+
+        elif self.path == '/generate_corridor':
+            try:
+                data = json.loads(raw)
+                from corridor import generate_corridor_grid, corridors_to_path, corridor_mission_to_json
+                mission = generate_corridor_grid(
+                    origin_lat=float(data.get('lat', 20.727715)),
+                    origin_lon=float(data.get('lon', -103.566782)),
+                    heading_deg=float(data.get('heading', 0)),
+                    row_count=int(data.get('rows', 4)),
+                    row_length_m=float(data.get('row_length', 20)),
+                    row_spacing_m=float(data.get('row_spacing', 3)),
+                    corridor_width=float(data.get('width', 1.0)),
+                    speed=float(data.get('speed', 0)),
+                    min_turn_radius=float(data.get('min_turn_radius', 2.0)),
+                    turn_type=data.get('turn_type', 'auto'),
+                )
+                path_pts = corridors_to_path(mission, default_speed=float(data.get('speed', 1.0)))
+                wps = [{'lat': p[0], 'lon': p[1], 'speed': p[2], 'hold_secs': 0,
+                        'corridor_width': p[3]}
+                       for p in path_pts]
+                print(f'[corridor] {len(mission.corridors)} corridors -> {len(wps)} path pts', flush=True)
+                self._json({
+                    'ok': True,
+                    'waypoints': wps,
+                    'corridor_json': corridor_mission_to_json(mission),
+                    'corridors': len(mission.corridors),
+                })
+            except Exception as e:
+                print(f'[corridor] error: {e}', flush=True)
+                import traceback; traceback.print_exc()
+                self._json({'ok': False, 'error': str(e)})
 
         elif self.path == '/send_test_sensors':
             try:
