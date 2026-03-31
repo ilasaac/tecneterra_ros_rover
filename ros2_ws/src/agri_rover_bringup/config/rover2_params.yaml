@@ -51,6 +51,8 @@
     align_threshold:           30.0
     stanley_k:                 1.0
     stanley_softening:         0.3
+    stanley_cte_scale_m:       1.0    # CTE (m) at which speed halves (proportional slowdown)
+    stanley_cte_alarm_m:       1.5    # CTE (m) above which rover disarms (safety)
     pivot_threshold:           25.0
     pivot_approach_dist:       4.0
     rover_width_m:             1.0

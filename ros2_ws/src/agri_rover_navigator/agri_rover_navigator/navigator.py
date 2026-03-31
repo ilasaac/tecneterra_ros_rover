@@ -104,6 +104,8 @@ _PARAM_META: dict = {
     'min_speed':                 ('_min_speed',            0.1,  2.0),
     'lookahead_distance':        ('_lookahead',            0.5, 10.0),
     'stanley_k':                 ('_stanley_k',            0.0,  5.0),
+    'stanley_cte_scale_m':       ('_stanley_cte_scale',   0.1,  5.0),
+    'stanley_cte_alarm_m':       ('_stanley_cte_alarm',   0.5, 10.0),
     'pivot_threshold':           ('_pivot_threshold',     10.0,180.0),
     'pivot_approach_dist':       ('_pivot_approach_dist',  0.5, 10.0),
     'align_threshold':           ('_align_thresh',        10.0, 90.0),
@@ -254,6 +256,8 @@ class NavigatorNode(Node):
         self.declare_parameter('align_threshold',           30.0)
         self.declare_parameter('stanley_k',                 1.0)
         self.declare_parameter('stanley_softening',         0.3)
+        self.declare_parameter('stanley_cte_scale_m',       1.0)   # CTE (m) at which speed halves
+        self.declare_parameter('stanley_cte_alarm_m',       1.5)   # CTE (m) → disarm + halt
         # Pivot-turn parameters:
         #   pivot_threshold    — turn angle (degrees) above which an in-place pivot
         #                        is performed instead of curving through the waypoint.
@@ -372,6 +376,8 @@ class NavigatorNode(Node):
         self._align_thresh        = self.get_parameter('align_threshold').value
         self._stanley_k           = self.get_parameter('stanley_k').value
         self._stanley_softening   = self.get_parameter('stanley_softening').value
+        self._stanley_cte_scale   = self.get_parameter('stanley_cte_scale_m').value
+        self._stanley_cte_alarm   = self.get_parameter('stanley_cte_alarm_m').value
         self._pivot_threshold     = self.get_parameter('pivot_threshold').value
         self._pivot_approach_dist = self.get_parameter('pivot_approach_dist').value
         self._min_pivot_seg       = self.get_parameter('min_pivot_segment_m').value
@@ -2459,6 +2465,15 @@ class NavigatorNode(Node):
         xte_msg.data = abs(cte)
         self.xte_pub.publish(xte_msg)
 
+        # CTE safety alarm — disarm if rover drifts too far from path
+        if abs(cte) >= self._stanley_cte_alarm:
+            self.get_logger().error(
+                f'CTE ALARM: {cte:.2f}m >= {self._stanley_cte_alarm:.1f}m — disarming')
+            self._publish_halt()
+            m = Int32(); m.data = -1
+            self.wp_pub.publish(m)
+            return
+
         if abs(heading_err) > self._align_thresh:
             # Large error — spin in place (same for all algorithms).
             # Freeze target bearing on first spin tick so GPS antenna arc
@@ -2484,7 +2499,9 @@ class NavigatorNode(Node):
             # the multi-spin oscillation seen at mission start.
             if self._spin_target_brg is not None and abs(heading_err) < self._hdb:
                 self._spin_target_brg = None
-            v_mps        = max(target_spd, self._min_speed)
+            # CTE-proportional speed reduction: slow down as rover drifts from path
+            cte_factor   = max(0.0, 1.0 - abs(cte) / max(self._stanley_cte_scale, 0.01))
+            v_mps        = max(self._min_speed, target_spd * cte_factor)
             throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
 
             if self._algo == 'ttr':
