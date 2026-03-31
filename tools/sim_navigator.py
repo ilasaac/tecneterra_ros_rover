@@ -1203,7 +1203,7 @@ class PathNavigator:
         # length or rover is already at wp0, advance to avoid degenerate steering.
         if self.path_idx == 0 and len(self._wps) > 1:
             wp0 = self._wps[0]
-            ar = wp0.accept if wp0.accept > 0 else self._accept_r
+            ar = wp0.acceptance_radius if wp0.acceptance_radius > 0 else self._accept_r
             seg_len = self._path_s[0] if self._path_s else 0.0
             d = _haversine(rlat, rlon, wp0.lat, wp0.lon)
             if seg_len < ar or d < ar:
@@ -1830,7 +1830,7 @@ if (DATA.path.length) {{
 </script>
 </body></html>"""
 
-    with open(outfile, 'w') as f:
+    with open(outfile, 'w', encoding='utf-8') as f:
         f.write(html)
     print(f'Map written -> {outfile}')
 
@@ -1862,8 +1862,8 @@ def _load_obstacles(path: str) -> list[list[list[float]]]:
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='Simulate rover mission path')
-    ap.add_argument('--lat',         type=float, required=True, help='Start latitude')
-    ap.add_argument('--lon',         type=float, required=True, help='Start longitude')
+    ap.add_argument('--lat',         type=float, default=0.0, help='Start latitude (auto from corridor)')
+    ap.add_argument('--lon',         type=float, default=0.0, help='Start longitude (auto from corridor)')
     ap.add_argument('--heading',     type=float, default=None,   help='Start heading (deg N); auto = bearing to wp[0]')
     ap.add_argument('--wheelbase',   type=float, default=DEFAULT_PHYS['wheelbase'])
     ap.add_argument('--turn-scale',  type=float, default=DEFAULT_PHYS['turn_scale'])
@@ -1874,16 +1874,33 @@ if __name__ == '__main__':
                     help='TTR track width in metres (default: 0.9)')
     ap.add_argument('--obstacles',   type=str,   default=None,
                     help='JSON file with obstacle polygons [[[lat,lon],...],...]')
+    ap.add_argument('--corridor',    type=str,   default=None,
+                    help='Corridor mission JSON file (replaces waypoints)')
     ap.add_argument('--html-out',    type=str,   default=None, metavar='FILE',
                     help='Write simulation result to a Leaflet HTML file')
     ap.add_argument('--debug', action='store_true', help='Print per-step controller state')
     ap.add_argument('--dump',  type=str, default=None, metavar='FILE',
                     help='Dump full step-log as JSON (for sharing debug data)')
-    ap.add_argument('waypoints',     help='CSV file with lat,lon[,speed,hold_secs] columns')
+    ap.add_argument('waypoints', nargs='?', default=None,
+                    help='CSV file with lat,lon[,speed,hold_secs] columns')
     args = ap.parse_args()
 
-    wps = _load_csv(args.waypoints)
-    print(f'Loaded {len(wps)} waypoints')
+    if args.corridor:
+        from corridor import corridor_mission_from_json, corridors_to_path
+        with open(args.corridor) as f:
+            mission = corridor_mission_from_json(f.read())
+        path_pts = corridors_to_path(mission, default_speed=DEFAULT_NAV['max_speed'])
+        wps = [SimWaypoint(seq=i, lat=pt[0], lon=pt[1], speed=pt[2])
+               for i, pt in enumerate(path_pts)]
+        print(f'Loaded corridor mission: {len(mission.corridors)} corridors -> {len(wps)} path points')
+        # Auto start position = first path point
+        if args.lat == 0 and args.lon == 0 and wps:
+            args.lat, args.lon = wps[0].lat, wps[0].lon
+    elif args.waypoints:
+        wps = _load_csv(args.waypoints)
+        print(f'Loaded {len(wps)} waypoints')
+    else:
+        ap.error('Provide either a waypoints CSV or --corridor JSON')
 
     obstacles = _load_obstacles(args.obstacles) if args.obstacles else None
     if obstacles:
