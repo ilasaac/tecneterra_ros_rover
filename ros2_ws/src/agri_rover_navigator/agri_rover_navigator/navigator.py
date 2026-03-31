@@ -516,8 +516,10 @@ class NavigatorNode(Node):
         self._saved_wp_idx:    int        = 0          # _path_idx at trigger (next unvisited)
         self._saved_bypass:    set        = set()      # bypass indices
         self._saved_fence:     list       = []         # expanded polygons
-        self._battery_pct:     float | None = None     # latest battery % (None = unknown)
-        self._tank_pct:        float | None = None     # latest tank % (None = unknown)
+        self._battery_pct:     float | None = None     # latest battery % from real sensors
+        self._tank_pct:        float | None = None     # latest tank % from real sensors
+        self._test_tank:       float | None = None     # test-injected tank % (station_update)
+        self._test_batt:       float | None = None     # test-injected batt % (station_update)
 
         self._dt = 1.0 / self.get_parameter('control_rate').value
 
@@ -696,11 +698,11 @@ class NavigatorNode(Node):
                 self._water_lon = lon
                 self.get_logger().info(f'[RESOURCE] Water station: ({lat:.5f},{lon:.5f})')
             if 'test_tank' in data:
-                self._tank_pct = float(data['test_tank'])
-                self.get_logger().info(f'[TEST] tank={self._tank_pct:.0f}%')
+                self._test_tank = float(data['test_tank'])
+                self.get_logger().info(f'[TEST] tank={self._test_tank:.0f}%')
             if 'test_batt' in data:
-                self._battery_pct = float(data['test_batt'])
-                self.get_logger().info(f'[TEST] battery={self._battery_pct:.0f}%')
+                self._test_batt = float(data['test_batt'])
+                self.get_logger().info(f'[TEST] battery={self._test_batt:.0f}%')
         except Exception as e:
             self.get_logger().warn(f'station_update parse error: {e}')
 
@@ -1596,10 +1598,17 @@ class NavigatorNode(Node):
         if not self._path or self._path_idx <= 0 or self._path_idx >= len(self._path):
             return
 
-        test_tank = self.get_parameter('test_tank_pct').value
-        test_batt = self.get_parameter('test_batt_pct').value
-        batt = test_batt if test_batt >= 0 else self._battery_pct
-        tank = test_tank if test_tank >= 0 else self._tank_pct
+        # Priority: ROS2 param > station_update test injection > real sensor.
+        # Separate _test_tank/_test_batt fields prevent _cb_sensors from
+        # overwriting test values (was a race: sensor stub resets to None at 1 Hz).
+        test_tank_param = self.get_parameter('test_tank_pct').value
+        test_batt_param = self.get_parameter('test_batt_pct').value
+        batt = (test_batt_param if test_batt_param >= 0
+                else self._test_batt if self._test_batt is not None
+                else self._battery_pct)
+        tank = (test_tank_param if test_tank_param >= 0
+                else self._test_tank if self._test_tank is not None
+                else self._tank_pct)
         batt_low = self._battery_low_pct
         tank_low = self._tank_low_pct
 
