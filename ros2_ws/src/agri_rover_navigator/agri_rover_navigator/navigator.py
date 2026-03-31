@@ -1583,6 +1583,7 @@ class NavigatorNode(Node):
             self.wp_pub.publish(m)
         self._path_idx += 1
         self._pivot_closest_dist = float('inf')   # reset for next waypoint
+        self._spin_target_brg    = None            # stale bearing from previous WP approach
 
         if self._path_idx >= len(self._path):
             if self._resource_state == 'going_to_base':
