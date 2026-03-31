@@ -1667,8 +1667,6 @@ class NavigatorNode(Node):
         self._path_s.clear()
         self._path_original.clear()
         self._bypass_indices.clear()
-        self._expanded_polygons.clear()
-        self._obstacle_polygons.clear()
 
         self._path_origin_lat, self._path_origin_lon = rlat, rlon
         self._path.extend([wp_here, wp_base])
@@ -1678,6 +1676,13 @@ class NavigatorNode(Node):
         self._holding = False
         self._pivoting = False
         self._reroute_pending = False
+
+        # Reroute base trip around obstacles (keep saved polygons active)
+        self._expanded_polygons = list(self._saved_fence)
+        if self._expanded_polygons:
+            self._reroute_path()
+            self.get_logger().info(
+                f'[RESOURCE] Base trip rerouted around {len(self._expanded_polygons)} obstacle(s)')
 
         # Publish status signals
         m = Int32(); m.data = -2  # "going to base" signal
