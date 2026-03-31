@@ -18,6 +18,7 @@ import com.google.android.gms.maps.SupportMapFragment
 import com.google.android.gms.maps.model.*
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.floatingactionbutton.FloatingActionButton
+import android.os.SystemClock
 import java.io.File
 import kotlin.math.*
 
@@ -124,6 +125,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     // routePoints stores only waypoints (for map display and plain uploads).
     private var isRecording = false
     private val recordedMission = mutableListOf<MissionAction>()
+    // Timestamps (SystemClock.elapsedRealtime()) for each Waypoint in recordedMission.
+    // Parallel to waypoint entries only — servo commands have no timestamp.
+    private val waypointTimestamps = mutableListOf<Long>()
     // Last PPM µs values for aux channels (PPM CH5–CH8, logical indices 4–7).
     // Initialised to 1500 (neutral) and updated when a >100 µs change is detected.
     private val lastAuxPwm = IntArray(4) { 1500 }
@@ -152,12 +156,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
                 if (dist >= MIN_RECORD_DIST) {
                     lastRecordedPos = pos
-                    // Speed = avg distance covered in this 500 ms tick, clamped to [min, max].
-                    // Use 0f for the first waypoint (no prior position) → navigator default.
-                    val speed = if (last != null)
-                        (dist.toFloat() / 0.5f).coerceIn(MIN_SPEED_MPS, MAX_SPEED_MPS)
-                    else 0f
-                    recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, speed))
+                    // Store waypoint with speed=0; actual speed computed post-hoc
+                    // in smoothRecordedSpeeds() using sliding-window averaging.
+                    recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, 0f))
+                    waypointTimestamps.add(SystemClock.elapsedRealtime())
                     routePoints.add(pos)
                     redrawMap()
                 }
@@ -464,6 +466,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         isRecording = true
         routePoints.clear()
         recordedMission.clear()
+        waypointTimestamps.clear()
         nextWaypointIndex = 0
         lastRecordedPos = null
         // Snapshot current aux channel states and prepend as initial DO_SET_SERVO
@@ -484,6 +487,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun stopRecording() {
         isRecording = false
         recordHandler.removeCallbacks(recordRunnable)
+        smoothRecordedSpeeds()
         btnRec.iconTint = ColorStateList.valueOf(Color.parseColor("#444444"))
         btnRec.strokeWidth = 0
         val wpCount  = recordedMission.filterIsInstance<MissionAction.Waypoint>().size
@@ -491,6 +495,41 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         Toast.makeText(this,
             "Recorded $wpCount waypoints" + if (srvCount > 0) " + $srvCount servo cmds" else "",
             Toast.LENGTH_LONG).show()
+    }
+
+    /**
+     * Post-hoc speed smoothing: replaces per-tick instantaneous speed with a
+     * sliding-window average over ±W waypoints.  This eliminates GPS-noise
+     * spikes while preserving deliberate speed changes (acceleration/braking).
+     *
+     * First waypoint keeps speed=0 so the navigator uses its default max_speed.
+     */
+    private fun smoothRecordedSpeeds() {
+        // Collect indices of Waypoint entries inside the interleaved recordedMission list.
+        val wpIndices = mutableListOf<Int>()
+        for (i in recordedMission.indices) {
+            if (recordedMission[i] is MissionAction.Waypoint) wpIndices.add(i)
+        }
+        if (wpIndices.size < 2 || waypointTimestamps.size != wpIndices.size) return
+
+        val W = 2  // half-window → 5-point average (±2 neighbours)
+        for (k in 1 until wpIndices.size) {  // skip k=0 (first WP → speed 0)
+            val lo = maxOf(0, k - W)
+            val hi = minOf(wpIndices.lastIndex, k + W)
+
+            var totalDist = 0.0
+            for (j in lo until hi) {
+                val wp1 = recordedMission[wpIndices[j]] as MissionAction.Waypoint
+                val wp2 = recordedMission[wpIndices[j + 1]] as MissionAction.Waypoint
+                totalDist += haversineMetres(wp1.lat, wp1.lon, wp2.lat, wp2.lon)
+            }
+            val totalTimeSec = (waypointTimestamps[hi] - waypointTimestamps[lo]) / 1000.0
+            if (totalTimeSec < 0.01) continue
+
+            val speed = (totalDist / totalTimeSec).toFloat().coerceIn(MIN_SPEED_MPS, MAX_SPEED_MPS)
+            val orig = recordedMission[wpIndices[k]] as MissionAction.Waypoint
+            recordedMission[wpIndices[k]] = orig.copy(speed = speed)
+        }
     }
 
     private fun clearMission() {

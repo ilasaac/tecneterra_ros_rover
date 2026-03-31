@@ -365,7 +365,7 @@ sealed class MissionAction {
 }
 ```
 
-Waypoint speed = `dist_m / 0.5s`, clamped [0.3, 1.5] m/s; sent as `z` field of NAV_WAYPOINT; first WP uses 0 (navigator default). `holdSecs = -1` marks a **waiting point** (rover disarms on arrival).
+Waypoint speed: recorded with timestamps during REC, then smoothed post-hoc via 5-point sliding-window average (`smoothRecordedSpeeds()`), clamped [0.3, 1.5] m/s; sent as `z` field of NAV_WAYPOINT; first WP uses 0 (navigator default). `holdSecs = -1` marks a **waiting point** (rover disarms on arrival).
 
 **Safety:**
 - E-STOP → `sendCriticalCommand` DISARM (cmd 400, p1=0) to all rovers.
