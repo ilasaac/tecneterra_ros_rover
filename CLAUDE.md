@@ -339,7 +339,8 @@ Rover IPs auto-discovered from first incoming packet per sysid. Callbacks dispat
 - `SBUS_OK` / `RF_OK` @ 10 Hz → link dots (green/red)
 - `RTK` @ 1 Hz → GPS fix type (6=RTK_FIX, 5=RTK_FLT, 4=DGPS, 3=3D, 0=NO_GPS)
 - `STATUS` @ 1 Hz → 0=NA, 1=MSL, 2=ARM
-- `WP_ACT` @ 1 Hz → current waypoint index
+- `WP_ACT` @ 1 Hz + event-driven on change → current waypoint index (instant graying)
+- `MSN_ID` @ 1 Hz → CRC24 content hash of current mission (waypoints + fence + rerouted path). GQC compares with local value; on mismatch → `MISSION_REQUEST_LIST` auto-download. Replaces PATH_VER.
 
 Note: `GpsRawInt` is sent but java-mavlink 1.1.9 rejects it (pymavlink truncates zero extension fields → 30-byte payload). Use `NAMED_VALUE_FLOAT 'RTK'` instead.
 
@@ -378,7 +379,7 @@ Waypoint speed: recorded with timestamps during REC, then smoothed post-hoc via 
 
 **Mission auto-disarm:** `wp_active = -1` → mavlink_bridge auto-disarms, clears mission, publishes MANUAL.
 
-**Waypoint colors:** Planner route = white (not yet uploaded). After upload: pending = full rover color (red RV1, blue RV2), walked = light rover color (light red / light blue). All waypoint dots visible.
+**Waypoint colors:** Planner route = white (not yet uploaded). After upload: pending = full rover color (red RV1, blue RV2), walked = light rover color (light red / light blue), bypass segments = dashed orange (RV1) / cyan (RV2). Bypass waypoint dots in bypass color. All dots visible.
 
 **Resource management state machine** (`navigator._check_resources`, 1 Hz):
 ```
@@ -390,7 +391,9 @@ normal → going_to_base → at_base → normal
 - `at_base` + ARM → `_resource_state = 'normal'`. Resume mission is already loaded in navigator path — starts when SET_MODE AUTO arrives. GQC START sends ARM + 500 ms + SET_MODE.
 - Station coordinates forwarded from mavlink_bridge to navigator via `station_update` topic (JSON: `{type, lat, lon}`). GQC commands 50001/50002 no longer stored in mavlink_bridge.
 
-**Planned path overlay:** navigator publishes rerouted path via TUNNEL → GQC renders as green dotted line. Bypass segments in rover color (orange RV1, cyan RV2). Fires for all missions (mavlink_bridge always publishes `mission_fence` on ACK).
+**Mission sync (MSN_ID):** navigator publishes full path as JSON `[lat, lon, bypass, speed, hold_secs]` via `rerouted_path` topic. mavlink_bridge computes CRC24 hash → broadcasts as `MSN_ID` at 1 Hz. GQC compares locally; on mismatch → `MISSION_REQUEST_LIST` auto-download of full path (including bypass waypoints). Works for any upload source (GQC, mission_planner, etc.). Mission download sends bypass flag in param2 of MISSION_ITEM_INT.
+
+**Planned path overlay:** navigator path also forwarded via TUNNEL (fast visual update before download completes). GQC renders bypass segments as dashed orange (RV1) / cyan (RV2) lines. Original segments in solid rover color (red/blue).
 
 **Map:** default view Jalisco field (20.727715, -103.566782, zoom 18). Satellite default. Markers: red=RV1, blue=RV2; centre dot green=disarmed, orange=armed, yellow=AUTO. Route: green=walked, red=pending. Waypoint dots erased as rover reaches each WP (driven by WP_ACT).
 

@@ -954,6 +954,10 @@ class NavigatorNode(Node):
                 '(will trigger on next waypoint via _cb_mission)')
         else:
             self.get_logger().info('Obstacle fence: empty (no polygons)')
+            # No obstacles — publish plain path so mavlink_bridge has the full
+            # path for MSN_ID hash and mission download.
+            if self._path:
+                self._publish_full_path()
 
     # ── Services ──────────────────────────────────────────────────────────────
 
@@ -1140,6 +1144,22 @@ class NavigatorNode(Node):
         return self._bypass_arc(interp(t_entry), interp(t_exit),
                                 entry_edge, exit_edge, polygon)
 
+    def _publish_full_path(self):
+        """Publish current _path as JSON for mavlink_bridge → GQC mission sync.
+
+        Format: [[lat, lon, bypass, speed, hold_secs], ...]
+        mavlink_bridge uses this for MSN_ID hash and MISSION_REQUEST_LIST downloads.
+        """
+        path_data = [
+            [round(wp.latitude, 7), round(wp.longitude, 7),
+             1 if k in self._bypass_indices else 0,
+             round(wp.speed, 2), round(wp.hold_secs, 1)]
+            for k, wp in enumerate(self._path)
+        ]
+        rp_msg = String()
+        rp_msg.data = json.dumps(path_data, separators=(',', ':'))
+        self.rerouted_pub.publish(rp_msg)
+
     def _reroute_path(self):
         """
         Rebuild _path and _path_s from _path_original, inserting bypass waypoints
@@ -1295,15 +1315,7 @@ class NavigatorNode(Node):
         self._holding       = False
         self._pivoting      = False
 
-        # Publish rerouted path so GQC can display it as a separate overlay.
-        # Format: JSON array of [lat, lon, is_bypass] per waypoint.
-        path_data = [
-            [round(wp.latitude, 7), round(wp.longitude, 7),
-             1 if k in new_bypass_indices else 0]
-            for k, wp in enumerate(new_wps)
-        ]
-        rp_msg = String(); rp_msg.data = json.dumps(path_data, separators=(',', ':'))
-        self.rerouted_pub.publish(rp_msg)
+        self._publish_full_path()
         self._path_version += 1
         pv = Int32(); pv.data = self._path_version
         self.path_version_pub.publish(pv)
@@ -1697,11 +1709,7 @@ class NavigatorNode(Node):
         self._path_version += 1
         pv = Int32(); pv.data = self._path_version
         self.path_version_pub.publish(pv)
-        # Publish rerouted path for GQC overlay
-        path_data = [[round(wp.latitude, 7), round(wp.longitude, 7), 0]
-                     for wp in self._path]
-        rp_msg = String(); rp_msg.data = json.dumps(path_data, separators=(',', ':'))
-        self.rerouted_pub.publish(rp_msg)
+        self._publish_full_path()
 
     def _arrive_at_base(self):
         """Base trip complete. Build resume mission, disarm, wait for re-arm."""
@@ -1776,10 +1784,7 @@ class NavigatorNode(Node):
         self._path_version += 1
         pv = Int32(); pv.data = self._path_version
         self.path_version_pub.publish(pv)
-        path_data = [[round(wp.latitude, 7), round(wp.longitude, 7), 0]
-                     for wp in self._path]
-        rp_msg = String(); rp_msg.data = json.dumps(path_data, separators=(',', ':'))
-        self.rerouted_pub.publish(rp_msg)
+        self._publish_full_path()
 
     # ── MPC controller ────────────────────────────────────────────────────────
 

@@ -27,8 +27,10 @@ from __future__ import annotations
 import json
 import os
 import socket as _socket
+import struct
 import threading
 import time
+import zlib
 
 import rclpy
 from rclpy.node import Node
@@ -143,6 +145,7 @@ class MavlinkBridgeNode(Node):
         self._path_version        = 0
         self._reroute_pending     = False
         self._last_rerouted_json  = '[]'
+        self._mission_hash: int   = 0       # CRC24 content hash of current mission
         self._reroute_retries     = 0
         self._reroute_timer       = None
         self._mission_lock        = threading.Lock()
@@ -222,6 +225,7 @@ class MavlinkBridgeNode(Node):
         self._cmd_channels = list(msg.channels)
 
     def _cb_wp(self, msg: Int32):
+        prev = self._wp_active
         self._wp_active = msg.data
         # Waiting point signal: navigator encodes as -(seq + 1000)
         if msg.data <= -1000:
@@ -236,6 +240,7 @@ class MavlinkBridgeNode(Node):
             self.get_logger().info(
                 f'Waiting point WP{wp_seq} — disarmed, mission kept')
             self._send_statustext(f'Waiting at WP{wp_seq} — re-arm to continue')
+            self._send_wp_act()
             return  # _mission_count stays → STATUS=MSL
         if msg.data >= 0 and msg.data in self._wp_servo_map:
             for sn, pw in self._wp_servo_map[msg.data].items():
@@ -248,6 +253,7 @@ class MavlinkBridgeNode(Node):
             if not self._armed:
                 self.get_logger().info(
                     'Ignoring wp_active=-1 — rover not armed (stale or upload race)')
+                self._send_wp_act()
                 return
             # Normal mission complete — rover was armed and navigating
             a = Bool(); a.data = False
@@ -256,6 +262,8 @@ class MavlinkBridgeNode(Node):
             self._mission_count = 0
             self._mission_buf = []
             self._wp_servo_map = {}
+            self._last_rerouted_json = '[]'
+            self._mission_hash = 0
             self.armed_pub.publish(a)
             self.mode_pub.publish(m)
             self.get_logger().info('Mission complete — auto-disarmed')
@@ -273,6 +281,14 @@ class MavlinkBridgeNode(Node):
             self.get_logger().info('At base — re-arm to resume mission')
             self._send_statustext('At base — re-arm to resume')
             # Keep _mission_count > 0 so STATUS=MSL
+        # Immediate WP_ACT push so GQC grays waypoints without 1 Hz lag
+        if self._wp_active != prev:
+            self._send_wp_act()
+
+    def _send_wp_act(self):
+        """Push WP_ACT immediately (event-driven, supplements 1 Hz batch)."""
+        self._send(self._mav.mav.named_value_float_encode(
+            self._uptime_ms(), b'WP_ACT', float(self._wp_active)))
 
     def _cb_xte(self, msg: Float32):
         self._xte = msg.data
@@ -301,6 +317,7 @@ class MavlinkBridgeNode(Node):
 
         self._last_rerouted_json = msg.data
         self._reroute_retries    = 0
+        self._compute_mission_hash()
         self._send_rerouted_chunks(msg.data)
         self._schedule_reroute_retransmit()
 
@@ -485,7 +502,7 @@ class MavlinkBridgeNode(Node):
             ('RF_OK',    1.0 if self._rc.rf_link_ok else 0.0),
             ('RTK',      float(self._RTK_FIX_TYPE.get(self._rtk_status, 0))),
             ('HACC',     self._hacc_mm),
-            ('PATH_VER', float(self._path_version)),
+            ('MSN_ID',   float(self._mission_hash)),
             ('REROUTE',  1.0 if self._reroute_pending else 0.0),
         ]
         for name, value in pairs:
@@ -708,32 +725,90 @@ class MavlinkBridgeNode(Node):
         self._send_mission_request(seq)
 
     def _send_mission_to_gqc(self):
-        """Respond to MISSION_REQUEST_LIST — stream current mission back to GQC.
+        """Respond to MISSION_REQUEST_LIST — stream full path to GQC.
 
-        Sends MISSION_COUNT followed immediately by all MISSION_ITEM_INT from
-        _mission_buf (original uploaded waypoints only, no fence/servo items).
-        GQC uses this to stay in sync when PATH_VER changes (obstacle reroute).
+        Uses the navigator's rerouted path (includes bypass waypoints + speed/hold)
+        when available.  Falls back to _mission_buf (original upload) otherwise.
+        Format per waypoint: [lat, lon, bypass, speed, hold_secs].
         """
-        items = list(self._mission_buf)   # snapshot under no lock — reads are safe
-        count_msg = self._mav.mav.mission_count_encode(0, 0, len(items), 0)
-        self._send(count_msg)
-        for i, wp in enumerate(items):
-            item = self._mav.mav.mission_item_int_encode(
-                target_system=0, target_component=0,
-                seq=i,
-                frame=6,   # MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
-                command=16,  # MAV_CMD_NAV_WAYPOINT
-                current=0,
-                autocontinue=1,
-                param1=wp.hold_secs,
-                param2=0.0, param3=0.0, param4=0.0,
-                x=int(wp.latitude  * 1e7),
-                y=int(wp.longitude * 1e7),
-                z=wp.speed,
-                mission_type=0)
-            self._send(item)
-        self.get_logger().info(
-            f'Mission download: sent {len(items)} waypoints to GQC (PATH_VER={self._path_version})')
+        # Try rerouted path first (authoritative — includes obstacle bypasses)
+        full_path = None
+        if self._last_rerouted_json and self._last_rerouted_json != '[]':
+            try:
+                full_path = json.loads(self._last_rerouted_json)
+            except json.JSONDecodeError:
+                full_path = None
+
+        if full_path:
+            count_msg = self._mav.mav.mission_count_encode(0, 0, len(full_path), 0)
+            self._send(count_msg)
+            for i, pt in enumerate(full_path):
+                lat     = pt[0]
+                lon     = pt[1]
+                bypass  = pt[2] if len(pt) > 2 else 0
+                speed   = pt[3] if len(pt) > 3 else 0.0
+                hold    = pt[4] if len(pt) > 4 else 0.0
+                item = self._mav.mav.mission_item_int_encode(
+                    target_system=0, target_component=0,
+                    seq=i,
+                    frame=6,
+                    command=16,  # MAV_CMD_NAV_WAYPOINT
+                    current=0,
+                    autocontinue=1,
+                    param1=float(hold),
+                    param2=float(bypass),  # param2 = bypass flag (0 or 1)
+                    param3=0.0, param4=0.0,
+                    x=int(lat * 1e7),
+                    y=int(lon * 1e7),
+                    z=float(speed),
+                    mission_type=0)
+                self._send(item)
+            self.get_logger().info(
+                f'Mission download: sent {len(full_path)} waypoints (full path) '
+                f'to GQC (MSN_ID={self._mission_hash})')
+        else:
+            # Fallback: original uploaded waypoints
+            items = list(self._mission_buf)
+            count_msg = self._mav.mav.mission_count_encode(0, 0, len(items), 0)
+            self._send(count_msg)
+            for i, wp in enumerate(items):
+                item = self._mav.mav.mission_item_int_encode(
+                    target_system=0, target_component=0,
+                    seq=i,
+                    frame=6,
+                    command=16,
+                    current=0,
+                    autocontinue=1,
+                    param1=wp.hold_secs,
+                    param2=0.0, param3=0.0, param4=0.0,
+                    x=int(wp.latitude * 1e7),
+                    y=int(wp.longitude * 1e7),
+                    z=wp.speed,
+                    mission_type=0)
+                self._send(item)
+            self.get_logger().info(
+                f'Mission download: sent {len(items)} waypoints (original) '
+                f'to GQC (MSN_ID={self._mission_hash})')
+
+    def _compute_mission_hash(self):
+        """Content-based CRC24 of mission data (waypoints + fence + rerouted path).
+
+        Truncated to 24 bits so it's exactly representable as float32 in
+        NAMED_VALUE_FLOAT.  ~16 M unique values — collision is negligible.
+        """
+        h = 0
+        if self._last_rerouted_json and self._last_rerouted_json != '[]':
+            # Rerouted path is authoritative (includes bypass waypoints)
+            h = zlib.crc32(self._last_rerouted_json.encode('utf-8'), h)
+        else:
+            # Original mission waypoints
+            for wp in self._mission_buf:
+                h = zlib.crc32(struct.pack('<ddff',
+                    wp.latitude, wp.longitude, wp.speed, wp.hold_secs), h)
+        # Include fence vertices — same obstacles must produce same hash
+        for lat, lon, n in self._fence_buf:
+            h = zlib.crc32(struct.pack('<ddi', lat, lon, n), h)
+        self._mission_hash = h & 0xFFFFFF  # 24-bit for exact float32
 
     def _parse_fence_polygons(self, buf=None) -> list[list[list[float]]]:
         """
@@ -984,6 +1059,8 @@ class MavlinkBridgeNode(Node):
             fence_msg = String()
             fence_msg.data = json.dumps({'polygons': polys})
             self.fence_pub.publish(fence_msg)
+            # Compute initial hash (may be updated when rerouted_path arrives)
+            self._compute_mission_hash()
 
 
 def main(args=None):

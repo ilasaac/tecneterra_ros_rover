@@ -49,8 +49,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val roverHaccMm    = HashMap<Int, Float>()     // UBX NAV-PVT hAcc in mm; -1 = not received
     private val roverPpmChannels = HashMap<Int, IntArray>()   // latest RC_CHANNELS per rover
 
-    // Per-rover uploaded missions
+    // Per-rover uploaded missions (synced from rover via MSN_ID)
     private val roverMissions             = HashMap<Int, List<LatLng>>()
+    private val roverMissionBypass        = HashMap<Int, List<Boolean>>()  // parallel: is bypass WP?
     private val roverMissionVisible       = HashMap<Int, Boolean>()
     private val roverMissionOverlays      = HashMap<Int, MutableList<Any>>()
     private val roverNextWaypointIndex    = HashMap<Int, Int>()   // last MISSION_ITEM_REACHED seq per rover
@@ -295,11 +296,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         onMissionDownloaded = { sysId, waypoints ->
             runOnUiThread {
                 if (waypoints.isNotEmpty()) {
-                    roverMissions[sysId]        = waypoints.map { (lat, lon) -> LatLng(lat, lon) }
+                    roverMissions[sysId]        = waypoints.map { (lat, lon, _) -> LatLng(lat, lon) }
+                    roverMissionBypass[sysId]   = waypoints.map { (_, _, bypass) -> bypass }
                     roverMissionVisible[sysId]  = true
-                    roverNextWaypointIndex[sysId] = 0
+                    // Preserve current WP index if rover is mid-mission
+                    if (roverNextWaypointIndex[sysId] == null)
+                        roverNextWaypointIndex[sysId] = 0
                 } else {
                     roverMissions.remove(sysId)
+                    roverMissionBypass.remove(sysId)
                     roverMissionVisible.remove(sysId)
                 }
                 redrawRoverMissions()
@@ -545,6 +550,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         recordedMission.clear()
         lastRecordedPos = null
         roverMissions.remove(selectedRoverId)
+        roverMissionBypass.remove(selectedRoverId)
         roverMissionVisible.remove(selectedRoverId)
         // Clear rerouted path overlay
         roverReroutedPaths.remove(selectedRoverId)
@@ -943,11 +949,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         for ((roverId, points) in roverMissions) {
             if (roverMissionVisible[roverId] == false || points.isEmpty()) continue
             val overlays     = roverMissionOverlays.getOrPut(roverId) { mutableListOf() }
+            val bypass       = roverMissionBypass[roverId] ?: emptyList()
             val pendingColor = if (roverId == 1) Color.parseColor("#F44336")
                                else              Color.parseColor("#2196F3")
             val walkedColor  = if (roverId == 1) Color.parseColor("#FFCDD2")
                                else              Color.parseColor("#BBDEFB")
+            val bypassColor  = if (roverId == 1) Color.parseColor("#FF9800")
+                               else              Color.parseColor("#00BCD4")
             val walkedIdx    = roverNextWaypointIndex[roverId] ?: 0
+            val dashPattern  = listOf(Dot(), Gap(10f))
 
             // Walked portion — light rover color
             if (walkedIdx > 0) {
@@ -956,15 +966,32 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     PolylineOptions().addAll(walked).width(8f)
                         .color(walkedColor).zIndex(2f)))
             }
-            // Pending portion — full rover color
+            // Pending portion — split by bypass flag for distinct rendering
             if (walkedIdx < points.size) {
-                val pending = (max(0, walkedIdx - 1) until points.size).map { points[it] }
-                overlays.add(map.addPolyline(
-                    PolylineOptions().addAll(pending).width(8f).color(pendingColor).zIndex(2f)))
+                val start = max(0, walkedIdx - 1)
+                var segStart = start
+                var segIsBypass = bypass.getOrElse(start) { false }
+                for (i in (start + 1)..points.size) {
+                    val curBypass = if (i < points.size) bypass.getOrElse(i) { false } else !segIsBypass
+                    if (curBypass != segIsBypass || i == points.size) {
+                        val segPts = (segStart..min(i, points.size - 1)).map { points[it] }
+                        if (segPts.size >= 2) {
+                            val opts = PolylineOptions().addAll(segPts).width(8f).zIndex(2f)
+                            if (segIsBypass) opts.color(bypassColor).pattern(dashPattern)
+                            else             opts.color(pendingColor)
+                            overlays.add(map.addPolyline(opts))
+                        }
+                        segStart = min(i, points.size - 1)
+                        segIsBypass = curBypass
+                    }
+                }
             }
-            // Waypoint dots — all visible, walked in light color, pending in full color
+            // Waypoint dots — bypass dots in bypass color
             points.forEachIndexed { i, pt ->
-                val dotColor = if (i < walkedIdx) walkedColor else pendingColor
+                val isBypass = bypass.getOrElse(i) { false }
+                val dotColor = if (i < walkedIdx) walkedColor
+                               else if (isBypass) bypassColor
+                               else pendingColor
                 map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
                     .icon(createDotBitmap(dotColor, 7)).flat(true).zIndex(2f))
                     ?.also { overlays.add(it) }
@@ -1301,6 +1328,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             return
         }
         roverMissions[selectedRoverId]          = ArrayList(routePoints)
+        roverMissionBypass[selectedRoverId]     = List(routePoints.size) { false }
         roverMissionVisible[selectedRoverId]    = true
         roverNextWaypointIndex[selectedRoverId] = 0
 

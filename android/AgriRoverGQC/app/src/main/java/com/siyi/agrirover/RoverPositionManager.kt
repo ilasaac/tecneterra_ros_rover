@@ -77,10 +77,10 @@ class RoverPositionManager(
     /** Called when SBUS_OK or RF_OK named float is received. type="SBUS"|"RF", ok=true/false */
     private val onLinkStatus:       (Int, String, Boolean) -> Unit,
     /**
-     * Called when a mission download from a rover completes (triggered by PATH_VER change).
-     * waypoints: ordered list of (lat, lon) pairs for all nav waypoints in the current mission.
+     * Called when a mission download from a rover completes (triggered by MSN_ID change).
+     * waypoints: ordered list of (lat, lon, isBypass) for all waypoints in the current path.
      */
-    private val onMissionDownloaded: (Int, List<Pair<Double, Double>>) -> Unit,
+    private val onMissionDownloaded: (Int, List<Triple<Double, Double, Boolean>>) -> Unit,
     /**
      * Called when PARAM_VALUE is received from a rover (response to PARAM_REQUEST_LIST or PARAM_SET).
      * sysId: rover system ID.  name: MAVLink param_id (≤16 chars).
@@ -153,9 +153,9 @@ class RoverPositionManager(
     private data class TunnelAssembly(val total: Int, val chunks: HashMap<Int, ByteArray>)
     private val tunnelBuf = HashMap<Int, TunnelAssembly>()
 
-    // Mission download state (rover → GQC, triggered by PATH_VER change)
-    private val roverPathVersion     = HashMap<Int, Int>()                        // sysId → last known PATH_VER
-    private val missionDownloadItems = HashMap<Int, HashMap<Int, Pair<Double, Double>>>() // sysId → seq → (lat, lon)
+    // Mission download state (rover → GQC, triggered by MSN_ID change)
+    private val roverMsnId           = HashMap<Int, Int>()                        // sysId → last known MSN_ID
+    private val missionDownloadItems = HashMap<Int, HashMap<Int, Triple<Double, Double, Boolean>>>() // sysId → seq → (lat, lon, bypass)
     private val missionDownloadCount = HashMap<Int, Int>()                        // sysId → expected item count
 
     // ─── Public API ──────────────────────────────────────────────────────────
@@ -619,7 +619,8 @@ class RoverPositionManager(
                 val expected = missionDownloadCount[senderId] ?: return
                 val lat = payload.x() / 1e7
                 val lon = payload.y() / 1e7
-                items[payload.seq()] = Pair(lat, lon)
+                val bypass = payload.param2() > 0.5f  // param2 = bypass flag
+                items[payload.seq()] = Triple(lat, lon, bypass)
                 if (items.size >= expected) {
                     val mission = (0 until expected).mapNotNull { items[it] }
                     missionDownloadItems.remove(senderId)
@@ -709,12 +710,17 @@ class RoverPositionManager(
                     "WP_ACT"  -> scope.launch(Dispatchers.Main) {
                         onMissionProgress(senderId, value.toInt())
                     }
-                    "PATH_VER" -> {
-                        val newVer = value.toInt()
-                        val oldVer = roverPathVersion[senderId] ?: -1
-                        if (newVer != oldVer) {
-                            roverPathVersion[senderId] = newVer
-                            scope.launch(Dispatchers.IO) { requestMissionFromRover(senderId) }
+                    "MSN_ID" -> {
+                        val newId = value.toInt()
+                        val oldId = roverMsnId[senderId] ?: -1
+                        if (newId != oldId) {
+                            roverMsnId[senderId] = newId
+                            if (newId == 0) {
+                                // Mission cleared on rover
+                                scope.launch(Dispatchers.Main) { onMissionDownloaded(senderId, emptyList()) }
+                            } else {
+                                scope.launch(Dispatchers.IO) { requestMissionFromRover(senderId) }
+                            }
                         }
                     }
                     "REROUTE" -> {
