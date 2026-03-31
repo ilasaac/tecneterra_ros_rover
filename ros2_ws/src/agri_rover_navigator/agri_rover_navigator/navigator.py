@@ -2342,14 +2342,15 @@ class NavigatorNode(Node):
         # Proximity guard: only fire when rover is already close — prevents
         # TTR/MPC lookahead corner-cutting from cascading waypoint advances on
         # dense missions (t>=1 while still far away from the waypoint).
-        # Skip advance entirely during align-spin: the rover is reorienting,
-        # not progressing — arc-length/past-waypoint checks give false positives
-        # on zigzag missions where the next WP is spatially close but behind.
+        # During align-spin, skip geometric advance (arc-length/past-waypoint)
+        # which gives false positives on zigzag missions where the next WP is
+        # spatially close but behind.  Distance advance (dist < accept) is always
+        # allowed — if the rover is physically at the WP, it should advance.
         in_spin = self._spin_target_brg is not None
         past_wp = (not needs_pivot and not is_bypass and not in_spin
                    and dist_to_wp < accept * 4.0
                    and self._past_waypoint(rlat, rlon))
-        reached = (dist_to_wp < accept and not in_spin) or past_wp or pivot_overshot
+        reached = dist_to_wp < accept or past_wp or pivot_overshot
 
         if reached:
             if not is_bypass and wp.hold_secs < 0.0:
