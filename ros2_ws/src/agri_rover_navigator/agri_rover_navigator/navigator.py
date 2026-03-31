@@ -2411,7 +2411,13 @@ class NavigatorNode(Node):
             # bypass point.  CTE is zeroed — heading error alone is sufficient.
             la_lat, la_lon = wp.latitude, wp.longitude
         else:
-            la_lat, la_lon = self._point_at_s(s_nearest + self._lookahead)
+            # Clamp lookahead to not project past current WP when the next
+            # segment changes direction — prevents the projected point from
+            # swinging into a different segment and triggering spin oscillation.
+            # (pivot detection can miss this when the origin→WP0 segment is
+            # too short for reliable bearing, i.e. in_len < min_pivot_seg.)
+            s_look = min(s_nearest + self._lookahead, wp_s)
+            la_lat, la_lon = self._point_at_s(s_look)
 
         # Periodic log (every 5 s) — helps verify rover is tracking rerouted path
         self._log_tick += 1
