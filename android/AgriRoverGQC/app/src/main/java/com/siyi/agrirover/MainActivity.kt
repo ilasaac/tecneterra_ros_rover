@@ -136,10 +136,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var draftPolyline: Polyline? = null
     // Stationary hold tracking: last position where a waypoint was saved, and
     // accumulated stationary time. When rover moves again, the hold time is
-    // written into the last recorded waypoint so the navigator waits there.
     private var lastRecordedPos: LatLng? = null
-    private var pendingHoldSecs = 0f
-    private val MIN_RECORD_DIST = 0.3   // metres — below this = considered stationary
+    private val MIN_RECORD_DIST = 0.3   // metres — below this = skip (GPS noise)
 
     private val recordHandler = Handler(Looper.getMainLooper())
     private val recordRunnable = object : Runnable {
@@ -153,15 +151,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 else Double.MAX_VALUE
 
                 if (dist >= MIN_RECORD_DIST) {
-                    // Rover moved — flush accumulated hold into the last waypoint
-                    if (last != null && pendingHoldSecs > 0f) {
-                        val idx = recordedMission.indexOfLast { it is MissionAction.Waypoint }
-                        if (idx >= 0) {
-                            val old = recordedMission[idx] as MissionAction.Waypoint
-                            recordedMission[idx] = old.copy(holdSecs = pendingHoldSecs)
-                        }
-                        pendingHoldSecs = 0f
-                    }
                     lastRecordedPos = pos
                     // Speed = avg distance covered in this 500 ms tick, clamped to [min, max].
                     // Use 0f for the first waypoint (no prior position) → navigator default.
@@ -171,9 +160,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, speed))
                     routePoints.add(pos)
                     redrawMap()
-                } else {
-                    // Rover stationary — accumulate hold time (500 ms per tick)
-                    pendingHoldSecs += 0.5f
                 }
             }
             recordHandler.postDelayed(this, 500)
@@ -480,7 +466,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         recordedMission.clear()
         nextWaypointIndex = 0
         lastRecordedPos = null
-        pendingHoldSecs = 0f
         // Snapshot current aux channel states and prepend as initial DO_SET_SERVO
         // items so the rover restores servo positions at mission start.
         val ch = roverPpmChannels[selectedRoverId]
@@ -520,7 +505,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         routePoints.clear()
         recordedMission.clear()
         lastRecordedPos = null
-        pendingHoldSecs = 0f
         roverMissions.remove(selectedRoverId)
         roverMissionVisible.remove(selectedRoverId)
         // Clear rerouted path overlay
@@ -1281,9 +1265,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         roverMissionVisible[selectedRoverId]    = true
         roverNextWaypointIndex[selectedRoverId] = 0
 
-        // Build upload payload BEFORE clearing planner state
-        val servoCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
-        val actions: List<MissionAction> = if (servoCount > 0) ArrayList(recordedMission)
+        // Build upload payload BEFORE clearing planner state.
+        // Always prefer recordedMission (has per-waypoint speed + holdSecs from REC)
+        // over bare routePoints (lat/lon only — speed defaults to max_speed).
+        val actions: List<MissionAction> = if (recordedMission.isNotEmpty()) ArrayList(recordedMission)
             else routePoints.map { MissionAction.Waypoint(it.latitude, it.longitude) }
         val wpCount = routePoints.size
 
@@ -1295,10 +1280,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             Toast.makeText(this,
                 "Uploading $wpCount WPs + ${obstaclePolygons.size} obstacle(s) to Rover $selectedRoverId…",
                 Toast.LENGTH_SHORT).show()
-        } else if (servoCount > 0) {
+        } else if (recordedMission.isNotEmpty()) {
             roverManager.uploadRecordedMission(selectedRoverId, ArrayList(recordedMission))
             Toast.makeText(this,
-                "Uploading $wpCount WPs + $servoCount servo cmds to Rover $selectedRoverId…",
+                "Uploading $wpCount WPs to Rover $selectedRoverId…",
                 Toast.LENGTH_SHORT).show()
         } else {
             roverManager.uploadMission(selectedRoverId,

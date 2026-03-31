@@ -80,3 +80,6 @@
     tank_low_pct:      5.0    # trigger base return when tank below this % (0–100)
     base_speed:        0.9    # speed for base trip navigation (m/s)
     base_acceptance_m: 1.5    # arrival radius at base station (metres)
+    # Diagnostic CSV logger — per-tick heading/CTE/steer/throttle for debug
+    enable_diag_log: true
+    diag_log_path:   '/tmp/navigator_diag.csv'
