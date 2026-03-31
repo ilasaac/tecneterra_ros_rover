@@ -352,9 +352,9 @@ Note: `GpsRawInt` is sent but java-mavlink 1.1.9 rejects it (pymavlink truncates
 
 **Mission recording:**
 - **ADD** (overflow menu) — inserts selected rover's current GPS position.
-- **REC** — samples GPS @ 500 ms; appends ServoCmd on any PPM CH5–CH8 change > 100 µs.
+- **REC** — samples GPS @ 500 ms; appends ServoCmd on any PPM CH5–CH8 change > 100 µs. Does not accumulate holdSecs — only the **Add Wait Point** button creates holds.
 - **OBS** — tap vertices to draw obstacle polygon; DONE closes it (min 3 vertices); red semi-transparent overlay.
-- **UPLOAD** — sends DISARM × 3 before MISSION_COUNT. Dispatches: `uploadMissionWithObstacles()` if OBS polygons exist, `uploadRecordedMission()` if ServoCmd items, else `uploadMission()`. Fence vertices sent as cmd=5003. **Upload gate:** if rover already has a mission loaded (STATUS=MSL or ARM), upload is rejected with a dialog — user must CLEAR first.
+- **UPLOAD** — sends DISARM × 3 before MISSION_COUNT. Dispatches: `uploadMissionWithObstacles()` if OBS polygons exist, `uploadRecordedMission()` if `recordedMission` is non-empty (i.e., REC was used — sends per-waypoint speed and holdSecs), else `uploadMission()` (plain waypoints with z=0, for manually-placed/CSV waypoints with no speed data). Fence vertices sent as cmd=5003. **Upload gate:** if rover already has a mission loaded (STATUS=MSL or ARM), upload is rejected with a dialog — user must CLEAR first.
 - **Add Wait Point** — inserts rover's current position as a waiting point (`holdSecs = -1`). On arrival the rover disarms and waits; re-arm to continue.
 
 ```kotlin
@@ -372,7 +372,7 @@ Waypoint speed = `dist_m / 0.5s`, clamped [0.3, 1.5] m/s; sent as `z` field of N
 - `checkLinkMismatch()` → auto-disarm after 2 s RC switch ≠ slave HEARTBEAT mismatch.
 - **ARM gate (START):** mission must be loaded + STATUS ≠ NA + CH9 must select a rover. No proximity gate — instead, approach path shown with distance + Confirm/Cancel dialog. Mid-mission resume (WP_ACT > 0) skips the dialog.
 
-**Waiting points:** `hold_secs = -1.0` on a MissionWaypoint. Navigator publishes `wp_active = -(seq + 1000)`, mavlink_bridge disarms without clearing mission (STATUS stays MSL). On re-arm, navigator advances past the waiting point.
+**Waiting points:** `hold_secs = -1.0` on a MissionWaypoint. `mavlink_bridge` passes through `hold_secs` as-is (including negative values) — no filtering. Navigator publishes `wp_active = -(seq + 1000)`, mavlink_bridge disarms without clearing mission (STATUS stays MSL). On re-arm, navigator advances past the waiting point.
 
 **Reroute confirmation:** When navigator reroutes mid-mission (obstacles), it pauses and publishes `reroute_pending=True`. mavlink_bridge relays as `NAMED_VALUE_FLOAT 'REROUTE' = 1.0`. GQC shows Confirm/Reject dialog. User response sent via `COMMAND_LONG cmd=50003 param1=1|0`. Navigator resumes or reverts to original path.
 
