@@ -1165,13 +1165,7 @@ class NavigatorNode(Node):
     def _cb_corridor_mission(self, msg: String):
         """Parse corridor mission JSON → build polyline path for Stanley CTE following."""
         try:
-            # Import corridor module (tools/ — add to path if needed)
-            import sys as _sys, os as _os
-            tools_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
-                                       '..', '..', '..', '..', 'tools')
-            if tools_dir not in _sys.path:
-                _sys.path.insert(0, _os.path.normpath(tools_dir))
-            from corridor import corridor_mission_from_json, corridors_to_path
+            from agri_rover_navigator.corridor import corridor_mission_from_json, corridors_to_path
 
             mission = corridor_mission_from_json(msg.data)
             path_pts = corridors_to_path(mission, default_speed=self._max_speed)

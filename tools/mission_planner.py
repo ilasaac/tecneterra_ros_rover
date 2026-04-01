@@ -312,6 +312,62 @@ def _mavlink_upload(waypoints: list, obstacles: list,
     except Exception as e:
         return {'ok': False, 'message': str(e)}
 
+def _mavlink_upload_corridor(corridor_json: str,
+                             rover_ip: str, rover_port: int, rover_sysid: int) -> dict:
+    """Upload corridor mission to rover using cmd=50100 vertices."""
+    os.environ.setdefault('MAVLINK20', '1')
+    try:
+        from pymavlink.dialects.v20 import ardupilotmega as _mav_def
+    except ImportError:
+        return {'ok': False, 'message': 'pymavlink not installed'}
+    try:
+        from corridor import corridor_mission_from_json
+        mission = corridor_mission_from_json(corridor_json)
+        items = []
+        for c in mission.corridors:
+            n_verts = len(c.centerline)
+            for lat, lon in c.centerline:
+                items.append({
+                    'cmd': 50100,
+                    'p1': float(n_verts),          # vertex_count
+                    'p2': float(c.width),           # corridor half-width
+                    'p3': float(c.speed),           # speed
+                    'p4': float(c.next_corridor_id if c.next_corridor_id >= 0 else 65535),
+                    'lat': lat,
+                    'lon': lon,
+                    'z': float(c.corridor_id),      # corridor_id
+                })
+        if not items:
+            return {'ok': False, 'message': 'No corridor vertices'}
+    except Exception as e:
+        return {'ok': False, 'message': f'Build error: {e}'}
+    try:
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        mav  = _mav_def.MAVLink(None)
+        mav.srcSystem    = 255
+        mav.srcComponent = 0
+        def _send(pkt):
+            sock.sendto(pkt.pack(mav), (rover_ip, rover_port))
+        # DISARM first (same as regular upload)
+        for _ in range(3):
+            _send(mav.command_long_encode(rover_sysid, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0))
+            _time.sleep(0.1)
+        _send(mav.mission_count_encode(rover_sysid, 0, len(items)))
+        _time.sleep(0.15)
+        for seq, item in enumerate(items):
+            _send(mav.mission_item_int_encode(
+                rover_sysid, 0, seq,
+                6, item['cmd'], 0, 1,
+                item['p1'], item['p2'], item['p3'], item['p4'],
+                int(item['lat'] * 1e7), int(item['lon'] * 1e7), item['z'],
+            ))
+            _time.sleep(0.02)
+        sock.close()
+        return {'ok': True, 'message': f'Uploaded {len(items)} corridor vertices ({len(mission.corridors)} corridors) to RV{rover_sysid}'}
+    except Exception as e:
+        return {'ok': False, 'message': str(e)}
+
+
 # ── MAVLink test sensor injection ─────────────────────────────────────────────
 def _mavlink_send_test_sensors(rover_ip: str, rover_port: int, rover_sysid: int,
                                 tank_level: float, batt_pct: float) -> dict:
@@ -1444,12 +1500,22 @@ async function uploadRover(roverId) {
   status(`Uploading to RV${roverId}...`, '#f39c12');
   if (obsMode) obsFinish();
   try {
-    const resp = await fetch('/upload_rover', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port: 14550, rover_sysid: roverId, servos: getServos()}),
-    });
-    const d = await resp.json();
-    status(d.message, d.ok ? '#27ae60' : '#e74c3c');
+    // If corridor JSON exists (from corridor generation), upload as corridor mission
+    if (window._lastCorridorJson) {
+      const resp = await fetch('/upload_corridor_rover', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({corridor_json: window._lastCorridorJson, rover_ip, rover_port: 14550, rover_sysid: roverId}),
+      });
+      const d = await resp.json();
+      status(d.message, d.ok ? '#27ae60' : '#e74c3c');
+    } else {
+      const resp = await fetch('/upload_rover', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port: 14550, rover_sysid: roverId, servos: getServos()}),
+      });
+      const d = await resp.json();
+      status(d.message, d.ok ? '#27ae60' : '#e74c3c');
+    }
   } catch(e) {
     status(`Upload failed: ${e.message}`, '#e74c3c');
   }
@@ -1603,6 +1669,7 @@ function applyGenerate(append) {
   }
 
   if (!append) { waypoints = []; simResult = null; }
+  window._lastCorridorJson = null;  // non-corridor generation clears corridor state
   waypoints.push(...newWps);
   // If anchor is off, WP[0] is not at the start input — sync start to WP[0]
   if (!document.getElementById('gen-anchor').checked) syncStartToWp0();
@@ -2155,6 +2222,24 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f'[upload] handler error: {e}', flush=True)
                 self._json({'ok': False, 'message': f'Server error: {e}'})
+
+        elif self.path == '/upload_corridor_rover':
+            try:
+                data = json.loads(raw)
+                rover_ip = data.get('rover_ip', '192.168.100.19')
+                rover_port = int(data.get('rover_port', 14550))
+                rover_sysid = int(data.get('rover_sysid', 1))
+                corridor_json = data.get('corridor_json', '')
+                if not corridor_json:
+                    self._json({'ok': False, 'message': 'No corridor_json'})
+                    return
+                print(f'[upload_corridor] -> RV{rover_sysid} @ {rover_ip}:{rover_port}', flush=True)
+                result = _mavlink_upload_corridor(corridor_json, rover_ip, rover_port, rover_sysid)
+                print(f'[upload_corridor] {result["message"]}', flush=True)
+                self._json(result)
+            except Exception as e:
+                print(f'[upload_corridor] error: {e}', flush=True)
+                self._json({'ok': False, 'message': str(e)})
 
         elif self.path == '/generate_corridor':
             try:
