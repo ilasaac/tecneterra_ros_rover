@@ -118,6 +118,15 @@ def compute_turn_arc(
         # Nearly straight — just return the exit point
         return [(exit_lat, exit_lon)]
 
+    # For ~180° turns, heading difference alone is ambiguous (could be left or right).
+    # Use the entry point's position relative to the exit heading to determine
+    # which side to turn: if the entry point is to the right of the exit heading,
+    # turn right (clockwise); otherwise turn left.
+    if abs(delta) > 170.0:
+        exit_to_entry = _bearing_to(exit_lat, exit_lon, entry_lat, entry_lon)
+        cross = _normalize_angle(exit_to_entry - exit_heading)
+        delta = 180.0 if cross > 0 else -180.0
+
     # Determine turn direction: positive delta = right turn = center to the right
     # Turn center is perpendicular to heading at distance = radius
     if delta > 0:
