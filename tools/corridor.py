@@ -81,6 +81,7 @@ class Corridor:
 class CorridorMission:
     corridors: list[Corridor] = field(default_factory=list)
     min_turn_radius: float = 3.0             # metres (rover physical minimum)
+    headland_width: float = 0.0              # crossing corridor width (0 = auto: 2× row width)
 
 
 # ── Turn arc computation ─────────────────────────────────────────────────────
@@ -247,46 +248,39 @@ def corridors_to_path(
 
         turn_type = current.turn_type
         if turn_type == 'auto':
-            # Decide based on available space and heading change
             if heading_change < 10.0:
-                # Nearly straight — no turn needed
                 turn_type = 'none'
             else:
-                # Check if headland is wide enough for arc
-                exit_pt = current.centerline[-1]
-                entry_pt = next_c.centerline[0]
-                headland_dist = _haversine(exit_pt[0], exit_pt[1],
-                                           entry_pt[0], entry_pt[1])
-                headland_w = current.headland_width if current.headland_width > 0 else headland_dist
-                needed = 2 * mission.min_turn_radius * math.sin(math.radians(heading_change / 2))
-                if headland_w >= needed:
-                    turn_type = 'arc'
-                else:
-                    turn_type = 'spin'
+                # Default: 3-point headland (spin + cross + spin) — safest
+                turn_type = 'headland'
 
-        if turn_type == 'arc':
-            exit_pt = current.centerline[-1]
-            entry_pt = next_c.centerline[0]
+        exit_pt = current.centerline[-1]
+        entry_pt = next_c.centerline[0]
+        crossing_width = mission.headland_width if mission.headland_width > 0 else max(current.width, next_c.width) * 2
+
+        if turn_type == 'headland':
+            # 3-point headland: straight crossing segment between row ends.
+            # The rover will:
+            #   1. Reach row end → spin (heading error to crossing bearing > align_thresh)
+            #   2. Drive straight across headland (CTE on crossing segment)
+            #   3. Reach crossing end → spin (heading error to next row > align_thresh)
+            # No new control code needed — align-spin handles the spins naturally.
+            path.append((exit_pt[0], exit_pt[1], 0.0, crossing_width))   # crossing start
+            path.append((entry_pt[0], entry_pt[1], 0.0, crossing_width)) # crossing end
+
+        elif turn_type == 'arc':
             arc_pts = compute_turn_arc(
                 exit_pt[0], exit_pt[1], exit_heading,
                 entry_pt[0], entry_pt[1], entry_heading,
                 mission.min_turn_radius,
             )
-            # Use min speed during turns, corridor width = min of both corridors
             turn_width = min(current.width, next_c.width)
-            for lat, lon in arc_pts[1:]:   # skip first (= corridor last point)
-                path.append((lat, lon, 0.0, turn_width))  # speed 0 = min_speed
+            for lat, lon in arc_pts[1:]:
+                path.append((lat, lon, 0.0, turn_width))
 
         elif turn_type == 'spin':
-            exit_pt = current.centerline[-1]
-            entry_pt = next_c.centerline[0]
-            spin_pts = compute_spin_turn(
-                exit_pt[0], exit_pt[1],
-                entry_pt[0], entry_pt[1],
-            )
-            turn_width = min(current.width, next_c.width)
-            for lat, lon in spin_pts:
-                path.append((lat, lon, 0.0, turn_width))
+            # Legacy single-point spin (rover spins at row end, then drives to next row)
+            path.append((exit_pt[0], exit_pt[1], 0.0, crossing_width))
 
         # else: 'none' — corridors connect directly
 
@@ -302,6 +296,7 @@ def corridor_mission_to_json(mission: CorridorMission) -> str:
     import json
     data = {
         'min_turn_radius': mission.min_turn_radius,
+        'headland_width': mission.headland_width,
         'corridors': [
             {
                 'corridor_id': c.corridor_id,
@@ -336,6 +331,7 @@ def corridor_mission_from_json(json_str: str) -> CorridorMission:
     return CorridorMission(
         corridors=corridors,
         min_turn_radius=data.get('min_turn_radius', 3.0),
+        headland_width=data.get('headland_width', 0.0),
     )
 
 

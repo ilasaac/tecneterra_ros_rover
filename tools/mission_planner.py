@@ -658,9 +658,9 @@ tr:hover td{background:#1e1e3a}
     <label>Heading &deg;</label><input id="gen-c-hdg" type="number" value="0" min="0" max="359">
     <label>Turn type</label>
     <select id="gen-c-turn">
-      <option value="auto">Auto (arc or spin)</option>
-      <option value="arc">Arc only</option>
-      <option value="spin">Spin only</option>
+      <option value="auto">Auto (spin + cross)</option>
+      <option value="arc">Arc (smooth curve)</option>
+      <option value="spin">Spin only (no crossing)</option>
     </select>
   </div>
 
