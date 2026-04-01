@@ -489,6 +489,15 @@ class NavigatorNode(Node):
         self._expanded_polygons: list[list[tuple[float, float]]]   = []
         self._bypass_indices:    set[int]                          = set()
 
+        # ── Corridor mode state ──────────────────────────────────────────────
+        # When a corridor mission is loaded, the navigator converts corridors
+        # + turn arcs into a single polyline stored in _path (same as waypoints).
+        # _corridor_mode=True activates the simpler corridor control loop:
+        # pure CTE following with no waypoint-advance logic.
+        self._corridor_mode:    bool        = False
+        self._corridor_widths:  list[float] = []    # half-width per path point
+        self._corridor_total_s: float       = 0.0   # total path arc-length
+
         # Hold state — rover waits at a waypoint for hold_secs before advancing.
         self._holding:  bool  = False
         self._hold_end: float = 0.0
@@ -546,6 +555,7 @@ class NavigatorNode(Node):
         self.create_subscription(RCInput,         'servo_state',   self._cb_servo_state,  10)
         self.create_subscription(Bool,            'mission_clear', self._cb_mission_clear, 10)
         self.create_subscription(String,          'mission_fence', self._cb_mission_fence, 10)
+        self.create_subscription(String,          'corridor_mission', self._cb_corridor_mission, 10)
         self.create_subscription(Float32,         'hacc',          self._cb_hacc,          10)
         self.create_subscription(SensorData,      'sensors',       self._cb_sensors,       10)
         self.create_subscription(RoverStatus,     'status',        self._cb_status,        10)
@@ -1150,6 +1160,205 @@ class NavigatorNode(Node):
         return self._bypass_arc(interp(t_entry), interp(t_exit),
                                 entry_edge, exit_edge, polygon)
 
+    # ── Corridor mission handling ────────────────────────────────────────────
+
+    def _cb_corridor_mission(self, msg: String):
+        """Parse corridor mission JSON → build polyline path for Stanley CTE following."""
+        try:
+            # Import corridor module (tools/ — add to path if needed)
+            import sys as _sys, os as _os
+            tools_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                       '..', '..', '..', '..', 'tools')
+            if tools_dir not in _sys.path:
+                _sys.path.insert(0, _os.path.normpath(tools_dir))
+            from corridor import corridor_mission_from_json, corridors_to_path
+
+            mission = corridor_mission_from_json(msg.data)
+            path_pts = corridors_to_path(mission, default_speed=self._max_speed)
+            if not path_pts:
+                self.get_logger().warn('Corridor mission: empty path')
+                return
+
+            # Clear any existing waypoint mission
+            self._path.clear()
+            self._path_s.clear()
+            self._path_original.clear()
+            self._bypass_indices.clear()
+            self._path_idx          = 0
+            self._holding           = False
+            self._pivoting          = False
+            self._spin_target_brg   = None
+            self._corridor_mode     = True
+            self._corridor_widths.clear()
+
+            # Build path from corridor polyline
+            for i, (lat, lon, speed, width) in enumerate(path_pts):
+                wp = MissionWaypoint()
+                wp.seq               = i
+                wp.latitude          = lat
+                wp.longitude         = lon
+                wp.speed             = speed
+                wp.acceptance_radius = 0.0
+                wp.hold_secs         = 0.0
+                self._path.append(wp)
+                self._path_original.append(wp)
+                self._corridor_widths.append(width)
+
+            # Set origin to first point
+            self._path_origin_lat = self._path[0].latitude
+            self._path_origin_lon = self._path[0].longitude
+            self._path_s = self._rebuild_path_s(self._path,
+                                                 self._path_origin_lat,
+                                                 self._path_origin_lon)
+            self._corridor_total_s = self._path_s[-1] if self._path_s else 0.0
+
+            self.get_logger().info(
+                f'Corridor mission loaded: {len(mission.corridors)} corridors, '
+                f'{len(self._path)} path pts, {self._corridor_total_s:.1f} m total')
+
+            self._publish_full_path()
+
+        except Exception as e:
+            self.get_logger().error(f'Corridor mission parse error: {e}')
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+
+    def _control_loop_corridor(self):
+        """Corridor-following control: pure CTE minimization on the polyline.
+
+        No waypoint advance logic.  Progress is tracked by arc-length.
+        The rover reaches the end when s_nearest >= total_s - accept.
+        Corridor width enforces a hard CTE boundary.
+        """
+        if self._fix is None or (time.time() - self._fix_time) > self._gps_timeout:
+            self.get_logger().warn('GPS stale — halting')
+            self._publish_halt()
+            return
+
+        rlat, rlon = self._center_pos()
+        flat, flon = self._front_pos()
+
+        # Project onto path
+        s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
+
+        # Mission complete: near the end of the full path
+        if s_nearest >= self._corridor_total_s - self._accept_r:
+            self.get_logger().info('Corridor mission complete')
+            m = Int32(); m.data = -1
+            self.wp_pub.publish(m)
+            self._publish_halt()
+            return
+
+        # CTE to current segment
+        seg_idx = min(best_seg, len(self._path) - 1)
+        cte = self._cte_to_seg(flat, flon, seg_idx)
+
+        # Corridor width boundary
+        width = self._corridor_widths[seg_idx] if seg_idx < len(self._corridor_widths) else 1.5
+        if abs(cte) >= width:
+            self.get_logger().error(
+                f'CORRIDOR BOUNDARY: CTE {cte:.2f}m >= width {width:.1f}m — disarming')
+            self._publish_halt()
+            m = Int32(); m.data = -1
+            self.wp_pub.publish(m)
+            return
+
+        # CTE safety alarm (separate from corridor width)
+        if abs(cte) >= self._stanley_cte_alarm:
+            self.get_logger().error(
+                f'CTE ALARM: {cte:.2f}m >= {self._stanley_cte_alarm:.1f}m — disarming')
+            self._publish_halt()
+            m = Int32(); m.data = -1
+            self.wp_pub.publish(m)
+            return
+
+        # XTE telemetry
+        xte_msg = Float32(); xte_msg.data = abs(cte)
+        self.xte_pub.publish(xte_msg)
+
+        # Publish progress as approximate waypoint index (for GQC WP display)
+        approx_wp = max(0, seg_idx)
+        if approx_wp != self._path_idx:
+            self._path_idx = approx_wp
+            wp_msg = Int32(); wp_msg.data = approx_wp
+            self.wp_pub.publish(wp_msg)
+
+        # Lookahead — clamp to path end
+        wp_s = self._path_s[seg_idx] if seg_idx < len(self._path_s) else self._corridor_total_s
+        s_look = min(s_nearest + self._lookahead, self._corridor_total_s)
+        la_lat, la_lon = self._point_at_s(s_look)
+
+        target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
+
+        # Freeze target bearing during align-spin
+        if self._spin_target_brg is not None:
+            target_bearing = self._spin_target_brg
+
+        heading_err = ((target_bearing - self._heading + 180) % 360) - 180
+
+        # Speed: per-point speed with CTE reduction
+        wp = self._path[seg_idx]
+        target_spd = wp.speed if wp.speed > 0 else self._max_speed
+        cte_factor = max(0.0, 1.0 - abs(cte) / max(self._stanley_cte_scale, 0.01))
+        v_mps = max(self._min_speed, target_spd * cte_factor)
+
+        # Large heading error → spin in place
+        if abs(heading_err) > self._align_thresh:
+            if self._spin_target_brg is None:
+                self._spin_target_brg = target_bearing
+            steer_frac = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
+            steer_ppm = int(PPM_CENTER - steer_frac * 500)
+            if steer_ppm != PPM_CENTER:
+                sign = 1 if steer_ppm > PPM_CENTER else -1
+                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
+                                                     self._min_steer_delta)
+            self._publish_cmd(PPM_CENTER, steer_ppm)
+            return
+
+        # Release frozen bearing within deadband
+        if self._spin_target_brg is not None and abs(heading_err) < self._hdb:
+            self._spin_target_brg = None
+
+        # Stanley steering
+        throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
+        stanley_ang = heading_err + math.degrees(
+            math.atan2(self._stanley_k * cte, max(v_mps, self._stanley_softening)))
+        stanley_ang = max(-90.0, min(90.0, stanley_ang))
+        steer_frac = max(-self._max_steer, min(self._max_steer, stanley_ang / 45.0))
+        steer_ppm = int(PPM_CENTER - steer_frac * 500)
+
+        if steer_ppm != PPM_CENTER and abs(heading_err) > self._steer_coast:
+            sign = 1 if steer_ppm > PPM_CENTER else -1
+            steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
+                                                 self._min_steer_delta)
+
+        # Proximity speed reduction
+        if self._prox_level == 'slow' and throttle_ppm > PPM_CENTER:
+            throttle_ppm = PPM_CENTER + (throttle_ppm - PPM_CENTER) // 2
+
+        # Diag log
+        if self._diag_writer is not None:
+            sf = (PPM_CENTER - steer_ppm) / 500.0
+            self._diag_writer.writerow([
+                round(time.time(), 4),
+                round(rlat, 8), round(rlon, 8),
+                round(self._heading, 2),
+                round(target_bearing, 2),
+                round(heading_err, 2),
+                round(cte, 4),
+                round(sf, 4),
+                steer_ppm, throttle_ppm,
+                round(target_spd, 3),
+                round(self._corridor_total_s - s_nearest, 3),  # remaining distance
+                seg_idx,
+                'corridor',
+                self._fix.status.status if self._fix else -1,
+                round(self._hacc_mm, 1),
+            ])
+            self._diag_file.flush()
+
+        self._publish_cmd(throttle_ppm, steer_ppm)
+
     def _publish_full_path(self):
         """Publish current _path as JSON for mavlink_bridge → GQC mission sync.
 
@@ -1426,7 +1635,10 @@ class NavigatorNode(Node):
         best_seg  = self._path_idx
         best_dist = float('inf')
 
-        for seg_k in range(self._path_idx, min(self._path_idx + 1, len(self._path))):
+        # In corridor mode, search more segments (dense polyline with short segments).
+        # In waypoint mode, search only the current segment (prevents zigzag snap-ahead).
+        search_ahead = 10 if self._corridor_mode else 1
+        for seg_k in range(self._path_idx, min(self._path_idx + search_ahead, len(self._path))):
             # Segment endpoints and arc-length bounds
             if seg_k == 0:
                 if self._path_origin_lat is None:
@@ -2198,6 +2410,12 @@ class NavigatorNode(Node):
             return
         if not self._path:
             return
+
+        # Corridor mode: simpler control loop (no waypoint advance)
+        if self._corridor_mode:
+            self._control_loop_corridor()
+            return
+
         if self._path_idx >= len(self._path):
             return
         if self._fix is None or (time.time() - self._fix_time) > self._gps_timeout:
