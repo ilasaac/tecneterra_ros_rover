@@ -1259,8 +1259,11 @@ class NavigatorNode(Node):
             self.get_logger().error(
                 f'CORRIDOR BOUNDARY: CTE {cte:.2f}m >= width {width:.1f}m — disarming')
             self._publish_halt()
-            m = Int32(); m.data = -1
+            # Use -3 (at_base signal) to disarm but keep mission loaded (STATUS=MSL).
+            # User can reposition and re-arm to continue.
+            m = Int32(); m.data = -3
             self.wp_pub.publish(m)
+            self._corridor_entered = False  # reset so entry grace applies on re-arm
             return
 
         # CTE safety alarm (separate from corridor width)
@@ -1268,8 +1271,9 @@ class NavigatorNode(Node):
             self.get_logger().error(
                 f'CTE ALARM: {cte:.2f}m >= {self._stanley_cte_alarm:.1f}m — disarming')
             self._publish_halt()
-            m = Int32(); m.data = -1
+            m = Int32(); m.data = -3  # disarm but keep mission (can reposition + re-arm)
             self.wp_pub.publish(m)
+            self._corridor_entered = False
             return
 
         # XTE telemetry
