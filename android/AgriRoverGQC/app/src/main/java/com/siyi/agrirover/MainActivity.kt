@@ -133,6 +133,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     // Initialised to 1500 (neutral) and updated when a >100 µs change is detected.
     private val lastAuxPwm = IntArray(4) { 1500 }
 
+    // --- CORRIDOR RECORDING ---
+    // Each REC cycle adds a corridor. UPLOAD sends all as a corridor mission.
+    private var isCorridorMode = false
+    private val corridorList = mutableListOf<List<LatLng>>()  // recorded corridor centerlines
+    private var corridorWidth = 1.5f   // half-width in metres (default)
+
     // --- OBSTACLE DRAWING ---
     private var isDrawingObstacle = false
     private val currentObstacleDraft = mutableListOf<LatLng>()
@@ -497,9 +503,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnRec.strokeWidth = 0
         val wpCount  = recordedMission.filterIsInstance<MissionAction.Waypoint>().size
         val srvCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
-        Toast.makeText(this,
-            "Recorded $wpCount waypoints" + if (srvCount > 0) " + $srvCount servo cmds" else "",
-            Toast.LENGTH_LONG).show()
+
+        if (isCorridorMode && routePoints.size >= 2) {
+            corridorList.add(ArrayList(routePoints))
+            Toast.makeText(this,
+                "Corridor ${corridorList.size}: $wpCount points. Drive to next row or UPLOAD.",
+                Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(this,
+                "Recorded $wpCount waypoints" + if (srvCount > 0) " + $srvCount servo cmds" else "",
+                Toast.LENGTH_LONG).show()
+        }
     }
 
     /**
@@ -544,6 +558,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         if (currentMode == AppMode.AUTO) {
             roverManager.sendCriticalCommand(selectedRoverId, 400, 0f, 0f)
         }
+        corridorList.clear()
         nextWaypointIndex = 0
         roverNextWaypointIndex[selectedRoverId] = 0
         routePoints.clear()
@@ -1215,6 +1230,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val popup = PopupMenu(this, view)
         popup.menu.add("Upload Mission")
         popup.menu.add("Add Wait Point")
+        popup.menu.add(if (isCorridorMode) "Switch to Waypoint Mode" else "Switch to Corridor Mode")
         popup.menu.add("Save")
         popup.menu.add("Load")
         popup.menu.add("Clear")
@@ -1222,8 +1238,18 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         popup.menu.add("Set Water Station")
         popup.setOnMenuItemClickListener { item ->
             when (item.title) {
-                "Upload Mission"      -> doUploadMission()
-                "Add Wait Point"      -> addWaitPoint()
+                "Upload Mission"             -> doUploadMission()
+                "Add Wait Point"             -> addWaitPoint()
+                "Switch to Corridor Mode"    -> {
+                    isCorridorMode = true
+                    corridorList.clear()
+                    Toast.makeText(this, "Corridor mode: REC each row, then UPLOAD", Toast.LENGTH_LONG).show()
+                }
+                "Switch to Waypoint Mode"    -> {
+                    isCorridorMode = false
+                    corridorList.clear()
+                    Toast.makeText(this, "Waypoint mode", Toast.LENGTH_SHORT).show()
+                }
                 "Save"                -> showSaveDialog()
                 "Load"                -> showLoadDialog()
                 "Clear"               -> clearMission()
@@ -1323,6 +1349,29 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 .show()
             return
         }
+        // --- Corridor upload path ---
+        if (isCorridorMode) {
+            // Include current recording if in progress
+            if (isRecording) stopRecording()
+            if (corridorList.isEmpty()) {
+                Toast.makeText(this, "No corridors recorded. REC each row first.", Toast.LENGTH_SHORT).show()
+                return
+            }
+            roverManager.uploadCorridorMission(selectedRoverId, corridorList, corridorWidth)
+            Toast.makeText(this,
+                "Uploading ${corridorList.size} corridors to Rover $selectedRoverId",
+                Toast.LENGTH_SHORT).show()
+            // Show corridors on map
+            val allPts = corridorList.flatten()
+            roverMissions[selectedRoverId]          = allPts
+            roverMissionBypass[selectedRoverId]     = List(allPts.size) { false }
+            roverMissionVisible[selectedRoverId]    = true
+            roverNextWaypointIndex[selectedRoverId] = 0
+            redrawRoverMissions()
+            return
+        }
+
+        // --- Legacy waypoint upload path ---
         if (routePoints.isEmpty()) {
             Toast.makeText(this, "No waypoints to upload", Toast.LENGTH_SHORT).show()
             return
