@@ -1180,10 +1180,10 @@ class NavigatorNode(Node):
                     and len(mission.corridors[0].centerline) > 5):
                 raw_pts = mission.corridors[0].centerline
                 raw_width = mission.corridors[0].width
-                raw_speed = mission.corridors[0].speed
+                raw_speeds = mission.corridors[0].speeds
                 mission = auto_split_corridors(
                     raw_pts, turn_threshold_deg=70.0,
-                    width=raw_width, speed=raw_speed)
+                    width=raw_width, speeds=raw_speeds)
                 self.get_logger().info(
                     f'Auto-split: {len(raw_pts)} points -> '
                     f'{len(mission.corridors)} corridors')

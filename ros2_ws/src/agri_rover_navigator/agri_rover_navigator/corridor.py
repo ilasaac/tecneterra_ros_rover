@@ -72,6 +72,7 @@ class Corridor:
     centerline: list[tuple[float, float]]   # [(lat, lon), ...]
     width: float = 1.5                       # half-width in metres
     speed: float = 0.0                       # target speed m/s (0 = use default)
+    speeds: list[float] = field(default_factory=list)  # per-vertex speeds (parallel to centerline)
     next_corridor_id: int = -1               # -1 = last corridor
     turn_type: str = 'auto'                  # 'auto' | 'arc' | 'spin'
     headland_width: float = 0.0              # available turn space in metres (0 = auto)
@@ -230,11 +231,13 @@ def corridors_to_path(
 
     while current and current.corridor_id not in visited:
         visited.add(current.corridor_id)
-        speed = current.speed if current.speed > 0 else default_speed
+        fallback_speed = current.speed if current.speed > 0 else default_speed
+        has_per_vertex = len(current.speeds) == len(current.centerline)
 
         # Append all centerline points of this corridor
-        for lat, lon in current.centerline:
-            path.append((lat, lon, speed, current.width))
+        for i, (lat, lon) in enumerate(current.centerline):
+            spd = current.speeds[i] if has_per_vertex and current.speeds[i] > 0 else fallback_speed
+            path.append((lat, lon, spd, current.width))
 
         # Find next corridor
         next_c = by_id.get(current.next_corridor_id)
@@ -303,6 +306,7 @@ def corridor_mission_to_json(mission: CorridorMission) -> str:
                 'centerline': [[lat, lon] for lat, lon in c.centerline],
                 'width': c.width,
                 'speed': c.speed,
+                'speeds': c.speeds,
                 'next_corridor_id': c.next_corridor_id,
                 'turn_type': c.turn_type,
                 'headland_width': c.headland_width,
@@ -324,6 +328,7 @@ def corridor_mission_from_json(json_str: str) -> CorridorMission:
             centerline=[(pt[0], pt[1]) for pt in c['centerline']],
             width=c.get('width', 1.5),
             speed=c.get('speed', 0.0),
+            speeds=c.get('speeds', []),
             next_corridor_id=c.get('next_corridor_id', -1),
             turn_type=c.get('turn_type', 'auto'),
             headland_width=c.get('headland_width', 0.0),
@@ -342,12 +347,13 @@ def auto_split_corridors(
     turn_threshold_deg: float = 70.0,
     min_segment_points: int = 3,
     width: float = 1.5,
-    speed: float = 0.0,
+    speeds: list[float] | None = None,
 ) -> CorridorMission:
     """Split a raw GPS polyline into corridors at sharp turns.
 
     Walks the polyline computing heading changes.  Where the heading
     change exceeds turn_threshold_deg, a new corridor starts.
+    Per-vertex speeds are preserved and split alongside the points.
 
     Parameters
     ----------
@@ -355,7 +361,7 @@ def auto_split_corridors(
     turn_threshold_deg  : heading change (degrees) that triggers a split
     min_segment_points  : minimum points per corridor (avoids tiny fragments)
     width               : corridor half-width (metres)
-    speed               : target speed (0 = navigator default)
+    speeds              : per-vertex recorded speeds (parallel to points), or None
 
     Returns
     -------
@@ -364,8 +370,11 @@ def auto_split_corridors(
     if len(points) < 2:
         return CorridorMission()
 
+    spd_list = speeds if speeds and len(speeds) == len(points) else [0.0] * len(points)
+
     corridors: list[Corridor] = []
     current_pts: list[tuple[float, float]] = [points[0]]
+    current_spd: list[float] = [spd_list[0]]
     prev_heading: float | None = None
 
     for i in range(1, len(points)):
@@ -376,18 +385,19 @@ def auto_split_corridors(
         if prev_heading is not None:
             delta = abs(_normalize_angle(heading - prev_heading))
             if delta >= turn_threshold_deg and len(current_pts) >= min_segment_points:
-                # Save current corridor and start new one
                 corridors.append(Corridor(
                     corridor_id=len(corridors),
                     centerline=list(current_pts),
                     width=width,
-                    speed=speed,
+                    speeds=list(current_spd),
                     next_corridor_id=len(corridors) + 1,
                 ))
-                # New corridor starts at the last point of the previous one
+                # New corridor starts at the last point of the previous
                 current_pts = [current_pts[-1]]
+                current_spd = [current_spd[-1]]
 
         current_pts.append((points[i][0], points[i][1]))
+        current_spd.append(spd_list[i])
         prev_heading = heading
 
     # Save final corridor
@@ -396,11 +406,11 @@ def auto_split_corridors(
             corridor_id=len(corridors),
             centerline=list(current_pts),
             width=width,
-            speed=speed,
-            next_corridor_id=-1,  # last corridor
+            speeds=list(current_spd),
+            next_corridor_id=-1,
         ))
 
-    # Fix chain: each corridor points to the next
+    # Fix chain
     for i in range(len(corridors) - 1):
         corridors[i].next_corridor_id = i + 1
     if corridors:
@@ -416,16 +426,17 @@ def optimize_corridor_speeds(
     curvature_window: int = 5,
     curvature_slowdown: float = 0.5,
 ) -> list[tuple[float, float, float, float]]:
-    """Adjust speed based on path curvature — slow down in curves.
+    """Adjust speed based on path curvature — only reduce, never increase.
 
-    Computes heading change over a sliding window.  Where the path
-    curves sharply, speed is reduced proportionally.
+    Each point's recorded speed is a ceiling.  Curvature analysis may
+    reduce it further but never above the recorded value.  Points with
+    speed=0 (no recorded speed) use max_speed as ceiling.
 
     Parameters
     ----------
     path                : [(lat, lon, speed, width), ...]
-    max_speed           : speed for straight segments
-    min_speed           : minimum speed in sharpest curves
+    max_speed           : ceiling for points with no recorded speed (speed=0)
+    min_speed           : absolute floor (never slower than this)
     curvature_window    : number of points for heading change window
     curvature_slowdown  : heading change (deg) per point that halves speed
 
@@ -447,11 +458,13 @@ def optimize_corridor_speeds(
         h_end = _bearing_to(path[hi - 1][0], path[hi - 1][1], path[hi][0], path[hi][1])
         curve = abs(_normalize_angle(h_end - h_start)) / max(1, hi - lo)
 
-        # Reduce speed proportionally to curvature
+        lat, lon, recorded_spd, width = result[i]
+        # Ceiling = recorded speed if available, else max_speed
+        ceiling = recorded_spd if recorded_spd > 0 else max_speed
+        # Reduce proportionally to curvature, but never above ceiling
         factor = max(0.0, 1.0 - curve / max(curvature_slowdown, 0.01))
-        spd = max(min_speed, max_speed * factor)
+        spd = max(min_speed, ceiling * factor)
 
-        lat, lon, _, width = result[i]
         result[i] = (lat, lon, spd, width)
 
     return result

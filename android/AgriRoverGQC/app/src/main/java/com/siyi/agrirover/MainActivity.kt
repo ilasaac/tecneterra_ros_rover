@@ -135,8 +135,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     // --- CORRIDOR RECORDING ---
     // Each REC cycle adds a corridor. UPLOAD sends all as a corridor mission.
+    // Each corridor point = Triple(LatLng, speed m/s). Speed from smoothRecordedSpeeds().
     private var isCorridorMode = false
-    private val corridorList = mutableListOf<List<LatLng>>()  // recorded corridor centerlines
+    private val corridorList = mutableListOf<List<Pair<LatLng, Float>>>()  // (position, speed)
     private var corridorWidth = 1.5f   // half-width in metres (default)
 
     // --- OBSTACLE DRAWING ---
@@ -505,7 +506,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val srvCount = recordedMission.filterIsInstance<MissionAction.ServoCmd>().size
 
         if (isCorridorMode && routePoints.size >= 2) {
-            corridorList.add(ArrayList(routePoints))
+            // Extract smoothed speeds from recordedMission (parallel to routePoints)
+            val speeds = recordedMission
+                .filterIsInstance<MissionAction.Waypoint>()
+                .map { it.speed }
+            val corridor = routePoints.mapIndexed { i, pt ->
+                Pair(pt, speeds.getOrElse(i) { 0f })
+            }
+            corridorList.add(corridor)
             Toast.makeText(this,
                 "Corridor ${corridorList.size}: $wpCount points. " +
                 "REC next row, or UPLOAD (rover auto-splits turns).",
@@ -1360,10 +1368,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
             roverManager.uploadCorridorMission(selectedRoverId, corridorList, corridorWidth)
             Toast.makeText(this,
-                "Uploading ${corridorList.size} corridors to Rover $selectedRoverId",
+                "Uploading ${corridorList.size} corridor(s) to Rover $selectedRoverId",
                 Toast.LENGTH_SHORT).show()
             // Show corridors on map
-            val allPts = corridorList.flatten()
+            val allPts = corridorList.flatten().map { it.first }
             roverMissions[selectedRoverId]          = allPts
             roverMissionBypass[selectedRoverId]     = List(allPts.size) { false }
             roverMissionVisible[selectedRoverId]    = true

@@ -850,12 +850,14 @@ class MavlinkBridgeNode(Node):
                     'corridor_id': cid,
                     'centerline': [],
                     'width': v['width'],
-                    'speed': v['speed'],
+                    'speed': 0.0,  # per-corridor default (overridden by per-vertex)
+                    'speeds': [],   # per-vertex recorded speeds
                     'next_corridor_id': int(v['next_corridor_id']),
                     'turn_type': 'auto',
                     'headland_width': 0.0,
                 }
             corridors[cid]['centerline'].append([v['lat'], v['lon']])
+            corridors[cid]['speeds'].append(v['speed'])
         data = {
             'min_turn_radius': 3.0,  # default, can be overridden by nav params
             'corridors': list(corridors.values()),
