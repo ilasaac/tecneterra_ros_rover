@@ -163,11 +163,11 @@ def compute_turn_arc(
     for i in range(n_points):
         frac = i / (n_points - 1) if n_points > 1 else 0.0
         if delta > 0:
-            # Right turn: angles decrease (clockwise from center's perspective)
-            angle = start_angle - frac * sweep
-        else:
-            # Left turn: angles increase (counter-clockwise)
+            # Right turn: center is to the right, rover moves CCW around center
             angle = start_angle + frac * sweep
+        else:
+            # Left turn: center is to the left, rover moves CW around center
+            angle = start_angle - frac * sweep
         pt_lat, pt_lon = _destination(center_lat, center_lon, angle, radius)
         points.append((pt_lat, pt_lon))
 
