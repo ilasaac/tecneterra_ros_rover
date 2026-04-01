@@ -427,10 +427,38 @@ lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))
 
 ---
 
+## Corridor navigation system
+
+**Corridor mode** replaces waypoint-advance with continuous path-following. A corridor mission is a list of corridors (polyline centerline + width), connected via turns at headlands. Turns are adaptive: arc (smooth curve) if headland is wide enough, spin-in-place if tight.
+
+**Data model** (`tools/corridor.py`):
+- `Corridor`: corridor_id, centerline [(lat,lon),...], width, speed, next_corridor_id, turn_type, headland_width
+- `CorridorMission`: list of Corridors + min_turn_radius
+- `corridors_to_path()`: converts corridors + arc/spin turns into single polyline
+- `generate_corridor_grid()`: serpentine parallel rows with configurable spacing
+
+**MAVLink protocol**: `cmd=50100` (custom corridor vertex). Fields: param1=vertex_count, param2=width, param3=speed, param4=next_corridor_id, x=lat*1e7, y=lon*1e7, z=corridor_id. mavlink_bridge groups by corridor_id, publishes as JSON to `corridor_mission` topic.
+
+**Navigator**: subscribes to `corridor_mission`, parses JSON, calls `corridors_to_path()`, builds dense polyline in `_path`. `_corridor_mode=True` activates `_control_loop_corridor()`:
+- Pure CTE minimization on polyline (Stanley controller)
+- Progress by arc-length, no waypoint-advance logic
+- Corridor width = hard CTE boundary (disarms if exceeded)
+- `_nearest_on_path` searches 10 segments ahead (dense polyline)
+- Spin-in-place only for large heading errors (align_threshold)
+
+**SIL**: `sim_navigator.py --corridor missions/test_corridor.json` loads corridor JSON, converts to waypoint polyline, simulates with existing Stanley controller.
+
+**mission_planner.py**: "Corridor Grid" generation pattern in web UI. `/generate_corridor` API endpoint.
+
+**GQC corridor editor**: TODO — currently corridors uploaded via mission_planner.py.
+
+---
+
 ## Known TODOs
 
 - `sensor_node.py`: stub — wire real I2C sensors (BME280, ultrasonic tank)
 - `firmware/*/main.cpp`: needs `pico_sdk_import.cmake` from `$PICO_SDK_PATH/external/`
-- Android GQC: RTSP dual video, settings dialog, STATUSTEXT log screen (see android/AgriRoverGQC/README.md)
+- Android GQC: RTSP dual video, settings dialog, STATUSTEXT log screen, **corridor editor** (see android/AgriRoverGQC/README.md)
 - Navigator obstacle avoidance: single-pass per segment — segments intersecting multiple non-adjacent polygons only reroute around the first one.
 - DO_SET_SERVO in missions: applied at upload time, re-published at 25 Hz. Precise per-waypoint timing would need MissionWaypoint interface change or new ServoEvent topic.
+- Corridor resource management: adapt _go_to_base/_arrive_at_base to save/restore corridor position (currently only works with waypoint missions).
