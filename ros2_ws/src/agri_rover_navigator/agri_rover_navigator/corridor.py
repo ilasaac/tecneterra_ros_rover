@@ -335,6 +335,128 @@ def corridor_mission_from_json(json_str: str) -> CorridorMission:
     )
 
 
+# ── Auto-split & path optimization ───────────────────────────────────────────
+
+def auto_split_corridors(
+    points: list[tuple[float, float]],
+    turn_threshold_deg: float = 70.0,
+    min_segment_points: int = 3,
+    width: float = 1.5,
+    speed: float = 0.0,
+) -> CorridorMission:
+    """Split a raw GPS polyline into corridors at sharp turns.
+
+    Walks the polyline computing heading changes.  Where the heading
+    change exceeds turn_threshold_deg, a new corridor starts.
+
+    Parameters
+    ----------
+    points              : raw GPS polyline [(lat, lon), ...]
+    turn_threshold_deg  : heading change (degrees) that triggers a split
+    min_segment_points  : minimum points per corridor (avoids tiny fragments)
+    width               : corridor half-width (metres)
+    speed               : target speed (0 = navigator default)
+
+    Returns
+    -------
+    CorridorMission with auto-connected corridors.
+    """
+    if len(points) < 2:
+        return CorridorMission()
+
+    corridors: list[Corridor] = []
+    current_pts: list[tuple[float, float]] = [points[0]]
+    prev_heading: float | None = None
+
+    for i in range(1, len(points)):
+        heading = _bearing_to(points[i - 1][0], points[i - 1][1],
+                              points[i][0], points[i][1])
+
+        # Check for sharp turn
+        if prev_heading is not None:
+            delta = abs(_normalize_angle(heading - prev_heading))
+            if delta >= turn_threshold_deg and len(current_pts) >= min_segment_points:
+                # Save current corridor and start new one
+                corridors.append(Corridor(
+                    corridor_id=len(corridors),
+                    centerline=list(current_pts),
+                    width=width,
+                    speed=speed,
+                    next_corridor_id=len(corridors) + 1,
+                ))
+                # New corridor starts at the last point of the previous one
+                current_pts = [current_pts[-1]]
+
+        current_pts.append((points[i][0], points[i][1]))
+        prev_heading = heading
+
+    # Save final corridor
+    if len(current_pts) >= 2:
+        corridors.append(Corridor(
+            corridor_id=len(corridors),
+            centerline=list(current_pts),
+            width=width,
+            speed=speed,
+            next_corridor_id=-1,  # last corridor
+        ))
+
+    # Fix chain: each corridor points to the next
+    for i in range(len(corridors) - 1):
+        corridors[i].next_corridor_id = i + 1
+    if corridors:
+        corridors[-1].next_corridor_id = -1
+
+    return CorridorMission(corridors=corridors)
+
+
+def optimize_corridor_speeds(
+    path: list[tuple[float, float, float, float]],
+    max_speed: float = 1.5,
+    min_speed: float = 0.3,
+    curvature_window: int = 5,
+    curvature_slowdown: float = 0.5,
+) -> list[tuple[float, float, float, float]]:
+    """Adjust speed based on path curvature — slow down in curves.
+
+    Computes heading change over a sliding window.  Where the path
+    curves sharply, speed is reduced proportionally.
+
+    Parameters
+    ----------
+    path                : [(lat, lon, speed, width), ...]
+    max_speed           : speed for straight segments
+    min_speed           : minimum speed in sharpest curves
+    curvature_window    : number of points for heading change window
+    curvature_slowdown  : heading change (deg) per point that halves speed
+
+    Returns
+    -------
+    Same path with adjusted speed values.
+    """
+    if len(path) < 3:
+        return path
+
+    result = list(path)
+    for i in range(1, len(path) - 1):
+        # Compute heading change over window
+        lo = max(0, i - curvature_window)
+        hi = min(len(path) - 1, i + curvature_window)
+        if hi <= lo:
+            continue
+        h_start = _bearing_to(path[lo][0], path[lo][1], path[lo + 1][0], path[lo + 1][1])
+        h_end = _bearing_to(path[hi - 1][0], path[hi - 1][1], path[hi][0], path[hi][1])
+        curve = abs(_normalize_angle(h_end - h_start)) / max(1, hi - lo)
+
+        # Reduce speed proportionally to curvature
+        factor = max(0.0, 1.0 - curve / max(curvature_slowdown, 0.01))
+        spd = max(min_speed, max_speed * factor)
+
+        lat, lon, _, width = result[i]
+        result[i] = (lat, lon, spd, width)
+
+    return result
+
+
 # ── Corridor grid generator ─────────────────────────────────────────────────
 
 def generate_corridor_grid(

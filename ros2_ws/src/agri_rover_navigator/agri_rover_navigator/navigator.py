@@ -1166,10 +1166,34 @@ class NavigatorNode(Node):
     def _cb_corridor_mission(self, msg: String):
         """Parse corridor mission JSON → build polyline path for Stanley CTE following."""
         try:
-            from agri_rover_navigator.corridor import corridor_mission_from_json, corridors_to_path
+            from agri_rover_navigator.corridor import (
+                corridor_mission_from_json, corridors_to_path,
+                auto_split_corridors, optimize_corridor_speeds,
+            )
 
             mission = corridor_mission_from_json(msg.data)
+
+            # Auto-split: if mission has only 1 corridor with many points,
+            # it's likely a raw recording. Split at sharp turns into multiple
+            # corridors with headland crossings.
+            if (len(mission.corridors) == 1
+                    and len(mission.corridors[0].centerline) > 5):
+                raw_pts = mission.corridors[0].centerline
+                raw_width = mission.corridors[0].width
+                raw_speed = mission.corridors[0].speed
+                mission = auto_split_corridors(
+                    raw_pts, turn_threshold_deg=70.0,
+                    width=raw_width, speed=raw_speed)
+                self.get_logger().info(
+                    f'Auto-split: {len(raw_pts)} points -> '
+                    f'{len(mission.corridors)} corridors')
+
             path_pts = corridors_to_path(mission, default_speed=self._max_speed)
+
+            # Optimize speed based on curvature
+            path_pts = optimize_corridor_speeds(
+                path_pts, max_speed=self._max_speed, min_speed=self._min_speed)
+
             if not path_pts:
                 self.get_logger().warn('Corridor mission: empty path')
                 return

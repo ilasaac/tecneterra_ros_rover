@@ -507,7 +507,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         if (isCorridorMode && routePoints.size >= 2) {
             corridorList.add(ArrayList(routePoints))
             Toast.makeText(this,
-                "Corridor ${corridorList.size}: $wpCount points. Drive to next row or UPLOAD.",
+                "Corridor ${corridorList.size}: $wpCount points. " +
+                "REC next row, or UPLOAD (rover auto-splits turns).",
                 Toast.LENGTH_LONG).show()
         } else {
             Toast.makeText(this,
