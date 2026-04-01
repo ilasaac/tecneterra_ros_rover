@@ -124,6 +124,7 @@ class MavlinkBridgeNode(Node):
         # Fence polygon buffer: list of (lat, lon, vertex_count) for cmd=5003 items.
         # Cleared on MISSION_COUNT; published as ~/mission_fence JSON when mission completes.
         self._fence_buf: list[tuple[float, float, int]] = []
+        self._corridor_buf: list[dict] = []   # buffered corridor vertices (cmd=50100)
         # Servo state for PPM CH5-CH8 (servo numbers 5-8 → channel indices 4-7).
         # Updated by DO_SET_SERVO commands; forwarded to rp2040_bridge via cmd_override.
         self._servo_pwm = {5: 1500, 6: 1500, 7: 1500, 8: 1500}
@@ -178,6 +179,7 @@ class MavlinkBridgeNode(Node):
         self.mission_pub       = self.create_publisher(MissionWaypoint,  'mission',        200)
         self.reroute_response_pub = self.create_publisher(Bool,          'reroute_response', 10)
         self.fence_pub         = self.create_publisher(String,           'mission_fence',  10)
+        self.corridor_pub      = self.create_publisher(String,           'corridor_mission', 10)
         self.servo_pub         = self.create_publisher(RCInput,          'servo_state',    10)
         self.mode_pub          = self.create_publisher(String,           'mode',           10)
         self.armed_pub         = self.create_publisher(Bool,             'armed',          10)
@@ -586,6 +588,7 @@ class MavlinkBridgeNode(Node):
                         self._mission_count      = msg.count
                         self._mission_buf        = []
                         self._fence_buf          = []   # clear fence data for new mission
+                        self._corridor_buf       = []   # clear corridor data for new mission
                         self._mission_src        = (msg.get_srcSystem(), msg.get_srcComponent())
                         self._mission_expect_seq = 0
                         self._mission_last_req_t = time.monotonic()
@@ -836,6 +839,29 @@ class MavlinkBridgeNode(Node):
             polygons.append(current)
         return polygons
 
+    def _build_corridor_json(self) -> str:
+        """Group buffered corridor vertices by corridor_id and build corridor JSON."""
+        from collections import OrderedDict
+        corridors: dict[int, dict] = OrderedDict()
+        for v in self._corridor_buf:
+            cid = v['corridor_id']
+            if cid not in corridors:
+                corridors[cid] = {
+                    'corridor_id': cid,
+                    'centerline': [],
+                    'width': v['width'],
+                    'speed': v['speed'],
+                    'next_corridor_id': int(v['next_corridor_id']),
+                    'turn_type': 'auto',
+                    'headland_width': 0.0,
+                }
+            corridors[cid]['centerline'].append([v['lat'], v['lon']])
+        data = {
+            'min_turn_radius': 3.0,  # default, can be overridden by nav params
+            'corridors': list(corridors.values()),
+        }
+        return json.dumps(data, separators=(',', ':'))
+
     @staticmethod
     def _ppm_inv(v: int) -> int:
         """PPM_INV: 3000 − v maps 1000↔2000 keeping 1500 centred."""
@@ -1006,6 +1032,16 @@ class MavlinkBridgeNode(Node):
                     self._wp_servo_map[self._last_nav_wp_seq][sn] = pw
                     self.get_logger().info(
                         f'Deferred servo CH{sn}={pw} → wp_seq={self._last_nav_wp_seq}')
+        elif msg.command == 50100:  # Corridor vertex (custom)
+            self._corridor_buf.append({
+                'corridor_id': int(msg.z),
+                'lat': msg.x * 1e-7,
+                'lon': msg.y * 1e-7,
+                'vertex_count': int(msg.param1),
+                'width': float(msg.param2),
+                'speed': float(msg.param3),
+                'next_corridor_id': int(msg.param4),
+            })
         elif msg.command == 5003:  # MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION
             # Collect fence polygon vertices — published as ~/mission_fence JSON
             # when the full mission has been received.
@@ -1052,13 +1088,20 @@ class MavlinkBridgeNode(Node):
                 f'Mission received: {self._mission_count} items '
                 f'({len(self._mission_buf)} waypoints, {len(self._fence_buf)} fence vertices) '
                 f'armed={self._armed} STATUS={nav_status}')
-            # Publish fence polygons to navigator — always, even if empty.
-            # An empty polygon list signals mission-complete so the navigator
-            # publishes its planned path back to GQC for the map overlay.
-            polys = self._parse_fence_polygons() if self._fence_buf else []
-            fence_msg = String()
-            fence_msg.data = json.dumps({'polygons': polys})
-            self.fence_pub.publish(fence_msg)
+            # Corridor mission: if corridor vertices present, publish as JSON
+            if self._corridor_buf:
+                corridor_json = self._build_corridor_json()
+                cmsg = String()
+                cmsg.data = corridor_json
+                self.corridor_pub.publish(cmsg)
+                self.get_logger().info(
+                    f'Corridor mission published: {len(self._corridor_buf)} vertices')
+            else:
+                # Legacy waypoint mission — publish fence polygons
+                polys = self._parse_fence_polygons() if self._fence_buf else []
+                fence_msg = String()
+                fence_msg.data = json.dumps({'polygons': polys})
+                self.fence_pub.publish(fence_msg)
             # Compute initial hash (may be updated when rerouted_path arrives)
             self._compute_mission_hash()
 
