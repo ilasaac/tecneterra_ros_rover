@@ -497,6 +497,7 @@ class NavigatorNode(Node):
         self._corridor_mode:    bool        = False
         self._corridor_widths:  list[float] = []    # half-width per path point
         self._corridor_total_s: float       = 0.0   # total path arc-length
+        self._corridor_entered: bool        = False  # True once rover is inside corridor width
 
         # Hold state — rover waits at a waypoint for hold_secs before advancing.
         self._holding:  bool  = False
@@ -1183,6 +1184,7 @@ class NavigatorNode(Node):
             self._pivoting          = False
             self._spin_target_brg   = None
             self._corridor_mode     = True
+            self._corridor_entered  = False
             self._corridor_widths.clear()
 
             # Build path from corridor polyline
@@ -1247,9 +1249,13 @@ class NavigatorNode(Node):
         seg_idx = min(best_seg, len(self._path) - 1)
         cte = self._cte_to_seg(flat, flon, seg_idx)
 
-        # Corridor width boundary
+        # Corridor width boundary — only enforce once the rover has entered the
+        # corridor (CTE was within width at least once).  On mission start the
+        # rover may be outside the corridor and needs to drive to the path first.
         width = self._corridor_widths[seg_idx] if seg_idx < len(self._corridor_widths) else 1.5
-        if abs(cte) >= width:
+        if abs(cte) < width:
+            self._corridor_entered = True
+        if self._corridor_entered and abs(cte) >= width:
             self.get_logger().error(
                 f'CORRIDOR BOUNDARY: CTE {cte:.2f}m >= width {width:.1f}m — disarming')
             self._publish_halt()
