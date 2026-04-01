@@ -3,6 +3,7 @@ package com.siyi.agrirover
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.util.Log
+import com.google.android.gms.maps.model.LatLng
 import io.dronefleet.mavlink.MavlinkConnection
 import io.dronefleet.mavlink.common.*
 import io.dronefleet.mavlink.util.EnumValue
