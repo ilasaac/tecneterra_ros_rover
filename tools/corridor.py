@@ -424,7 +424,7 @@ def optimize_corridor_speeds(
     max_speed: float = 1.5,
     min_speed: float = 0.3,
     curvature_window: int = 5,
-    curvature_slowdown: float = 0.5,
+    curvature_slowdown: float = 5.0,
 ) -> list[tuple[float, float, float, float]]:
     """Adjust speed based on path curvature — only reduce, never increase.
 

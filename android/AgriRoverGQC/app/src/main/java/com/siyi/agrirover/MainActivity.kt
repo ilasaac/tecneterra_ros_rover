@@ -1366,7 +1366,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 Toast.makeText(this, "No corridors recorded. REC each row first.", Toast.LENGTH_SHORT).show()
                 return
             }
-            roverManager.uploadCorridorMission(selectedRoverId, corridorList, corridorWidth)
+            // Capture current servo state (CH5-CH8) for the corridor upload.
+            // RC_CHANNELS is in SBUS order — map PPM servo channels to SBUS indices:
+            //   PPM CH5 (servo5/pump) = SBUS[10], PPM CH6 = SBUS[11],
+            //   PPM CH7 = SBUS[6] (inverted), PPM CH8 = SBUS[7] (inverted)
+            val servoState = mutableMapOf<Int, Int>()
+            val ch = roverPpmChannels[selectedRoverId]
+            if (ch != null) {
+                servoState[5] = if (ch.size > 10) ch[10] else 1500
+                servoState[6] = if (ch.size > 11) ch[11] else 1500
+                servoState[7] = if (ch.size > 6) 3000 - ch[6] else 1500   // un-invert
+                servoState[8] = if (ch.size > 7) 3000 - ch[7] else 1500   // un-invert
+            }
+            roverManager.uploadCorridorMission(selectedRoverId, corridorList, corridorWidth, servoState)
             Toast.makeText(this,
                 "Uploading ${corridorList.size} corridor(s) to Rover $selectedRoverId",
                 Toast.LENGTH_SHORT).show()

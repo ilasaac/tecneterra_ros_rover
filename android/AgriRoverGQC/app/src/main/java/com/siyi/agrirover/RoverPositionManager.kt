@@ -380,11 +380,24 @@ class RoverPositionManager(
      * @param corridors  List of corridors, each a list of (LatLng, speed) pairs.
      *                   Speed = recorded speed (m/s); 0 = use navigator default.
      */
-    fun uploadCorridorMission(sysId: Int, corridors: List<List<Pair<LatLng, Float>>>, width: Float) {
+    fun uploadCorridorMission(sysId: Int, corridors: List<List<Pair<LatLng, Float>>>, width: Float,
+                              servos: Map<Int, Int> = emptyMap()) {
         uploadJobs[sysId]?.cancel()
         uploadJobs[sysId] = scope.launch {
             var seq = 0
             val items = mutableListOf<MissionItemInt>()
+            // Prepend initial servo state (CH5-CH8) so rover restores pump/actuator positions
+            for (servoNum in 5..8) {
+                val pwm = servos[servoNum] ?: 1500
+                items.add(MissionItemInt.builder()
+                    .seq(seq++).targetSystem(sysId).targetComponent(1)
+                    .frame(MavFrame.MAV_FRAME_MISSION)
+                    .command(MavCmd.MAV_CMD_DO_SET_SERVO)
+                    .current(0).autocontinue(1)
+                    .param1(servoNum.toFloat()).param2(pwm.toFloat())
+                    .param3(0f).param4(0f).x(0).y(0).z(0f)
+                    .build())
+            }
             for ((idx, centerline) in corridors.withIndex()) {
                 val nVerts = centerline.size
                 val nextId = if (idx < corridors.size - 1) idx + 1 else 65535

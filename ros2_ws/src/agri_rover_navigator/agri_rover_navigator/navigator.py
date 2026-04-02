@@ -1191,9 +1191,9 @@ class NavigatorNode(Node):
 
             path_pts = corridors_to_path(mission, default_speed=self._max_speed)
 
-            # Optimize speed based on curvature
-            path_pts = optimize_corridor_speeds(
-                path_pts, max_speed=self._max_speed, min_speed=self._min_speed)
+            # TODO: re-introduce optimizer after SIL-based speed tuning
+            # path_pts = optimize_corridor_speeds(
+            #     path_pts, max_speed=self._max_speed, min_speed=self._min_speed)
 
             if not path_pts:
                 self.get_logger().warn('Corridor mission: empty path')
