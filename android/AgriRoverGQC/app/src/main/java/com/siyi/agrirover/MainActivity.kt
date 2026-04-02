@@ -538,7 +538,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         for (i in recordedMission.indices) {
             if (recordedMission[i] is MissionAction.Waypoint) wpIndices.add(i)
         }
-        if (wpIndices.size < 2 || waypointTimestamps.size != wpIndices.size) return
+        if (wpIndices.size < 2 || waypointTimestamps.size != wpIndices.size) {
+            android.util.Log.w("SmoothSpeed", "SKIP: wpIndices=${wpIndices.size} timestamps=${waypointTimestamps.size}")
+            return
+        }
 
         val W = 2  // half-window → 5-point average (±2 neighbours)
         for (k in 1 until wpIndices.size) {  // skip k=0 (first WP → speed 0)
@@ -558,6 +561,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             val orig = recordedMission[wpIndices[k]] as MissionAction.Waypoint
             recordedMission[wpIndices[k]] = orig.copy(speed = speed)
         }
+        val avgSpeed = recordedMission.filterIsInstance<MissionAction.Waypoint>()
+            .map { it.speed }.filter { it > 0 }.let { if (it.isEmpty()) 0f else it.average().toFloat() }
+        android.util.Log.i("SmoothSpeed", "Smoothed ${wpIndices.size} wps, avg=${avgSpeed} m/s")
     }
 
     private fun clearMission() {
