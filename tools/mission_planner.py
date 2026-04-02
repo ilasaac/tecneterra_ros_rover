@@ -217,7 +217,8 @@ def _start_snooper():
                                 7: msg.chan7_raw, 8: msg.chan8_raw,
                             }
                 elif t == 'MISSION_COUNT':
-                    buf[sysid] = {'count': msg.count, 'nav': {}, 'fence': [], 'servos': {}}
+                    buf[sysid] = {'count': msg.count, 'nav': {}, 'fence': [],
+                                  'servos': {}, 'last_nav_seq': None}
                 elif t == 'MISSION_ITEM_INT' and sysid in buf:
                     b = buf[sysid]
                     if msg.command == 5003:
@@ -225,13 +226,25 @@ def _start_snooper():
                     elif msg.command == 183:
                         snum = int(msg.param1)
                         if snum in (5, 6, 7, 8):
-                            b['servos'][snum] = int(msg.param2)
+                            pwm = int(msg.param2)
+                            if b['last_nav_seq'] is None:
+                                # Initial servo state (before any waypoint)
+                                b['servos'][snum] = pwm
+                            else:
+                                # Per-waypoint servo: attach to the last nav waypoint
+                                wp = b['nav'].get(b['last_nav_seq'])
+                                if wp:
+                                    if 'servos' not in wp:
+                                        wp['servos'] = {}
+                                    wp['servos'][snum] = pwm
                     elif msg.command == 16:
-                        b['nav'][msg.seq] = {
+                        nav_seq = len(b['nav'])
+                        b['nav'][nav_seq] = {
                             'lat': msg.x / 1e7, 'lon': msg.y / 1e7,
-                            'speed': float(msg.param4) if msg.param4 else 0.0,
-                            'hold_secs': 0.0,
+                            'speed': float(msg.z) if msg.z else 0.0,
+                            'hold_secs': float(msg.param1) if msg.param1 else 0.0,
                         }
+                        b['last_nav_seq'] = nav_seq
                     if b['count'] > 0 and msg.seq >= b['count'] - 1:
                         wps = [b['nav'][k] for k in sorted(b['nav'])]
                         obs = _parse_fence_buf(b['fence'])
