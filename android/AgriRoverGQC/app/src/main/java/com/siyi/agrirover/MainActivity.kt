@@ -1362,8 +1362,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         if (isCorridorMode) {
             // Include current recording if in progress
             if (isRecording) stopRecording()
+            // If no corridors recorded but routePoints exist (loaded mission),
+            // auto-create a single corridor from the loaded waypoints.
+            if (corridorList.isEmpty() && routePoints.size >= 2) {
+                val speeds = recordedMission
+                    .filterIsInstance<MissionAction.Waypoint>()
+                    .map { it.speed }
+                val corridor = routePoints.mapIndexed { i, pt ->
+                    Pair(pt, speeds.getOrElse(i) { 0f })
+                }
+                corridorList.add(corridor)
+            }
             if (corridorList.isEmpty()) {
-                Toast.makeText(this, "No corridors recorded. REC each row first.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "No corridors or waypoints to upload.", Toast.LENGTH_SHORT).show()
                 return
             }
             // Capture current servo state (CH5-CH8) for the corridor upload.
