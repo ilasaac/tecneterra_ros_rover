@@ -586,14 +586,17 @@ tr:hover td{background:#1e1e3a}
           <option value="">— none —</option>
         </select>
         <button class="btn-green" style="padding:2px 9px;font-size:11px" onclick="runAnalysis()">&#9654; Run</button>
+        <button class="btn-orange" style="padding:2px 9px;font-size:11px" onclick="runComparison()" title="Analyze + Simulate with same mission, overlay both paths">&#8644; Compare</button>
       </div>
     </div>
     <div class="az-legend">
-      <span>CTE:</span>
+      <span>Real:</span>
       <span style="color:#00e676">&#9632;&nbsp;&lt;0.10m</span>
       <span style="color:#ffee00">&#9632;&nbsp;&lt;0.20m</span>
       <span style="color:#ff9100">&#9632;&nbsp;&lt;0.40m</span>
       <span style="color:#ff1744">&#9632;&nbsp;&ge;0.40m</span>
+      <span style="margin-left:6px;color:#4af">|</span>
+      <span style="color:#4af">&#9473; Sim</span>
     </div>
     <div id="az-overall"></div>
     <div style="flex:1;overflow-y:auto">
@@ -883,17 +886,24 @@ function drawSimPath() {
   const path   = simResult.path    || [];
   const xteLog = simResult.xte_log || [];
   if (path.length < 2) return;
+  const comparing = !!analyzeResult;
   const xteMax = Math.max(...xteLog, 0.001);
-  ctx.lineWidth = 3;
+  ctx.lineWidth = comparing ? 2 : 3;
+  if (comparing) { ctx.save(); ctx.setLineDash([6, 4]); }
   for (let i = 0; i + 1 < path.length; i++) {
-    const t  = (xteLog[i] || 0) / xteMax;
-    const r  = Math.round(255 * Math.min(t * 2, 1));
-    const g  = Math.round(255 * Math.max(1 - t * 2 + 1, 0));
     const p1 = project(path[i][0],   path[i][1]);
     const p2 = project(path[i+1][0], path[i+1][1]);
-    ctx.strokeStyle = `rgb(${r},${g},30)`;
+    if (comparing) {
+      ctx.strokeStyle = '#44aaff';
+    } else {
+      const t = (xteLog[i] || 0) / xteMax;
+      const r = Math.round(255 * Math.min(t * 2, 1));
+      const g = Math.round(255 * Math.max(1 - t * 2 + 1, 0));
+      ctx.strokeStyle = `rgb(${r},${g},30)`;
+    }
     ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
   }
+  if (comparing) ctx.restore();
   // Rerouted path overlay
   const rerouted = simResult.rerouted_wps || [];
   if (obstacles.length && rerouted.length > 1) {
@@ -2060,6 +2070,91 @@ async function runAnalysis() {
   }
 }
 
+async function runComparison() {
+  if (!logFileData) { status('Load a log CSV first (Browse or fetch from rover).', '#e74c3c'); return; }
+  const missionName = document.getElementById('az-m-select').value;
+
+  // 1. Run analysis
+  status('Analyzing real log...', '#888');
+  try {
+    const aResp = await fetch('/analyze', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({log: logFileData, mission: missionName}),
+    });
+    const aData = await aResp.json();
+    if (aData.error) { status('Analysis error: ' + aData.error, '#e74c3c'); return; }
+    analyzeResult = aData;
+
+    // Load mission waypoints from analysis result
+    if (aData.mission_wps && aData.mission_wps.length) {
+      waypoints = aData.mission_wps.map((w, i) => ({...w, idx: i}));
+    }
+    if (waypoints.length < 2) { status('Need a mission selected to run comparison.', '#e74c3c'); return; }
+
+    // 2. Run simulation with same waypoints, start from first track point
+    status('Running simulation...', '#f39c12');
+    const track = aData.track;
+    const startLat = track.length ? track[0].lat : waypoints[0].lat;
+    const startLon = track.length ? track[0].lon : waypoints[0].lon;
+    const algoSel = document.getElementById('algo-select') ? document.getElementById('algo-select').value : '';
+    const navParams = algoSel ? {control_algorithm: algoSel} : {};
+
+    const sResp = await fetch('/simulate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({waypoints, start: {lat: startLat, lon: startLon}, obstacles, nav_params: navParams}),
+    });
+    const sData = await sResp.json();
+    if (sData.error) { status('Sim error: ' + sData.error, '#e74c3c'); return; }
+    simResult = sData;
+
+    // 3. Show comparison stats
+    const o = aData.overall;
+    const overall = document.getElementById('az-overall');
+    overall.style.display = '';
+    const simDur = (sData.total_steps / 25).toFixed(1);
+    const dRms = o.cte_rms - sData.rms_xte;
+    const dMax = o.cte_max - sData.max_xte;
+    overall.innerHTML =
+      `<b style="color:#ff9">Real rover:</b><br>` +
+      `Pts: <b>${o.n_points}</b>  Dur: <b>${o.duration_s.toFixed(1)} s</b>  ` +
+      `RTK: <b style="color:${o.rtk_pct > 80 ? '#0f0' : '#ff0'}">${o.rtk_pct.toFixed(1)}%</b><br>` +
+      `CTE rms <b style="color:#7ef">${o.cte_rms.toFixed(3)} m</b>  ` +
+      `max <b style="color:#f97">${o.cte_max.toFixed(3)} m</b>  ` +
+      `mean <b>${o.cte_mean.toFixed(3)} m</b>` +
+      `<hr style="border-color:#335;margin:4px 0">` +
+      `<b style="color:#4af">Simulation:</b><br>` +
+      `Steps: <b>${sData.total_steps}</b>  Dur: <b>${simDur} s</b>  ` +
+      `WPs: <b>${(sData.waypoints_reached||[]).length}/${waypoints.length}</b><br>` +
+      `XTE rms <b style="color:#4af">${sData.rms_xte.toFixed(3)} m</b>  ` +
+      `max <b style="color:#fa5">${sData.max_xte.toFixed(3)} m</b>  ` +
+      `avg <b>${sData.avg_xte.toFixed(3)} m</b>` +
+      `<hr style="border-color:#335;margin:4px 0">` +
+      `<b style="color:#aaa">\u0394 (real\u2212sim):</b>  ` +
+      `rms <b style="color:${dRms > 0 ? '#f97' : '#7ef'}">${dRms > 0 ? '+' : ''}${dRms.toFixed(3)} m</b>  ` +
+      `max <b style="color:${dMax > 0 ? '#f97' : '#7ef'}">${dMax > 0 ? '+' : ''}${dMax.toFixed(3)} m</b>`;
+
+    // Per-segment table
+    document.getElementById('az-seg-table').style.display = '';
+    document.getElementById('az-seg-tbody').innerHTML = aData.segments.map(s =>
+      `<tr>
+        <td>${s.wp_idx}</td>
+        <td style="color:${cteColor(s.cte_mean)}">${s.cte_mean.toFixed(3)}</td>
+        <td style="color:${cteColor(s.cte_max)}">${s.cte_max.toFixed(3)}</td>
+        <td style="color:${cteColor(s.cte_rms)}">${s.cte_rms.toFixed(3)}</td>
+        <td>${s.duration_s.toFixed(1)}</td>
+        <td style="color:${s.rtk_pct > 80 ? '#0f0' : '#ff0'}">${s.rtk_pct.toFixed(0)}%</td>
+      </tr>`
+    ).join('');
+
+    fitAll();
+    status(`Compare: real CTE rms=${o.cte_rms.toFixed(3)}m vs sim XTE rms=${sData.rms_xte.toFixed(3)}m (\u0394=${dRms > 0 ? '+' : ''}${dRms.toFixed(3)}m)`);
+  } catch(e) {
+    status('Comparison error: ' + e, '#e74c3c');
+  }
+}
+
 function drawAnalyzeTrack() {
   if (!analyzeResult || !analyzeResult.track || !analyzeResult.track.length) return;
   const track = analyzeResult.track;
@@ -2071,7 +2166,7 @@ function drawAnalyzeTrack() {
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.strokeStyle = cteColor(track[i].cte);
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 3;
     ctx.stroke();
   }
   // Start marker (cyan dot)
