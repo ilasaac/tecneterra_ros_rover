@@ -1578,12 +1578,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun saveMissionFile(name: String) {
-        val sb = StringBuilder("Latitude,Longitude\n")
-        routePoints.forEach { sb.append("${it.latitude},${it.longitude}\n") }
+        // Save with speed from recordedMission (if available) or corridorList
+        val speeds = if (corridorList.isNotEmpty()) {
+            corridorList.flatten().map { it.second }
+        } else {
+            recordedMission.filterIsInstance<MissionAction.Waypoint>().map { it.speed }
+        }
+        val sb = StringBuilder("Latitude,Longitude,Speed\n")
+        routePoints.forEachIndexed { i, pt ->
+            val spd = speeds.getOrElse(i) { 0f }
+            sb.append("${pt.latitude},${pt.longitude},${spd}\n")
+        }
         try {
             val fname = if (name.endsWith(".csv")) name else "$name.csv"
             File(getExternalFilesDir(null), fname).writeText(sb.toString())
-            Toast.makeText(this, "Saved $fname", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Saved $fname (${routePoints.size} pts)", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Save failed: ${e.message}", Toast.LENGTH_SHORT).show()
         }
@@ -1605,12 +1614,28 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun parseCSV(content: String) {
         nextWaypointIndex = 0
         routePoints.clear()
+        recordedMission.clear()
+        corridorList.clear()
+        val loadedSpeeds = mutableListOf<Float>()
         content.split("\n").drop(1).forEach { line ->
             val p = line.split(",")
             if (p.size >= 2) {
-                try { routePoints.add(LatLng(p[0].toDouble(), p[1].toDouble())) }
-                catch (_: NumberFormatException) {}
+                try {
+                    val lat = p[0].trim().toDouble()
+                    val lon = p[1].trim().toDouble()
+                    val spd = if (p.size >= 3) p[2].trim().toFloatOrNull() ?: 0f else 0f
+                    routePoints.add(LatLng(lat, lon))
+                    loadedSpeeds.add(spd)
+                    recordedMission.add(MissionAction.Waypoint(lat, lon, spd))
+                } catch (_: NumberFormatException) {}
             }
+        }
+        // Pre-populate corridorList so corridor mode upload works from loaded data
+        if (routePoints.size >= 2) {
+            val corridor = routePoints.mapIndexed { i, pt ->
+                Pair(pt, loadedSpeeds.getOrElse(i) { 0f })
+            }
+            corridorList.add(corridor)
         }
         redrawMap()
         Toast.makeText(this, "Loaded ${routePoints.size} waypoints", Toast.LENGTH_SHORT).show()
