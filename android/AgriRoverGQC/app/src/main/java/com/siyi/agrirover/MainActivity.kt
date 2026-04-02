@@ -481,11 +481,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         waypointTimestamps.clear()
         nextWaypointIndex = 0
         lastRecordedPos = null
-        // Snapshot current aux channel states and prepend as initial DO_SET_SERVO
-        // items so the rover restores servo positions at mission start.
+        // Snapshot current servo state (PPM CH5-CH8) and prepend as initial
+        // DO_SET_SERVO items. RC_CHANNELS is in SBUS order — map to PPM:
+        //   PPM CH5 = SBUS[10], CH6 = SBUS[11],
+        //   CH7 = SBUS[6] (inverted), CH8 = SBUS[7] (inverted)
         val ch = roverPpmChannels[selectedRoverId]
+        val sbusIdx = intArrayOf(10, 11, 6, 7)
+        val inverted = booleanArrayOf(false, false, true, true)
         for (i in 0..3) {
-            val pwm = if (ch != null && i + 4 < ch.size) ch[i + 4] else 1500
+            val raw = if (ch != null && sbusIdx[i] < ch.size) ch[sbusIdx[i]] else 1500
+            val pwm = if (inverted[i]) 3000 - raw else raw
             lastAuxPwm[i] = pwm
             recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = pwm))
         }
@@ -608,10 +613,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
      * Servo numbers 5–8 match the RP2040 PPM CH5–CH8 outputs.
      */
     private fun checkAuxChannelChanges(channels: IntArray) {
+        // Map PPM servo channels to SBUS indices (same as startRecording)
+        val sbusIdx = intArrayOf(10, 11, 6, 7)
+        val inverted = booleanArrayOf(false, false, true, true)
         for (i in 0..3) {
-            val ppmIdx = i + 4
-            if (ppmIdx >= channels.size) break
-            val newPwm = channels[ppmIdx]
+            if (sbusIdx[i] >= channels.size) continue
+            val raw = channels[sbusIdx[i]]
+            val newPwm = if (inverted[i]) 3000 - raw else raw
             if (Math.abs(newPwm - lastAuxPwm[i]) > 100) {
                 lastAuxPwm[i] = newPwm
                 recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = newPwm))
