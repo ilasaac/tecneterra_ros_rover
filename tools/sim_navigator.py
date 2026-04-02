@@ -159,17 +159,20 @@ DEFAULT_PHYS: dict = {
 # instead of 8 m.
 DEFAULT_TTR_PHYS: dict = {
     'track_width_m':          0.9,     # Robot_diameter — physical track width
-    'max_wheel_mms':          2840,    # measured: 2.84 m/s straight-line max
+    'max_wheel_mms':          1650,    # measured 2026-04 RTK: 1.44 m/s sustained, 1.68 peak
     'steering_scale':         0.37,    # real steer authority = 37% of TTR angle model
-    'accel_cap_mms_per_tick': 9999,    # SmoothSpeed disabled (ESC response is fast)
-    'decel_divisor':          1,       # SmoothSpeed disabled
-    'angular_diff_limit_mms': 600,     # real max diff ~335 mm/s (spin), with headroom
+    'accel_cap_mms_per_tick': 7,       # 0.7 m/s² measured → 7 mm/s per 100Hz tick
+    'decel_divisor':          1,       # SmoothSpeed decel (1 = match accel)
+    'angular_diff_limit_mms': 275,     # measured 2026-04: peak spin 21 deg/s @ offset 126
     'smooth_tick_hz':         100,     # SmoothSpeed tick rate (100 Hz = 10 ms)
     # Distance (m) from rear GPS antenna to wheel-axle midpoint (physical rotation
     # centre) along the rover heading direction.  Positive = rotation centre is
     # ahead of the rear antenna.  When non-zero, spinning causes the GPS antenna
     # to sweep an arc, replicating the off-centre rotation seen on real hardware.
-    'rotation_center_offset_m': 0.35, # measured from navigator_diag spin arcs (range 0.30-0.40 m)
+    'rotation_center_offset_m': 0.35,  # measured from navigator_diag spin arcs (range 0.30-0.40 m)
+    # Steering response lag: delay (seconds) between PPM command change and actual
+    # heading response. Tracked rovers have 0.2-0.3s from track inertia + ESC ramp.
+    'steer_lag_s':            0.25,    # measured 2026-04: median 0.26s
 }
 
 
@@ -201,10 +204,32 @@ class DiffDriveState(RoverState):
         self._max_steer     = max_steer   # navigator max_steering param
         self._last_left     = 0.0
         self._last_right    = 0.0
+        # Steering lag buffer: delays steer PPM by steer_lag_s seconds
+        self._steer_lag     = float(p.get('steer_lag_s', 0.0))
+        self._steer_buf: list[tuple[float, int]] = []  # [(time, steer_ppm), ...]
+        self._sim_time      = 0.0
 
     def update(self, throttle: int, steering: int,
                max_speed: float, wheelbase: float, dt: float,
                turn_scale: float = 0.1, steer_deadband: float = 0.05):
+        self._sim_time += dt
+
+        # --- Steering lag: buffer commands, use delayed value ---
+        if self._steer_lag > 0:
+            self._steer_buf.append((self._sim_time, steering))
+            # Find the command from steer_lag seconds ago
+            target_time = self._sim_time - self._steer_lag
+            delayed_steer = 1500  # neutral default
+            for t, s in self._steer_buf:
+                if t <= target_time:
+                    delayed_steer = s
+                else:
+                    break
+            # Prune old entries
+            while len(self._steer_buf) > 1 and self._steer_buf[0][0] < target_time - 0.1:
+                self._steer_buf.pop(0)
+            steering = delayed_steer
+
         # --- PPM → target wheel speeds (mm/s) ---
         # Forward: decode PPM using max_speed (same scale the controller used
         # to encode), then convert to mm/s for the wheel-level math.
