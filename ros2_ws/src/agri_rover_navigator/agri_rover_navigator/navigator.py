@@ -922,6 +922,7 @@ class NavigatorNode(Node):
 
         self.get_logger().info(
             f'WP seq={msg.seq} loaded ({msg.latitude:.7f},{msg.longitude:.7f}) '
+            f'spd={msg.speed:.2f} hold={msg.hold_secs:.1f} '
             f'— {len(self._path)} total, path {self._path_s[-1]:.1f} m')
 
         # If expanded obstacle polygons are already available (fence arrived before
