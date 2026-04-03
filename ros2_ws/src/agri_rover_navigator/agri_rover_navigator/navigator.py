@@ -1520,6 +1520,7 @@ class NavigatorNode(Node):
                 self._spin_target_brg = None
                 self._path_idx = nxt  # first distinct point of new corridor
                 self._corridor_entered = False  # re-enter corridor grace
+                self._pivot_debug_until = time.time() + 5.0  # log for 5s after pivot
                 self.get_logger().info(
                     f'PIVOT DONE: turn_idx={turn_idx} nxt={nxt} '
                     f'new_path_idx={self._path_idx} hdg={self._heading:.1f} '
@@ -1562,6 +1563,12 @@ class NavigatorNode(Node):
             self._spin_target_brg = None
 
         # Stanley steering
+        # Debug: log post-pivot state for 5 seconds after a pivot
+        if hasattr(self, '_pivot_debug_until') and time.time() < self._pivot_debug_until:
+            self.get_logger().info(
+                f'POST-PIVOT seg={seg_idx} s={s_nearest:.1f} cte={cte:.3f} '
+                f'hdg={self._heading:.1f} tgt_brg={target_bearing:.1f} '
+                f'herr={heading_err:.1f} path_idx={self._path_idx}')
         throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
         stanley_ang = heading_err + math.degrees(
             math.atan2(self._stanley_k * cte, max(v_mps, self._stanley_softening)))
