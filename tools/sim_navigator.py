@@ -1237,6 +1237,10 @@ class PathNavigator:
                     return PPM_CENTER, PPM_CENTER, 0, True
                 return PPM_CENTER, PPM_CENTER, self.path_idx, False
 
+        # Corridor algorithm — pure CTE following, no waypoint advance
+        if self._algo == 'corridor':
+            return self._corridor_step(rlat, rlon, flat, flon, heading, t_mono)
+
         # AFS algorithm
         if self._algo == 'afs':
             thr, steer, done = self._afs_step(rlat, rlon, flat, flon, heading, t_mono)
@@ -1413,6 +1417,131 @@ class PathNavigator:
         steer_ppm = int(PPM_CENTER - steer_frac * 500)
 
         return throttle_ppm, steer_ppm, best_seg, False
+
+    def _corridor_step(self, rlat: float, rlon: float,
+                       flat: float, flon: float,
+                       heading: float, t_mono: float) -> tuple[int, int, int, bool]:
+        """Corridor-following: pure CTE on polyline, no waypoint advance.
+        Mirrors navigator.py._control_loop_corridor()."""
+        nav       = self._nav
+        lookahead = nav['lookahead_distance']
+        max_spd   = nav['max_speed']
+        min_spd   = nav['min_speed']
+        max_steer = nav['max_steering']
+        align_thr = nav['align_threshold']
+        hdb       = nav['heading_deadband']
+        k         = nav['stanley_k']
+        softening = nav['stanley_softening']
+        cte_scale = nav.get('stanley_cte_scale_m', 1.0)
+
+        total_s = self._path_s[-1] if self._path_s else 0.0
+
+        # Project centre onto entire remaining path (search ALL segments from 0)
+        s_nearest, best_seg = self._corridor_nearest(rlat, rlon)
+
+        self._step_info = {'t': t_mono, 'pivoting': False, 'holding': False}
+
+        # Mission complete
+        accept_r = nav.get('default_acceptance_radius', 0.3)
+        if s_nearest >= total_s - accept_r:
+            return PPM_CENTER, PPM_CENTER, best_seg, True
+
+        # CTE on best segment (front antenna, like rover)
+        seg_idx = min(best_seg, len(self._wps) - 1)
+        cte = self._cte_to_seg(flat, flon, seg_idx)
+
+        # Update path_idx for display (approximate wp index)
+        self.path_idx = seg_idx
+
+        # Lookahead — clamp to path end
+        s_look = min(s_nearest + lookahead, total_s)
+        la_lat, la_lon = self._point_at_s(s_look)
+
+        target_bearing = _bearing_to(rlat, rlon, la_lat, la_lon)
+
+        # Freeze bearing during spin
+        if self._spin_target_brg is not None:
+            target_bearing = self._spin_target_brg
+
+        heading_err = ((target_bearing - heading + 180) % 360) - 180
+
+        # Speed with CTE reduction
+        wp = self._wps[seg_idx]
+        target_spd = wp.speed if wp.speed > 0 else max_spd
+        cte_factor = max(0.0, 1.0 - abs(cte) / max(cte_scale, 0.01))
+        v_mps = max(min_spd, target_spd * cte_factor)
+
+        # Large heading error → spin in place
+        if abs(heading_err) > align_thr:
+            if self._spin_target_brg is None:
+                self._spin_target_brg = target_bearing
+            steer_frac = max(-max_steer, min(max_steer, heading_err / 45.0))
+            steer_ppm = int(PPM_CENTER - steer_frac * 500)
+            self._step_info.update({'wp_idx': seg_idx, 'dist_to_wp': total_s - s_nearest,
+                                    'heading_err': heading_err, 'cte': cte,
+                                    'steer_frac': steer_frac, 'v_mps': 0.0, 'mode': 'corridor-spin'})
+            return PPM_CENTER, steer_ppm, best_seg, False
+
+        if self._spin_target_brg is not None and abs(heading_err) < hdb:
+            self._spin_target_brg = None
+
+        # Stanley steering
+        throttle_ppm = int(PPM_CENTER + (v_mps / max_spd) * 500)
+        stanley_ang = heading_err + math.degrees(
+            math.atan2(k * cte, max(v_mps, softening)))
+        stanley_ang = max(-90.0, min(90.0, stanley_ang))
+        steer_frac = max(-max_steer, min(max_steer, stanley_ang / 45.0))
+        steer_ppm = int(PPM_CENTER - steer_frac * 500)
+
+        self._step_info.update({'wp_idx': seg_idx, 'dist_to_wp': total_s - s_nearest,
+                                'heading_err': heading_err, 'cte': cte, 's_nearest': s_nearest,
+                                'steer_frac': steer_frac, 'v_mps': v_mps, 'mode': 'corridor'})
+        return throttle_ppm, steer_ppm, best_seg, False
+
+    def _corridor_nearest(self, lat: float, lon: float) -> tuple[float, int]:
+        """Search ALL segments from path_idx onward for nearest projection.
+        Unlike _nearest_on_path which searches only 1 segment, this scans
+        ahead like the rover's corridor controller."""
+        if not self._wps:
+            return 0.0, 0
+        best_s, best_seg, best_dist = 0.0, 0, float('inf')
+        # Search a window ahead (not the full path — too slow for large polylines)
+        search_end = min(self.path_idx + 20, len(self._wps))
+        search_start = max(0, self.path_idx - 2)  # small backstep for CTE
+        for seg_k in range(search_start, search_end):
+            if seg_k == 0:
+                a_lat, a_lon, s_a = self._origin_lat, self._origin_lon, 0.0
+            else:
+                a_lat = self._wps[seg_k - 1].lat
+                a_lon = self._wps[seg_k - 1].lon
+                s_a   = self._path_s[seg_k - 1]
+            b_lat, b_lon, s_b = self._wps[seg_k].lat, self._wps[seg_k].lon, self._path_s[seg_k]
+
+            mid_lat = math.radians((a_lat + b_lat) / 2)
+            cos_lat = math.cos(mid_lat) or 1e-9
+            m_lat, m_lon = 111_320.0, 111_320.0 * cos_lat
+
+            seg_dy = (b_lat - a_lat) * m_lat
+            seg_dx = (b_lon - a_lon) * m_lon
+            seg_len = math.hypot(seg_dx, seg_dy)
+
+            if seg_len < 0.01:
+                d = _haversine(lat, lon, b_lat, b_lon)
+                if d < best_dist:
+                    best_dist, best_s, best_seg = d, s_b, seg_k
+                continue
+
+            rv_dy = (lat - a_lat) * m_lat
+            rv_dx = (lon - a_lon) * m_lon
+            t = max(0.0, min(1.0, (rv_dx * seg_dx + rv_dy * seg_dy) / seg_len ** 2))
+            d = math.hypot(t * seg_dx - rv_dx, t * seg_dy - rv_dy)
+
+            if d < best_dist:
+                best_dist = d
+                best_s    = s_a + t * (s_b - s_a)
+                best_seg  = seg_k
+
+        return best_s, best_seg
 
     def _advance(self):
         if self.path_idx < len(self._wps):

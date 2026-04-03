@@ -2164,11 +2164,9 @@ async function runComparison() {
     const isCorridor = fetchedMission && fetchedMission.corridor_mode;
     const roverAlgo  = (fetchedMission && fetchedMission.algorithm) || '';
     const navParams = algoSel ? {control_algorithm: algoSel} : {};
-    // Corridor missions: disable pivots and reduce acceptance radius for dense polyline
+    // Corridor missions: use corridor algorithm (pure CTE following, no waypoint advance)
     if (isCorridor && !algoSel) {
-      navParams.pivot_threshold = 180;
-      navParams.default_acceptance_radius = 0.15;
-      navParams.align_threshold = 180;
+      navParams.control_algorithm = 'corridor';
     }
 
     const sResp = await fetch('/simulate', {
