@@ -1412,10 +1412,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 servoState[7] = if (ch.size > 6) 3000 - ch[6] else 1500   // un-invert
                 servoState[8] = if (ch.size > 7) 3000 - ch[7] else 1500   // un-invert
             }
-            roverManager.uploadCorridorMission(selectedRoverId, corridorList, corridorWidth, servoState)
+            val allSpeeds = corridorList.flatten().map { it.second }
+            val turnMarkers = allSpeeds.count { it < 0f }
+            android.util.Log.e("UPLOAD", "CORRIDOR turns=$turnMarkers pts=${allSpeeds.size} speeds=${allSpeeds.take(20)}")
             Toast.makeText(this,
-                "Uploading ${corridorList.size} corridor(s) to Rover $selectedRoverId",
-                Toast.LENGTH_SHORT).show()
+                "TURNS: $turnMarkers / ${allSpeeds.size} — uploading ${corridorList.size} corridor(s)",
+                Toast.LENGTH_LONG).show()
+            roverManager.uploadCorridorMission(selectedRoverId, corridorList, corridorWidth, servoState)
             // Show corridors on map
             val allPts = corridorList.flatten().map { it.first }
             roverMissions[selectedRoverId]          = allPts
@@ -1442,7 +1445,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val actions: List<MissionAction> = if (recordedMission.isNotEmpty()) ArrayList(recordedMission)
             else routePoints.map { MissionAction.Waypoint(it.latitude, it.longitude) }
         val turnCount = actions.filterIsInstance<MissionAction.Waypoint>().count { it.speed < 0f }
-        android.util.Log.w("UPLOAD", "turns=$turnCount total=${actions.size} rec=${recordedMission.size} obs=${obstaclePolygons.size}")
+        android.util.Log.e("UPLOAD", "turns=$turnCount total=${actions.size} rec=${recordedMission.size} obs=${obstaclePolygons.size}")
+        Toast.makeText(this, "TURNS: $turnCount / ${actions.size}", Toast.LENGTH_LONG).show()
         val wpCount = routePoints.size
 
         if (obstaclePolygons.isNotEmpty()) {
