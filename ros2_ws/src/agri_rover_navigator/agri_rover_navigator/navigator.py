@@ -1515,9 +1515,11 @@ class NavigatorNode(Node):
                                                              self._min_steer_delta)
                     self._publish_cmd(PPM_CENTER, steer_ppm)
                     return
-                # Spin complete — remove this turn index so we proceed past it
+                # Spin complete — advance past turn into new corridor
                 self._corridor_turn_indices.discard(turn_idx)
                 self._spin_target_brg = None
+                self._path_idx = nxt  # start searching from new corridor
+                self._corridor_entered = False  # re-enter corridor grace
 
         # Freeze target bearing during align-spin
         if self._spin_target_brg is not None:
