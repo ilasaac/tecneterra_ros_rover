@@ -87,6 +87,7 @@ def _compute_analysis(log_csv: str, mission_name: str) -> dict:
                 't':           float(row['t']),
                 'lat':         float(row['lat']),
                 'lon':         float(row['lon']),
+                'heading':     float(row.get('heading') or 0),
                 'cte':         float(row['cte']),
                 'wp_idx':      int(row['wp_idx']),
                 'speed_tgt':   float(row.get('speed_tgt') or 0),
@@ -98,7 +99,7 @@ def _compute_analysis(log_csv: str, mission_name: str) -> dict:
     if not rows:
         return {'error': 'No valid rows in log (need t,lat,lon,cte,wp_idx columns)'}
 
-    track = [{'lat': r['lat'], 'lon': r['lon'],
+    track = [{'lat': r['lat'], 'lon': r['lon'], 'heading': r['heading'],
                'cte': r['cte'], 'wp_idx': r['wp_idx']} for r in rows]
 
     # Per-segment stats grouped by wp_idx
@@ -2158,6 +2159,7 @@ async function runComparison() {
     const track = aData.track;
     const startLat = track.length ? track[0].lat : waypoints[0].lat;
     const startLon = track.length ? track[0].lon : waypoints[0].lon;
+    const startHdg = track.length && track[0].heading ? track[0].heading : null;
     const algoSel = document.getElementById('algo-select') ? document.getElementById('algo-select').value : '';
     const isCorridor = fetchedMission && fetchedMission.corridor_mode;
     const roverAlgo  = (fetchedMission && fetchedMission.algorithm) || '';
@@ -2172,7 +2174,7 @@ async function runComparison() {
     const sResp = await fetch('/simulate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({waypoints, start: {lat: startLat, lon: startLon}, obstacles, nav_params: navParams}),
+      body: JSON.stringify({waypoints, start: {lat: startLat, lon: startLon, heading: startHdg}, obstacles, nav_params: navParams}),
     });
     const sData = await sResp.json();
     if (sData.error) { status('Sim error: ' + sData.error, '#e74c3c'); return; }
