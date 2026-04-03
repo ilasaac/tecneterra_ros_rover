@@ -166,10 +166,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 // Detect zero-throttle turn: throttle PPM within deadband of neutral.
                 // Mark with speed=-1 so navigator collapses consecutive turn points
                 // into a single waypoint (avoids repeated spin-in-place).
+                // Only mark turns after at least one normal driving point has been
+                // recorded — otherwise the start of every mission gets a spurious
+                // turn cluster while the rover is still stationary.
                 val ppm = roverPpmChannels[selectedRoverId]
                 val throttle = ppm?.getOrNull(0) ?: 1500
-                val isTurning = Math.abs(throttle - 1500) < THROTTLE_NEUTRAL_DEADBAND
-                android.util.Log.d("REC", "thr=$throttle ppm=${ppm?.take(4)?.toList()} sel=$selectedRoverId turn=$isTurning dist=${"%.2f".format(dist)}")
+                val isTurning = last != null && Math.abs(throttle - 1500) < THROTTLE_NEUTRAL_DEADBAND
 
                 if (isTurning) {
                     // Always record turn points (no distance check) — speed=-1 = turn marker
