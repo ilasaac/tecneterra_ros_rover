@@ -450,7 +450,7 @@ tr:hover td{background:#1e1e3a}
 #map-ctrl{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;gap:4px;z-index:10}
 #map-ctrl button{width:32px;height:32px;padding:0;font-size:16px;background:#1a1a2e;color:#ddd;border:1px solid #444;border-radius:4px}
 #map-ctrl button:hover{background:#0f3460}
-#analyze-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+#analyze-panel{flex-direction:column}
 #az-seg-table{display:none}
 #az-overall{display:none;padding:5px 8px;font-size:11px;color:#ccc;background:#0d0d1a;border-bottom:1px solid #222;line-height:1.7;font-family:monospace}
 .az-legend{padding:3px 8px;font-size:10px;color:#aaa;background:#0d0d1a;border-bottom:1px solid #222;display:flex;gap:8px;align-items:center}
@@ -468,7 +468,7 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-blue" onclick="document.getElementById('file-import').click()">&#8593; Import</button>
     <button class="btn-red" onclick="clearAll()">&#10005; Clear</button>
     <button class="btn-orange" onclick="toggleGenPanel()">&#9881; Gen</button>
-    <button id="btn-analyze" class="btn-blue" onclick="toggleAnalyzeMode()" title="Analyze actual vs planned mission">&#128200; Analyze</button>
+    <!-- analyze is now a permanent section, no toggle button -->
     <input type="file" id="file-import" accept=".csv" style="display:none" onchange="importCSV(event)">
   </div>
   <div style="padding:3px 6px;background:#0d0d1a;border-bottom:1px solid #333;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
@@ -504,39 +504,8 @@ tr:hover td{background:#1e1e3a}
       <button class="btn-blue" style="padding:3px 7px;font-size:11px" onclick="loadMission()">Load</button>
     </div>
   </div>
-  <div class="section" style="background:#091a09">
-    <div style="color:#5d9;font-size:10px;margin-bottom:3px">&#9881; Servo CH5–CH8</div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:3px">
-      <div><div style="color:#888;font-size:9px;text-align:center">CH5</div>
-           <input id="svo-5" type="number" min="1000" max="2000" step="50" value="1500"
-                  style="width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 2px;border-radius:2px;font-size:10px;text-align:center"></div>
-      <div><div style="color:#888;font-size:9px;text-align:center">CH6</div>
-           <input id="svo-6" type="number" min="1000" max="2000" step="50" value="1500"
-                  style="width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 2px;border-radius:2px;font-size:10px;text-align:center"></div>
-      <div><div style="color:#888;font-size:9px;text-align:center">CH7</div>
-           <input id="svo-7" type="number" min="1000" max="2000" step="50" value="1500"
-                  style="width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 2px;border-radius:2px;font-size:10px;text-align:center"></div>
-      <div><div style="color:#888;font-size:9px;text-align:center">CH8</div>
-           <input id="svo-8" type="number" min="1000" max="2000" step="50" value="1500"
-                  style="width:100%;background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 2px;border-radius:2px;font-size:10px;text-align:center"></div>
-    </div>
-    <div id="servo-live" style="font-size:9px;color:#555;margin-top:3px">Rover: —</div>
-  </div>
-  <div class="section" style="background:#1a0808">
-    <div style="color:#f88;font-size:10px;margin-bottom:3px">&#128290; Test Sensors (inject)</div>
-    <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 6px;align-items:center">
-      <span style="color:#aaa;font-size:10px">Tank (%)</span>
-      <input id="ts-tank" type="number" min="0" max="100" step="1" value="80"
-             style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
-      <span style="color:#aaa;font-size:10px">Battery (%)</span>
-      <input id="ts-batt" type="number" min="0" max="100" step="1" value="100"
-             style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
-    </div>
-    <div style="display:flex;gap:3px;margin-top:4px">
-      <button class="btn-orange" style="flex:1;padding:3px;font-size:10px" onclick="sendTestSensors(1)">&#9650; RV1</button>
-      <button class="btn-blue"   style="flex:1;padding:3px;font-size:10px" onclick="sendTestSensors(2)">&#9650; RV2</button>
-    </div>
-  </div>
+  <!-- Servo CH5-CH8: removed standalone panel — per-waypoint servo in WP table -->
+  <!-- Test Sensors moved to bottom of sidebar -->
   <div class="section" style="background:#1a0d2e">
     <div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
       <label style="color:#b7a">&#128225;</label>
@@ -548,10 +517,7 @@ tr:hover td{background:#1e1e3a}
       <input id="r-ip-rv2" size="13" value="192.168.100.20" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;flex:1">
       <button class="btn-blue" style="padding:3px 9px;font-size:11px" onclick="uploadRover(2)">&#9650; RV2</button>
     </div>
-    <div style="display:flex;gap:3px;align-items:center">
-      <button id="btn-net" class="btn-orange" style="padding:3px 9px;font-size:11px" onclick="importSnooped()">&#8595; Net</button>
-      <span id="snoop-status" style="font-size:10px;color:#888;margin-left:4px">no network mission</span>
-    </div>
+    <!-- Net import removed — use Analyze section Runs/Compare instead -->
   </div>
   <div id="wp-list">
     <table>
@@ -559,8 +525,11 @@ tr:hover td{background:#1e1e3a}
       <tbody id="wp-tbody"></tbody>
     </table>
   </div>
-  <!-- ── Analyze panel (shown instead of wp-list in analyze mode) ── -->
-  <div id="analyze-panel">
+  <!-- ── Analyze section (permanent) ── -->
+  <div id="analyze-panel" style="display:flex;flex-direction:column">
+    <div style="padding:4px 8px;background:#0a1a3a;border-top:2px solid #1a5aaa;border-bottom:1px solid #333">
+      <b style="color:#8cf;font-size:12px">ANALYSIS</b>
+    </div>
     <div class="section" style="background:#0d1a2e">
       <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
         <span style="color:#8cf;font-size:10px">Rover</span>
@@ -583,7 +552,7 @@ tr:hover td{background:#1e1e3a}
         <button class="btn-green" style="padding:2px 9px;font-size:11px" onclick="fetchAndCompare()" title="Fetch run data + simulate + compare">&#8644; Compare</button>
       </div>
       <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
-        <span style="color:#888;font-size:10px">or manual:</span>
+        <span style="color:#888;font-size:10px">or:</span>
         <button class="btn-blue" style="padding:2px 7px;font-size:11px" onclick="document.getElementById('az-log-input').click()">&#128194; Browse CSV</button>
         <button id="btn-save-log" class="btn-green" style="padding:2px 7px;font-size:11px;display:none" onclick="saveLog()" title="Save loaded log to disk">&#128190; Save</button>
         <span id="az-log-name" style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">no file</span>
@@ -607,7 +576,7 @@ tr:hover td{background:#1e1e3a}
       <span style="color:#4af">&#9473; Sim</span>
     </div>
     <div id="az-overall"></div>
-    <div style="flex:1;overflow-y:auto">
+    <div style="max-height:150px;overflow-y:auto">
       <table id="az-seg-table">
         <thead><tr><th>Seg</th><th>Mean CTE</th><th>Max CTE</th><th>RMS CTE</th><th>Dur(s)</th><th>RTK%</th></tr></thead>
         <tbody id="az-seg-tbody"></tbody>
@@ -633,6 +602,26 @@ tr:hover td{background:#1e1e3a}
     </div>
     <div id="pb-time" style="font-size:10px;color:#888;margin-bottom:3px">t=0.00s  frame 0/0</div>
     <div id="pb-info" style="font-size:11px;color:#ccc;line-height:1.5;font-family:monospace"></div>
+  </div>
+  <!-- ── Sensor Control (bottom of sidebar) ── -->
+  <div style="margin-top:auto">
+    <div style="padding:4px 8px;background:#2a0a0a;border-top:2px solid #aa3a3a;border-bottom:1px solid #333">
+      <b style="color:#f88;font-size:12px">SENSOR CONTROL</b>
+    </div>
+    <div class="section" style="background:#1a0808">
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 6px;align-items:center">
+        <span style="color:#aaa;font-size:10px">Tank (%)</span>
+        <input id="ts-tank" type="number" min="0" max="100" step="1" value="80"
+               style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
+        <span style="color:#aaa;font-size:10px">Battery (%)</span>
+        <input id="ts-batt" type="number" min="0" max="100" step="1" value="100"
+               style="background:#0a0a1e;color:#eee;border:1px solid #444;padding:1px 3px;border-radius:2px;font-size:10px">
+      </div>
+      <div style="display:flex;gap:3px;margin-top:4px">
+        <button class="btn-orange" style="flex:1;padding:3px;font-size:10px" onclick="sendTestSensors(1)">&#9650; RV1</button>
+        <button class="btn-blue"   style="flex:1;padding:3px;font-size:10px" onclick="sendTestSensors(2)">&#9650; RV2</button>
+      </div>
+    </div>
   </div>
 </div>
 <!-- ── Mission generator panel ──────────────────────────────────────── -->
@@ -752,7 +741,6 @@ let obstacles     = [];
 let obsMode       = false;
 let obsCurPts     = [];
 let liveRovers    = {};   // sysid → {lat, lon, hdg, ts}
-let analyzeMode   = false;
 let analyzeResult = null;
 let logFileData   = null;
 let fetchedMission = null;  // mission metadata from rover run (corridor_mode, algorithm)
@@ -1489,6 +1477,7 @@ async function saveMission() {
   });
   status(`Saved "${name}".`);
   refreshMissionList();
+  loadAnalyzeMissionList();
 }
 
 async function loadMission() {
@@ -1961,21 +1950,12 @@ function cteColor(v) {
   return '#ff1744';
 }
 
-function toggleAnalyzeMode() {
-  analyzeMode = !analyzeMode;
-  document.getElementById('btn-analyze').classList.toggle('btn-active', analyzeMode);
-  document.getElementById('wp-list').style.display      = analyzeMode ? 'none' : '';
-  document.getElementById('stats').style.display        = 'none';
-  document.getElementById('playback').style.display     = 'none';
-  document.getElementById('analyze-panel').style.display = analyzeMode ? 'flex' : 'none';
-  if (analyzeMode) {
-    fetch('/missions').then(r => r.json()).then(list => {
-      const sel = document.getElementById('az-m-select');
-      sel.innerHTML = '<option value="">— none —</option>' +
-        list.map(m => `<option value="${m.name}">${m.name} (${m.wp_count} wps)</option>`).join('');
-    });
-  }
-  redraw();
+function loadAnalyzeMissionList() {
+  fetch('/missions').then(r => r.json()).then(list => {
+    const sel = document.getElementById('az-m-select');
+    sel.innerHTML = '<option value="">— none —</option>' +
+      list.map(m => `<option value="${m.name}">${m.name} (${m.wp_count} wps)</option>`).join('');
+  });
 }
 
 function onLogFileSelect(event) {
@@ -2252,6 +2232,7 @@ function drawAnalyzeTrack() {
 
 // ── Init ──────────────────────────────────────────────────────────
 resizeCanvas();
+loadAnalyzeMissionList();
 </script>
 </body>
 </html>
