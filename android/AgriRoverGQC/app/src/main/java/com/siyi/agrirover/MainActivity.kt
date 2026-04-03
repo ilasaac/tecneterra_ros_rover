@@ -524,7 +524,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun stopRecording() {
         isRecording = false
         recordHandler.removeCallbacks(recordRunnable)
-        smoothRecordedSpeeds()
+        // Speed smoothing removed — navigator handles raw speeds + turn markers.
         btnRec.iconTint = ColorStateList.valueOf(Color.parseColor("#444444"))
         btnRec.strokeWidth = 0
         val wpCount  = recordedMission.filterIsInstance<MissionAction.Waypoint>().size
@@ -550,51 +550,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    /**
-     * Post-hoc speed smoothing: replaces per-tick instantaneous speed with a
-     * sliding-window average over ±W waypoints.  This eliminates GPS-noise
-     * spikes while preserving deliberate speed changes (acceleration/braking).
-     *
-     * First waypoint keeps speed=0 so the navigator uses its default max_speed.
-     */
-    private fun smoothRecordedSpeeds() {
-        // Collect indices of Waypoint entries inside the interleaved recordedMission list.
-        val wpIndices = mutableListOf<Int>()
-        for (i in recordedMission.indices) {
-            if (recordedMission[i] is MissionAction.Waypoint) wpIndices.add(i)
-        }
-        if (wpIndices.size < 2 || waypointTimestamps.size != wpIndices.size) {
-            android.util.Log.w("SmoothSpeed", "SKIP: wpIndices=${wpIndices.size} timestamps=${waypointTimestamps.size}")
-            return
-        }
-
-        val W = 2  // half-window → 5-point average (±2 neighbours)
-        for (k in 1 until wpIndices.size) {  // skip k=0 (first WP → speed 0)
-            // Skip turn-marked waypoints (speed=-1) — they stay as-is for the
-            // navigator's spin-cluster optimizer to collapse.
-            val cur = recordedMission[wpIndices[k]] as MissionAction.Waypoint
-            if (cur.speed < 0f) continue
-
-            val lo = maxOf(0, k - W)
-            val hi = minOf(wpIndices.lastIndex, k + W)
-
-            var totalDist = 0.0
-            for (j in lo until hi) {
-                val wp1 = recordedMission[wpIndices[j]] as MissionAction.Waypoint
-                val wp2 = recordedMission[wpIndices[j + 1]] as MissionAction.Waypoint
-                totalDist += haversineMetres(wp1.lat, wp1.lon, wp2.lat, wp2.lon)
-            }
-            val totalTimeSec = (waypointTimestamps[hi] - waypointTimestamps[lo]) / 1000.0
-            if (totalTimeSec < 0.01) continue
-
-            val speed = (totalDist / totalTimeSec).toFloat().coerceIn(MIN_SPEED_MPS, MAX_SPEED_MPS)
-            val orig = recordedMission[wpIndices[k]] as MissionAction.Waypoint
-            recordedMission[wpIndices[k]] = orig.copy(speed = speed)
-        }
-        val avgSpeed = recordedMission.filterIsInstance<MissionAction.Waypoint>()
-            .map { it.speed }.filter { it > 0 }.let { if (it.isEmpty()) 0f else it.average().toFloat() }
-        android.util.Log.i("SmoothSpeed", "Smoothed ${wpIndices.size} wps, avg=${avgSpeed} m/s")
-    }
+    // smoothRecordedSpeeds removed — navigator handles raw data + turn markers.
 
     private fun clearMission() {
         if (isRecording) stopRecording()
