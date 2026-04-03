@@ -1496,6 +1496,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 "Uploading $wpCount WPs + ${obstaclePolygons.size} obstacle(s) to Rover $selectedRoverId…",
                 Toast.LENGTH_SHORT).show()
         } else if (recordedMission.isNotEmpty()) {
+            val turnCount = recordedMission.filterIsInstance<MissionAction.Waypoint>().count { it.speed < 0f }
+            val speeds = recordedMission.filterIsInstance<MissionAction.Waypoint>().map { "%.1f".format(it.speed) }
+            android.util.Log.w("UPLOAD", "turns=$turnCount speeds=$speeds")
             roverManager.uploadRecordedMission(selectedRoverId, ArrayList(recordedMission))
             Toast.makeText(this,
                 "Uploading $wpCount WPs to Rover $selectedRoverId…",
