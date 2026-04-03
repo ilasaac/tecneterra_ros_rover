@@ -379,6 +379,8 @@ def _start_snooper():
                                     wp['servos'][snum] = pwm
                     elif msg.command == 16:
                         nav_seq = len(b['nav'])
+                        if msg.z < 0:
+                            print(f'[snoop] TURN MARKER seq={msg.seq} z={msg.z}', flush=True)
                         b['nav'][nav_seq] = {
                             'lat': msg.x / 1e7, 'lon': msg.y / 1e7,
                             'speed': float(msg.z),  # <0 = turn marker, 0 = default, >0 = m/s

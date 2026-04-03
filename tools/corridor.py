@@ -377,11 +377,36 @@ def auto_split_corridors(
     current_spd: list[float] = [spd_list[0]]
     prev_heading: float | None = None
 
-    for i in range(1, len(points)):
+    i = 1
+    while i < len(points):
+        # Turn marker cluster (speed < 0 from GQC) — flush corridor,
+        # collapse cluster to centroid, start new corridor.
+        if spd_list[i] < 0:
+            turn_lats = []
+            turn_lons = []
+            while i < len(points) and spd_list[i] < 0:
+                turn_lats.append(points[i][0])
+                turn_lons.append(points[i][1])
+                i += 1
+            if len(current_pts) >= 2:
+                corridors.append(Corridor(
+                    corridor_id=len(corridors),
+                    centerline=list(current_pts),
+                    width=width,
+                    speeds=list(current_spd),
+                    next_corridor_id=len(corridors) + 1,
+                ))
+            clat = sum(turn_lats) / len(turn_lats)
+            clon = sum(turn_lons) / len(turn_lons)
+            current_pts = [(clat, clon)]
+            current_spd = [0.0]
+            prev_heading = None
+            continue
+
         heading = _bearing_to(points[i - 1][0], points[i - 1][1],
                               points[i][0], points[i][1])
 
-        # Check for sharp turn
+        # Heading-based split (fallback for recordings without turn markers)
         if prev_heading is not None:
             delta = abs(_normalize_angle(heading - prev_heading))
             if delta >= turn_threshold_deg and len(current_pts) >= min_segment_points:
@@ -392,13 +417,13 @@ def auto_split_corridors(
                     speeds=list(current_spd),
                     next_corridor_id=len(corridors) + 1,
                 ))
-                # New corridor starts at the last point of the previous
                 current_pts = [current_pts[-1]]
                 current_spd = [current_spd[-1]]
 
         current_pts.append((points[i][0], points[i][1]))
         current_spd.append(spd_list[i])
         prev_heading = heading
+        i += 1
 
     # Save final corridor
     if len(current_pts) >= 2:
