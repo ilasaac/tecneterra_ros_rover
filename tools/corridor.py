@@ -395,7 +395,7 @@ def auto_split_corridors(
                     next_corridor_id=len(corridors) + 1,
                     turn_type='none',
                 ))
-            current_pts = [(clat, clon)]
+            current_pts = [(turn_lat, turn_lon)]
             current_spd = [0.0]
             prev_heading = None
             continue
