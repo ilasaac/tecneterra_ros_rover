@@ -139,8 +139,23 @@ def _compute_analysis(log_csv: str, mission_name: str) -> dict:
         except Exception:
             pass
 
+    # Detect algorithm from log (most common 'algo' value)
+    algo_detected = ''
+    try:
+        reader2 = csv.DictReader(_io.StringIO(log_csv))
+        algo_counts: dict = {}
+        for row in reader2:
+            a = row.get('algo', '')
+            if a:
+                algo_counts[a] = algo_counts.get(a, 0) + 1
+        if algo_counts:
+            algo_detected = max(algo_counts, key=algo_counts.get)
+    except Exception:
+        pass
+
     return {'track': track, 'segments': segments,
-            'overall': overall, 'mission_wps': mission_wps}
+            'overall': overall, 'mission_wps': mission_wps,
+            'algorithm': algo_detected}
 
 
 # ── MAVLink passive snooper ────────────────────────────────────────────────────
@@ -2141,12 +2156,12 @@ async function runComparison() {
     const startLon = track.length ? track[0].lon : waypoints[0].lon;
     const startHdg = track.length && track[0].heading ? track[0].heading : null;
     const algoSel = document.getElementById('algo-select') ? document.getElementById('algo-select').value : '';
-    const isCorridor = fetchedMission && fetchedMission.corridor_mode;
-    const roverAlgo  = (fetchedMission && fetchedMission.algorithm) || '';
+    const roverAlgo  = aData.algorithm || (fetchedMission && fetchedMission.algorithm) || '';
+    const isCorridor = roverAlgo === 'corridor' || (fetchedMission && fetchedMission.corridor_mode);
     const navParams = algoSel ? {control_algorithm: algoSel} : {};
-    // Corridor missions: use corridor algorithm (pure CTE following, no waypoint advance)
-    if (isCorridor && !algoSel) {
-      navParams.control_algorithm = 'corridor';
+    // Auto-select matching algorithm from rover's actual run
+    if (!algoSel && roverAlgo) {
+      navParams.control_algorithm = roverAlgo;
     }
 
     const sResp = await fetch('/simulate', {
