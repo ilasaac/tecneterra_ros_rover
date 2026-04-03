@@ -105,6 +105,7 @@ class MavlinkBridgeNode(Node):
 
         # ── Local state (updated from subscriptions) ─────────────────────────
         self._fix         = NavSatFix()
+        self._fix_front   = None        # front antenna — for center position
         self._rc          = RCInput()
         self._sensors     = SensorData()
         self._status      = RoverStatus()
@@ -159,6 +160,7 @@ class MavlinkBridgeNode(Node):
 
         # ── Subscriptions ────────────────────────────────────────────────────
         self.create_subscription(NavSatFix,    'fix',          self._cb_fix,      10)
+        self.create_subscription(NavSatFix,    'fix_front',    self._cb_fix_front, 10)
         self.create_subscription(RCInput,      'rc_input',     self._cb_rc,       10)
         self.create_subscription(SensorData,   'sensors',      self._cb_sensors,  10)
         self.create_subscription(RoverStatus,  'status',       self._cb_status,   10)
@@ -206,6 +208,7 @@ class MavlinkBridgeNode(Node):
     # ── Subscription callbacks ────────────────────────────────────────────────
 
     def _cb_fix(self, msg: NavSatFix):           self._fix = msg
+    def _cb_fix_front(self, msg: NavSatFix):   self._fix_front = msg
     def _cb_rc(self, msg: RCInput):              self._rc = msg
     def _cb_sensors(self, msg: SensorData):      self._sensors = msg
     def _cb_status(self, msg: RoverStatus):      self._status = msg
@@ -410,10 +413,18 @@ class MavlinkBridgeNode(Node):
         # hdg field: cdeg (0-35999), or 65535 if unknown
         hdg = int(self._heading_deg * 100) % 36000 \
               if self._heading_deg is not None else 0xFFFF
+        # Center position: midpoint of rear + front antenna (same as navigator)
+        ff = self._fix_front
+        if ff is not None and ff.latitude != 0.0:
+            clat = (self._fix.latitude  + ff.latitude)  / 2.0
+            clon = (self._fix.longitude + ff.longitude) / 2.0
+        else:
+            clat = self._fix.latitude
+            clon = self._fix.longitude
         self._send(self._mav.mav.global_position_int_encode(
             self._uptime_ms(),
-            int(self._fix.latitude  * 1e7),
-            int(self._fix.longitude * 1e7),
+            int(clat * 1e7),
+            int(clon * 1e7),
             0,       # alt MSL mm — TODO
             0,       # relative alt mm
             0, 0, 0, # vx, vy, vz cm/s
