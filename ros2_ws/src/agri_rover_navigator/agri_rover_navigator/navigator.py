@@ -1472,12 +1472,46 @@ class NavigatorNode(Node):
             wp_msg = Int32(); wp_msg.data = approx_wp
             self.wp_pub.publish(wp_msg)
 
-        # Lookahead — clamp to path end
-        wp_s = self._path_s[seg_idx] if seg_idx < len(self._path_s) else self._corridor_total_s
-        s_look = min(s_nearest + self._lookahead, self._corridor_total_s)
+        # Find next turn point ahead (corridor boundary)
+        turn_s = None
+        turn_idx = None
+        for ti in sorted(self._corridor_turn_indices):
+            if ti < len(self._path_s) and self._path_s[ti] > s_nearest:
+                turn_s = self._path_s[ti]
+                turn_idx = ti
+                break
+
+        # Lookahead — clamp to turn point so rover never sees next corridor
+        s_limit = turn_s if turn_s is not None else self._corridor_total_s
+        s_look = min(s_nearest + self._lookahead, s_limit)
         la_lat, la_lon = self._point_at_s(s_look)
 
         target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
+
+        # Pivot at turn point: stop, spin to next corridor heading, then continue
+        if turn_idx is not None:
+            dist_to_turn = turn_s - s_nearest
+            # Close enough to turn point — stop and spin
+            if dist_to_turn < self._accept_r:
+                # Compute heading of the segment AFTER the turn point
+                nxt = min(turn_idx + 1, len(self._path) - 1)
+                next_brg = bearing_to(
+                    self._path[turn_idx].latitude, self._path[turn_idx].longitude,
+                    self._path[nxt].latitude, self._path[nxt].longitude)
+                pivot_err = ((next_brg - self._heading + 180) % 360) - 180
+                if abs(pivot_err) > self._hdb:
+                    # Still turning — spin in place
+                    steer_frac = max(-self._max_steer, min(self._max_steer, pivot_err / 45.0))
+                    steer_ppm = int(PPM_CENTER - steer_frac * 500)
+                    if steer_ppm != PPM_CENTER:
+                        sign = 1 if steer_ppm > PPM_CENTER else -1
+                        steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
+                                                             self._min_steer_delta)
+                    self._publish_cmd(PPM_CENTER, steer_ppm)
+                    return
+                # Spin complete — remove this turn index so we proceed past it
+                self._corridor_turn_indices.discard(turn_idx)
+                self._spin_target_brg = None
 
         # Freeze target bearing during align-spin
         if self._spin_target_brg is not None:
@@ -1490,6 +1524,13 @@ class NavigatorNode(Node):
         target_spd = wp.speed if wp.speed > 0 else self._max_speed
         cte_factor = max(0.0, 1.0 - abs(cte) / max(self._stanley_cte_scale, 0.01))
         v_mps = max(self._min_speed, target_spd * cte_factor)
+
+        # Decelerate approaching turn point
+        if turn_s is not None:
+            dist_to_turn = turn_s - s_nearest
+            approach = self._pivot_approach_dist
+            if dist_to_turn < approach:
+                v_mps = max(self._min_speed, v_mps * (dist_to_turn / approach))
 
         # Large heading error → spin in place
         if abs(heading_err) > self._align_thresh:
