@@ -371,6 +371,7 @@ def auto_split_corridors(
         return CorridorMission()
 
     spd_list = speeds if speeds and len(speeds) == len(points) else [0.0] * len(points)
+    has_turn_markers = any(s < 0 for s in spd_list)
 
     corridors: list[Corridor] = []
     current_pts: list[tuple[float, float]] = [points[0]]
@@ -379,8 +380,6 @@ def auto_split_corridors(
 
     i = 1
     while i < len(points):
-        # Turn marker cluster (speed < 0 from GQC) — flush corridor,
-        # collapse cluster to centroid, start new corridor.
         if spd_list[i] < 0:
             turn_lats = []
             turn_lons = []
@@ -388,6 +387,10 @@ def auto_split_corridors(
                 turn_lats.append(points[i][0])
                 turn_lons.append(points[i][1])
                 i += 1
+            clat = sum(turn_lats) / len(turn_lats)
+            clon = sum(turn_lons) / len(turn_lons)
+            current_pts.append((clat, clon))
+            current_spd.append(0.0)
             if len(current_pts) >= 2:
                 corridors.append(Corridor(
                     corridor_id=len(corridors),
@@ -395,9 +398,8 @@ def auto_split_corridors(
                     width=width,
                     speeds=list(current_spd),
                     next_corridor_id=len(corridors) + 1,
+                    turn_type='none',
                 ))
-            clat = sum(turn_lats) / len(turn_lats)
-            clon = sum(turn_lons) / len(turn_lons)
             current_pts = [(clat, clon)]
             current_spd = [0.0]
             prev_heading = None
@@ -406,8 +408,8 @@ def auto_split_corridors(
         heading = _bearing_to(points[i - 1][0], points[i - 1][1],
                               points[i][0], points[i][1])
 
-        # Heading-based split (fallback for recordings without turn markers)
-        if prev_heading is not None:
+        # Heading-based split — only used when no turn markers exist
+        if not has_turn_markers and prev_heading is not None:
             delta = abs(_normalize_angle(heading - prev_heading))
             if delta >= turn_threshold_deg and len(current_pts) >= min_segment_points:
                 corridors.append(Corridor(
