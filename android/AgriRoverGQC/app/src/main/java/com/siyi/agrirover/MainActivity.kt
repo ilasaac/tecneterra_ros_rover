@@ -151,6 +151,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var lastRecordedPos: LatLng? = null
     private val MIN_RECORD_DIST = 0.3   // metres — below this = skip (GPS noise)
 
+    private val THROTTLE_NEUTRAL_DEADBAND = 80 // PPM µs — throttle within 1500±80 = turning
     private val recordHandler = Handler(Looper.getMainLooper())
     private val recordRunnable = object : Runnable {
         override fun run() {
@@ -162,7 +163,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     haversineMetres(last.latitude, last.longitude, pos.latitude, pos.longitude)
                 else Double.MAX_VALUE
 
-                if (dist >= MIN_RECORD_DIST) {
+                // Detect zero-throttle turn: throttle PPM within deadband of neutral.
+                // Mark with speed=-1 so navigator collapses consecutive turn points
+                // into a single waypoint (avoids repeated spin-in-place).
+                val ppm = roverPpmChannels[selectedRoverId]
+                val throttle = ppm?.getOrNull(0) ?: 1500
+                val isTurning = Math.abs(throttle - 1500) < THROTTLE_NEUTRAL_DEADBAND
+
+                if (isTurning) {
+                    // Always record turn points (no distance check) — speed=-1 = turn marker
+                    recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, -1f))
+                    waypointTimestamps.add(SystemClock.elapsedRealtime())
+                    routePoints.add(pos)
+                    redrawMap()
+                } else if (dist >= MIN_RECORD_DIST) {
                     lastRecordedPos = pos
                     // Store waypoint with speed=0; actual speed computed post-hoc
                     // in smoothRecordedSpeeds() using sliding-window averaging.
@@ -553,6 +567,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         val W = 2  // half-window → 5-point average (±2 neighbours)
         for (k in 1 until wpIndices.size) {  // skip k=0 (first WP → speed 0)
+            // Skip turn-marked waypoints (speed=-1) — they stay as-is for the
+            // navigator's spin-cluster optimizer to collapse.
+            val cur = recordedMission[wpIndices[k]] as MissionAction.Waypoint
+            if (cur.speed < 0f) continue
+
             val lo = maxOf(0, k - W)
             val hi = minOf(wpIndices.lastIndex, k + W)
 

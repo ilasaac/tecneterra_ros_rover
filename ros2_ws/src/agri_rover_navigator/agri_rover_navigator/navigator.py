@@ -981,31 +981,30 @@ class NavigatorNode(Node):
             self._reroute_path()
 
     def _collapse_spin_clusters(self):
-        """Collapse spin-in-place waypoint clusters into single waypoints.
+        """Collapse turn-marked waypoint clusters into single waypoints.
 
-        During recording the GPS antenna sweeps a ~0.35 m arc around the rotation
-        centre.  This creates 2-5 waypoints at nearly the same location with
-        zero-length segments.  Replace each cluster with one waypoint at the
-        centroid, keeping the outgoing speed of the last point in the cluster.
+        GQC marks waypoints recorded during zero-throttle turns with
+        speed = -1.  Consecutive turn-marked waypoints are replaced by a
+        single centroid waypoint.  The outgoing speed is taken from the
+        first normal waypoint after the cluster.
         """
         if len(self._path_original) < 3:
             return
-        CLUSTER_RADIUS = 0.5  # metres — points closer than this are a spin cluster
         result: list[MissionWaypoint] = []
-        cluster: list[MissionWaypoint] = [self._path_original[0]]
+        cluster: list[MissionWaypoint] = []
 
-        for i in range(1, len(self._path_original)):
-            wp = self._path_original[i]
-            prev = cluster[0]  # compare to cluster start
-            d = haversine(prev.latitude, prev.longitude, wp.latitude, wp.longitude)
-            if d < CLUSTER_RADIUS:
+        for wp in self._path_original:
+            if wp.speed < 0:
+                # Turn-marked waypoint — accumulate into cluster
                 cluster.append(wp)
             else:
-                # Flush cluster
-                result.append(self._merge_cluster(cluster))
-                cluster = [wp]
-        # Flush last cluster
-        result.append(self._merge_cluster(cluster))
+                if cluster:
+                    # Flush turn cluster → single centroid waypoint
+                    result.append(self._merge_cluster(cluster))
+                    cluster = []
+                result.append(wp)
+        if cluster:
+            result.append(self._merge_cluster(cluster))
 
         removed = len(self._path_original) - len(result)
         if removed > 0:
@@ -1024,13 +1023,16 @@ class NavigatorNode(Node):
 
     @staticmethod
     def _merge_cluster(cluster: list[MissionWaypoint]) -> MissionWaypoint:
-        """Merge a cluster of spin-in-place waypoints into one.
+        """Merge a cluster of turn-marked waypoints into one.
 
-        Uses the centroid position.  Speed = last non-zero speed in the cluster
-        (the outgoing speed).  Hold = max hold in cluster.
+        Uses the centroid position.  Speed = last positive speed in the cluster,
+        or 0 (navigator default) if all are turn-marked.  Hold = max hold.
         """
         if len(cluster) == 1:
-            return cluster[0]
+            wp = cluster[0]
+            if wp.speed < 0:
+                wp.speed = 0.0  # clear turn marker
+            return wp
         lat_avg = sum(wp.latitude for wp in cluster) / len(cluster)
         lon_avg = sum(wp.longitude for wp in cluster) / len(cluster)
         # Use last non-zero speed (outgoing direction speed)
@@ -1051,8 +1053,8 @@ class NavigatorNode(Node):
 
     def _cb_mission_fence(self, msg: String):
         """Parse JSON fence polygons and reroute the current mission path."""
-        # Optimize spin clusters before rerouting — collapse identical-position
-        # waypoints recorded during spin-in-place turns.
+        # Collapse turn-marked waypoints (speed=-1 from GQC recording) into
+        # single centroid waypoints before rerouting.
         if self._path_original and not self._corridor_mode:
             self._collapse_spin_clusters()
 

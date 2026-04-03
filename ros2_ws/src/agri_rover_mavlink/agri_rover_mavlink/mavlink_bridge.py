@@ -1058,7 +1058,7 @@ class MavlinkBridgeNode(Node):
             wp.seq              = len(self._mission_buf)
             wp.latitude         = msg.x * 1e-7
             wp.longitude        = msg.y * 1e-7
-            wp.speed            = float(msg.z)    if msg.z    > 0.0 else 0.0
+            wp.speed            = float(msg.z)    # <0 = turn marker, 0 = default, >0 = target m/s
             wp.hold_secs        = float(msg.param1)   # <0 = waiting point, 0 = no hold, >0 = timed hold
             wp.acceptance_radius = 0.0  # 0 → navigator uses default_acceptance_radius from YAML
             self._last_nav_wp_seq = wp.seq  # track for deferred servo association

@@ -1624,6 +1624,33 @@ def simulate(waypoints:       list[SimWaypoint],
         else:
             start_heading = 0.0
 
+    # Collapse turn-marked waypoints (speed < 0) into single centroids
+    def _collapse_turns(wps: list[SimWaypoint]) -> list[SimWaypoint]:
+        result: list[SimWaypoint] = []
+        cluster: list[SimWaypoint] = []
+        for wp in wps:
+            if wp.speed < 0:
+                cluster.append(wp)
+            else:
+                if cluster:
+                    lat = sum(w.lat for w in cluster) / len(cluster)
+                    lon = sum(w.lon for w in cluster) / len(cluster)
+                    result.append(SimWaypoint(seq=0, lat=lat, lon=lon, speed=0.0))
+                    cluster = []
+                result.append(wp)
+        if cluster:
+            lat = sum(w.lat for w in cluster) / len(cluster)
+            lon = sum(w.lon for w in cluster) / len(cluster)
+            result.append(SimWaypoint(seq=0, lat=lat, lon=lon, speed=0.0))
+        for i, w in enumerate(result):
+            w.seq = i
+        return result
+
+    if any(w.speed < 0 for w in waypoints):
+        before = len(waypoints)
+        waypoints = _collapse_turns(waypoints)
+        print(f'[sim] Spin optimizer: {before} → {len(waypoints)} wps', flush=True)
+
     # Build expanded polygons and rerouted waypoints if obstacles provided
     expanded_polygons: list[list[tuple[float, float]]] = []
     effective_wps = list(waypoints)
