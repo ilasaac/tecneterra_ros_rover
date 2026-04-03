@@ -463,19 +463,12 @@ class NavigatorNode(Node):
         # ── Diagnostic CSV logger ─────────────────────────────────────────────
         self.declare_parameter('enable_diag_log', False)
         self.declare_parameter('diag_log_path',   '/tmp/navigator_diag.csv')
+        self._diag_enabled = self.get_parameter('enable_diag_log').value
         self._diag_file   = None
         self._diag_writer = None
-        if self.get_parameter('enable_diag_log').value:
-            path = self.get_parameter('diag_log_path').value
-            self._diag_file   = open(path, 'w', newline='')
-            self._diag_writer = csv.writer(self._diag_file)
-            self._diag_writer.writerow([
-                't', 'lat', 'lon', 'heading',
-                'target_brg', 'hdg_err', 'cte',
-                'steer_frac', 'steer_ppm', 'throttle_ppm',
-                'speed_tgt', 'dist_to_wp', 'wp_idx', 'algo', 'fix_quality', 'hacc_mm',
-            ])
-            self.get_logger().info(f'Diagnostic log: {path}')
+        self._run_dir     = None   # per-run directory under /tmp/rover_runs/
+        if self._diag_enabled:
+            self._open_diag_log(self.get_parameter('diag_log_path').value)
 
         # Obstacle avoidance state
         # _path_original: clean copy of received mission waypoints (without bypass points).
@@ -850,6 +843,59 @@ class NavigatorNode(Node):
                 m.data = 'MANUAL'
                 self._peer_estop_mode_pub.publish(m)
 
+    # ── Run directory & diagnostic log management ──────────────────────────────
+
+    def _open_diag_log(self, path: str):
+        """Open (or reopen) the diagnostic CSV at the given path."""
+        if self._diag_file is not None:
+            self._diag_file.flush()
+            self._diag_file.close()
+        self._diag_file   = open(path, 'w', newline='')
+        self._diag_writer = csv.writer(self._diag_file)
+        self._diag_writer.writerow([
+            't', 'lat', 'lon', 'heading',
+            'target_brg', 'hdg_err', 'cte',
+            'steer_frac', 'steer_ppm', 'throttle_ppm',
+            'speed_tgt', 'dist_to_wp', 'wp_idx', 'algo', 'fix_quality', 'hacc_mm',
+        ])
+        self.get_logger().info(f'Diagnostic log: {path}')
+
+    def _start_new_run(self):
+        """Create a timestamped run directory and rotate the diag CSV into it."""
+        ts = time.strftime('%Y%m%d_%H%M%S')
+        self._run_dir = f'/tmp/rover_runs/run_{ts}'
+        os.makedirs(self._run_dir, exist_ok=True)
+        if self._diag_enabled:
+            self._open_diag_log(os.path.join(self._run_dir, 'navigator_diag.csv'))
+        self.get_logger().info(f'New run directory: {self._run_dir}')
+
+    def _save_run_mission(self):
+        """Save mission definition to the current run directory."""
+        if not self._run_dir or not self._path_original:
+            return
+        try:
+            path_data = [
+                [round(wp.latitude, 7), round(wp.longitude, 7),
+                 1 if k in self._bypass_indices else 0,
+                 round(wp.speed, 2), round(wp.hold_secs, 1)]
+                for k, wp in enumerate(self._path)
+            ]
+            mission_out = {
+                'waypoints': [{'lat': round(wp.latitude, 7),
+                               'lon': round(wp.longitude, 7),
+                               'speed': round(wp.speed, 2),
+                               'hold_secs': round(wp.hold_secs, 1)}
+                              for wp in self._path_original],
+                'obstacles': [[(round(lat, 7), round(lon, 7)) for lat, lon in poly]
+                              for poly in self._obstacle_polygons],
+                'rerouted_path': path_data,
+            }
+            path = os.path.join(self._run_dir, 'mission.json')
+            with open(path, 'w') as f:
+                json.dump(mission_out, f, separators=(',', ':'))
+        except Exception:
+            pass
+
     # ── Mission callbacks ─────────────────────────────────────────────────────
 
     def _cb_mission_clear(self, msg: Bool):
@@ -880,6 +926,8 @@ class NavigatorNode(Node):
     def _cb_mission(self, msg: MissionWaypoint):
         """Append waypoint to path and update cumulative arc-lengths."""
         if msg.seq == 0:
+            # New run — create timestamped directory for diag + mission
+            self._start_new_run()
             # New mission — discard any previous path
             self._path.clear()
             self._path_s.clear()
@@ -1199,6 +1247,8 @@ class NavigatorNode(Node):
                 self.get_logger().warn('Corridor mission: empty path')
                 return
 
+            # New run — create timestamped directory for diag + mission
+            self._start_new_run()
             # Clear any existing waypoint mission
             self._path.clear()
             self._path_s.clear()
@@ -1403,6 +1453,7 @@ class NavigatorNode(Node):
         rp_msg = String()
         rp_msg.data = json.dumps(path_data, separators=(',', ':'))
         self.rerouted_pub.publish(rp_msg)
+        self._save_run_mission()
 
     def _reroute_path(self):
         """

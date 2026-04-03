@@ -562,11 +562,10 @@ tr:hover td{background:#1e1e3a}
   <div id="analyze-panel">
     <div class="section" style="background:#0d1a2e">
       <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
-        <span style="color:#8cf;font-size:10px">Log CSV</span>
-        <button class="btn-blue" style="padding:2px 7px;font-size:11px" onclick="document.getElementById('az-log-input').click()">&#128194; Browse</button>
-        <button id="btn-save-log" class="btn-green" style="padding:2px 7px;font-size:11px;display:none" onclick="saveLog()" title="Save loaded log to disk">&#128190; Save</button>
-        <span id="az-log-name" style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">no file</span>
-        <input type="file" id="az-log-input" accept=".csv" style="display:none" onchange="onLogFileSelect(event)">
+        <span style="color:#8cf;font-size:10px">Rover</span>
+        <input id="az-rover-ip" size="13" value="192.168.100.19"
+               style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;font-size:11px;flex:1">
+        <button class="btn-orange" style="padding:2px 8px;font-size:11px" onclick="listRoverRuns()" title="List available runs from rover">&#128269; Runs</button>
       </div>
       <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
         <span style="color:#8cf;font-size:10px">user</span>
@@ -577,16 +576,24 @@ tr:hover td{background:#1e1e3a}
                style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px;flex:1">
       </div>
       <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
-        <button class="btn-orange" style="padding:2px 8px;font-size:11px;flex:1" onclick="fetchRoverLog(1)">&#8595; RV1</button>
-        <button class="btn-blue"   style="padding:2px 8px;font-size:11px;flex:1" onclick="fetchRoverLog(2)">&#8595; RV2</button>
+        <select id="az-run-select" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px;border-radius:2px;font-size:11px">
+          <option value="">— select a run —</option>
+        </select>
+        <button class="btn-green" style="padding:2px 9px;font-size:11px" onclick="fetchAndCompare()" title="Fetch run data + simulate + compare">&#8644; Compare</button>
+      </div>
+      <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
+        <span style="color:#888;font-size:10px">or manual:</span>
+        <button class="btn-blue" style="padding:2px 7px;font-size:11px" onclick="document.getElementById('az-log-input').click()">&#128194; Browse CSV</button>
+        <button id="btn-save-log" class="btn-green" style="padding:2px 7px;font-size:11px;display:none" onclick="saveLog()" title="Save loaded log to disk">&#128190; Save</button>
+        <span id="az-log-name" style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">no file</span>
+        <input type="file" id="az-log-input" accept=".csv" style="display:none" onchange="onLogFileSelect(event)">
       </div>
       <div style="display:flex;gap:3px;align-items:center">
-        <span style="color:#8cf;font-size:10px">Mission</span>
         <select id="az-m-select" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px;border-radius:2px;font-size:11px">
-          <option value="">— none —</option>
+          <option value="">— mission (manual) —</option>
         </select>
         <button class="btn-green" style="padding:2px 9px;font-size:11px" onclick="runAnalysis()">&#9654; Run</button>
-        <button class="btn-orange" style="padding:2px 9px;font-size:11px" onclick="runComparison()" title="Analyze + Simulate with same mission, overlay both paths">&#8644; Compare</button>
+        <button class="btn-orange" style="padding:2px 9px;font-size:11px" onclick="runComparison()" title="Analyze + Simulate with same mission">&#8644; Compare</button>
       </div>
     </div>
     <div class="az-legend">
@@ -2070,6 +2077,58 @@ async function runAnalysis() {
   }
 }
 
+async function listRoverRuns() {
+  const ip   = document.getElementById('az-rover-ip').value.trim();
+  const user = document.getElementById('az-ssh-user').value.trim() || 'ilasa1';
+  if (!ip) { status('Set rover IP first.', '#e74c3c'); return; }
+  status('Listing runs on ' + ip + '...', '#888');
+  try {
+    const resp = await fetch('/list_rover_runs', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip, user, key: document.getElementById('az-ssh-key').value.trim()}),
+    });
+    const d = await resp.json();
+    if (d.error) { status('Error: ' + d.error, '#e74c3c'); return; }
+    const sel = document.getElementById('az-run-select');
+    sel.innerHTML = '<option value="">— select a run —</option>' +
+      (d.runs || []).map(r => `<option value="${r.dir}">${r.label}</option>`).join('');
+    status(d.runs.length + ' run(s) found on rover', '#27ae60');
+  } catch(e) { status('List error: ' + e, '#e74c3c'); }
+}
+
+async function fetchAndCompare() {
+  const ip     = document.getElementById('az-rover-ip').value.trim();
+  const user   = document.getElementById('az-ssh-user').value.trim() || 'ilasa1';
+  const runDir = document.getElementById('az-run-select').value;
+  if (!ip) { status('Set rover IP.', '#e74c3c'); return; }
+  if (!runDir) { status('Select a run first (click Runs to list).', '#e74c3c'); return; }
+  status('Fetching run data from ' + ip + '...', '#888');
+  try {
+    const resp = await fetch('/fetch_rover_run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip, user, key: document.getElementById('az-ssh-key').value.trim(), run_dir: runDir}),
+    });
+    const d = await resp.json();
+    if (d.error) { status('Fetch error: ' + d.error, '#e74c3c'); return; }
+
+    // Load log CSV
+    logFileData = d.log_csv;
+    document.getElementById('az-log-name').textContent = runDir;
+    _showSaveBtn('navigator_diag.csv');
+
+    // Load mission waypoints + obstacles from run
+    if (d.mission && d.mission.waypoints && d.mission.waypoints.length) {
+      waypoints = d.mission.waypoints.map((w, i) => ({...w, idx: i}));
+      if (d.mission.obstacles) obstacles = d.mission.obstacles;
+    }
+
+    status('Run loaded. Running comparison...', '#f39c12');
+    await runComparison();
+  } catch(e) { status('Fetch error: ' + e, '#e74c3c'); }
+}
+
 async function runComparison() {
   if (!logFileData) { status('Load a log CSV first (Browse or fetch from rover).', '#e74c3c'); return; }
   const missionName = document.getElementById('az-m-select').value;
@@ -2400,6 +2459,96 @@ class _Handler(BaseHTTPRequestHandler):
             data = json.loads(raw)
             result = _compute_analysis(data.get('log', ''), data.get('mission', ''))
             self._json(result)
+
+        elif self.path == '/list_rover_runs':
+            import subprocess
+            data     = json.loads(raw)
+            rover_ip = data.get('ip', '').strip()
+            ssh_user = (data.get('user', '') or 'ilasa1').strip()
+            ssh_key  = (data.get('key', '') or '').strip()
+            if not rover_ip:
+                self._json({'error': 'rover IP required'}); return
+            try:
+                cmd = ['ssh',
+                       '-o', 'StrictHostKeyChecking=no',
+                       '-o', 'ConnectTimeout=5',
+                       '-o', 'BatchMode=yes']
+                if ssh_key:
+                    cmd += ['-i', os.path.expanduser(ssh_key)]
+                cmd += [f'{ssh_user}@{rover_ip}',
+                        'ls -1dt /tmp/rover_runs/run_* 2>/dev/null | head -20']
+                res = subprocess.run(cmd, capture_output=True, timeout=10)
+                if res.returncode != 0:
+                    err = res.stderr.decode(errors='replace').strip() or 'ssh failed'
+                    self._json({'error': err}); return
+                dirs = [d.strip() for d in res.stdout.decode().strip().split('\n') if d.strip()]
+                runs = []
+                for d in dirs:
+                    name = os.path.basename(d)
+                    # run_YYYYMMDD_HHMMSS → readable label
+                    parts = name.replace('run_', '').split('_')
+                    if len(parts) == 2 and len(parts[0]) == 8:
+                        dt = parts[0]
+                        tm = parts[1]
+                        label = f'{dt[:4]}-{dt[4:6]}-{dt[6:]} {tm[:2]}:{tm[2:4]}:{tm[4:]}'
+                    else:
+                        label = name
+                    runs.append({'dir': name, 'label': label})
+                self._json({'runs': runs})
+            except FileNotFoundError:
+                self._json({'error': 'ssh not found'})
+            except subprocess.TimeoutExpired:
+                self._json({'error': f'Connection to {rover_ip} timed out'})
+            except Exception as e:
+                self._json({'error': str(e)})
+
+        elif self.path == '/fetch_rover_run':
+            import subprocess, tempfile
+            data     = json.loads(raw)
+            rover_ip = data.get('ip', '').strip()
+            ssh_user = (data.get('user', '') or 'ilasa1').strip()
+            ssh_key  = (data.get('key', '') or '').strip()
+            run_dir  = data.get('run_dir', '').strip()
+            if not rover_ip or not run_dir:
+                self._json({'error': 'rover IP and run_dir required'}); return
+            base_path = f'/tmp/rover_runs/{run_dir}'
+
+            def _scp_file(remote_path):
+                tmp = tempfile.NamedTemporaryFile(delete=False)
+                tmp.close()
+                try:
+                    cmd = ['scp',
+                           '-o', 'StrictHostKeyChecking=no',
+                           '-o', 'ConnectTimeout=5',
+                           '-o', 'BatchMode=yes']
+                    if ssh_key:
+                        cmd += ['-i', os.path.expanduser(ssh_key)]
+                    cmd += [f'{ssh_user}@{rover_ip}:{remote_path}', tmp.name]
+                    res = subprocess.run(cmd, capture_output=True, timeout=15)
+                    if res.returncode != 0:
+                        return None
+                    with open(tmp.name, encoding='utf-8', errors='replace') as f:
+                        return f.read()
+                finally:
+                    try: os.unlink(tmp.name)
+                    except: pass
+
+            try:
+                log_csv = _scp_file(f'{base_path}/navigator_diag.csv')
+                mission_raw = _scp_file(f'{base_path}/mission.json')
+                mission = None
+                if mission_raw:
+                    try: mission = json.loads(mission_raw)
+                    except: pass
+                if not log_csv:
+                    self._json({'error': f'No navigator_diag.csv in {run_dir}'}); return
+                self._json({'ok': True, 'log_csv': log_csv, 'mission': mission, 'run_dir': run_dir})
+            except FileNotFoundError:
+                self._json({'error': 'scp not found — install OpenSSH client'})
+            except subprocess.TimeoutExpired:
+                self._json({'error': f'Connection to {rover_ip} timed out'})
+            except Exception as e:
+                self._json({'error': str(e)})
 
         elif self.path == '/fetch_rover_log':
             import subprocess, tempfile, os as _os2
