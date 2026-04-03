@@ -381,7 +381,7 @@ def _start_snooper():
                         nav_seq = len(b['nav'])
                         b['nav'][nav_seq] = {
                             'lat': msg.x / 1e7, 'lon': msg.y / 1e7,
-                            'speed': float(msg.z) if msg.z else 0.0,
+                            'speed': float(msg.z),  # <0 = turn marker, 0 = default, >0 = m/s
                             'hold_secs': float(msg.param1) if msg.param1 else 0.0,
                         }
                         b['last_nav_seq'] = nav_seq
