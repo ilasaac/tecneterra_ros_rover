@@ -2740,15 +2740,25 @@ function drawRawCorridors() {
 // ── Layer: Optimized — path as rover built it after corridor split ──
 function drawOptimizedPath() {
   if (!optimizedPath || !optimizedPath.length) return;
+  // Line
   ctx.save(); ctx.strokeStyle = 'rgba(46,204,113,0.7)'; ctx.lineWidth = 2; ctx.beginPath();
   optimizedPath.forEach((pt, i) => { const p = project(pt.lat, pt.lon); i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y); });
   ctx.stroke(); ctx.restore();
-  // Dots + numbers
+  // Dots + numbers — turn points highlighted
+  let turnCount = 0;
   optimizedPath.forEach((pt, i) => {
     const p = project(pt.lat, pt.lon);
-    ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = '#2ecc71'; ctx.fill();
-    if (i % 10 === 0) {
+    const isTurn = pt.turn === true;
+    if (isTurn) turnCount++;
+    ctx.beginPath(); ctx.arc(p.x, p.y, isTurn ? 7 : 3, 0, Math.PI * 2);
+    ctx.fillStyle = isTurn ? '#ff5722' : '#2ecc71'; ctx.fill();
+    if (isTurn) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+      // Turn label
+      ctx.fillStyle = '#ff5722'; ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillText('T' + turnCount, p.x, p.y - 9);
+    } else if (i % 10 === 0) {
       ctx.fillStyle = 'rgba(46,204,113,0.7)'; ctx.font = '9px monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
       ctx.fillText(String(i), p.x, p.y - 5);
@@ -2756,7 +2766,7 @@ function drawOptimizedPath() {
   });
   ctx.fillStyle = 'rgba(46,204,113,0.7)'; ctx.font = '11px monospace';
   ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-  ctx.fillText(`Opt: ${optimizedPath.length} pts`, 8, 22);
+  ctx.fillText(`Opt: ${optimizedPath.length} pts, ${turnCount} turns`, 8, 22);
 }
 
 function drawAnalyzeTrack() {

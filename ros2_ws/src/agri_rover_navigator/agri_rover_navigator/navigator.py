@@ -904,10 +904,12 @@ class NavigatorNode(Node):
                     f.write(self._raw_corridor_json)
 
             # Save optimized path (what the rover actually follows)
+            turn_set = getattr(self, '_corridor_turn_indices', set())
             opt_data = [
                 {'lat': round(wp.latitude, 7), 'lon': round(wp.longitude, 7),
-                 'speed': round(wp.speed, 2)}
-                for wp in self._path
+                 'speed': round(wp.speed, 2),
+                 'turn': i in turn_set}
+                for i, wp in enumerate(self._path)
             ]
             opt_path = os.path.join(self._run_dir, 'optimized_path.json')
             with open(opt_path, 'w') as f:
@@ -1337,13 +1339,23 @@ class NavigatorNode(Node):
 
             path_pts = corridors_to_path(mission, default_speed=self._max_speed)
 
-            # TODO: re-introduce optimizer after SIL-based speed tuning
-            # path_pts = optimize_corridor_speeds(
-            #     path_pts, max_speed=self._max_speed, min_speed=self._min_speed)
-
             if not path_pts:
                 self.get_logger().warn('Corridor mission: empty path')
                 return
+
+            # Detect turn points: last point of each corridor (except the last
+            # corridor) is a shared centroid = turn point in the path.
+            turn_indices = set()
+            idx = 0
+            for ci, c in enumerate(mission.corridors):
+                n = len(c.centerline)
+                if ci < len(mission.corridors) - 1 and c.turn_type == 'none':
+                    turn_indices.add(idx + n - 1)  # last point = turn centroid
+                idx += n
+                # Shared point: next corridor starts at same point, skip 1
+                if ci < len(mission.corridors) - 1 and c.turn_type == 'none':
+                    idx -= 1
+            self._corridor_turn_indices = turn_indices
 
             # New run — create timestamped directory for diag + mission
             self._start_new_run()
