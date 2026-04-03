@@ -171,10 +171,18 @@ MISSIONS_DIR = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions'))
 os.makedirs(MISSIONS_DIR, exist_ok=True)
 
-def _save_mission_file(name: str, waypoints: list, obstacles: list, servos: dict | None = None):
+def _save_mission_file(name: str, waypoints: list, obstacles: list,
+                       servos: dict | None = None,
+                       original_corridors: dict | None = None,
+                       optimized_path: list | None = None):
     path = os.path.join(MISSIONS_DIR, f'{name}.json')
+    data = {'waypoints': waypoints, 'obstacles': obstacles, 'servos': servos or {}}
+    if original_corridors:
+        data['original_corridors'] = original_corridors
+    if optimized_path:
+        data['optimized_path'] = optimized_path
     with open(path, 'w') as f:
-        json.dump({'waypoints': waypoints, 'obstacles': obstacles, 'servos': servos or {}}, f, indent=2)
+        json.dump(data, f, indent=2)
     return path
 
 def _load_mission_file(name: str) -> dict:
@@ -1963,9 +1971,12 @@ function clearAll() {
 async function saveMission() {
   const name = document.getElementById('m-name').value.trim();
   if (!name) { status('Enter a mission name first.', '#e74c3c'); return; }
+  const payload = {name, waypoints, obstacles, servos: getServos()};
+  if (originalCorridors) payload.original_corridors = originalCorridors;
+  if (optimizedPath) payload.optimized_path = optimizedPath;
   await fetch('/save_mission', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name, waypoints, obstacles, servos: getServos()}),
+    body: JSON.stringify(payload),
   });
   status(`Saved "${name}".`);
   refreshMissionList();
@@ -1981,13 +1992,25 @@ async function loadMission() {
   waypoints = (d.waypoints || []).map(wp => ({servos: {}, ...wp}));
   obstacles = []; obsCurPts = [];
   (d.obstacles || []).forEach(poly => obstacles.push(poly));
+  originalCorridors = d.original_corridors || null;
+  optimizedPath = d.optimized_path || null;
   setServos(d.servos);
   refresh();
-  if (waypoints.length) {
+  // Center view on corridor data if available, else waypoints
+  const viewPts = originalCorridors
+    ? (originalCorridors.corridors || []).flatMap(c => c.centerline || [])
+    : waypoints.map(w => [w.lat, w.lon]);
+  if (viewPts.length) {
+    viewLat = viewPts[0][0] ?? viewPts[0].lat; viewLon = viewPts[0][1] ?? viewPts[0].lon;
+    fitAll();
+  } else if (waypoints.length) {
     syncStartToWp0();
     viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll();
   }
-  status(`Loaded "${name}" — ${waypoints.length} wps, ${obstacles.length} obstacles.`);
+  const parts = [`${waypoints.length} wps`, `${obstacles.length} obs`];
+  if (originalCorridors) parts.push('corridor data');
+  if (optimizedPath) parts.push(`${optimizedPath.length} opt pts`);
+  status(`Loaded "${name}" — ${parts.join(', ')}.`);
 }
 
 async function refreshMissionList() {
@@ -2933,7 +2956,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({'error': 'name required'}); return
             path = _save_mission_file(name, data.get('waypoints', []),
                                       data.get('obstacles', []),
-                                      data.get('servos', {}))
+                                      data.get('servos', {}),
+                                      data.get('original_corridors'),
+                                      data.get('optimized_path'))
             print(f'[save] {path}', flush=True)
             self._json({'ok': True, 'name': name})
 
