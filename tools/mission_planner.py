@@ -980,7 +980,6 @@ function redraw() {
   drawGrid(W, H);
   drawObstacles();
   drawObsPreview();
-  drawRoute();
   // Layer toggles
   const showRaw  = document.getElementById('layer-raw')?.checked ?? true;
   const showOpt  = document.getElementById('layer-opt')?.checked ?? true;
@@ -988,10 +987,7 @@ function redraw() {
   const showSim  = document.getElementById('layer-sim')?.checked ?? true;
   if (showRaw)  drawRawCorridors();
   if (showOpt)  drawOptimizedPath();
-  if (showSim)  drawSimPath();
-  drawPivotMarkers();
-  drawWaypoints();
-  drawStartMarker();
+  if (showSim)  { drawRoute(); drawSimPath(); drawPivotMarkers(); drawWaypoints(); drawStartMarker(); }
   drawRover();
   if (showReal) drawAnalyzeTrack();
   drawLiveRovers();
@@ -2704,65 +2700,63 @@ async function runComparison() {
   }
 }
 
-// ── Layer: Raw corridor vertices (white dots, turn markers = yellow) ──
+// ── Layer: Raw — corridor vertices as rover received from GQC ────
 function drawRawCorridors() {
   if (!originalCorridors) return;
   const corrs = originalCorridors.corridors || [];
+  let gi = 0, turns = 0, total = 0;
   corrs.forEach(c => {
     const cl = c.centerline || [];
     const sp = c.speeds || [];
-    // Draw line connecting vertices
+    total += cl.length;
+    // Line
     if (cl.length > 1) {
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath();
-      cl.forEach(([la, lo], i) => {
-        const p = project(la, lo);
-        i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-      });
-      ctx.stroke();
-      ctx.restore();
+      ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath();
+      cl.forEach(([la, lo], i) => { const p = project(la, lo); i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y); });
+      ctx.stroke(); ctx.restore();
     }
-    // Draw vertex dots
+    // Dots + labels
     cl.forEach(([la, lo], i) => {
       const p = project(la, lo);
       const isTurn = sp[i] !== undefined && sp[i] < 0;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, isTurn ? 6 : 3, 0, Math.PI * 2);
-      ctx.fillStyle = isTurn ? '#ffeb3b' : '#ffffff';
-      ctx.fill();
-      if (isTurn) {
-        ctx.strokeStyle = '#f44336'; ctx.lineWidth = 1.5;
-        ctx.stroke();
+      if (isTurn) turns++;
+      ctx.beginPath(); ctx.arc(p.x, p.y, isTurn ? 6 : 3, 0, Math.PI * 2);
+      ctx.fillStyle = isTurn ? '#ffeb3b' : '#ffffff'; ctx.fill();
+      if (isTurn) { ctx.strokeStyle = '#f44336'; ctx.lineWidth = 1.5; ctx.stroke(); }
+      if (isTurn || gi % 10 === 0) {
+        ctx.fillStyle = isTurn ? '#ffeb3b' : 'rgba(255,255,255,0.5)';
+        ctx.font = '9px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.fillText(String(gi), p.x, p.y - (isTurn ? 8 : 5));
       }
+      gi++;
     });
   });
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = '11px monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText(`Raw: ${total} pts, ${turns} turns`, 8, 8);
 }
 
-// ── Layer: Optimized path (green solid line + dots at waypoints) ──
+// ── Layer: Optimized — path as rover built it after corridor split ──
 function drawOptimizedPath() {
   if (!optimizedPath || !optimizedPath.length) return;
-  // Line
-  ctx.save();
-  ctx.strokeStyle = 'rgba(46,204,113,0.7)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
+  ctx.save(); ctx.strokeStyle = 'rgba(46,204,113,0.7)'; ctx.lineWidth = 2; ctx.beginPath();
+  optimizedPath.forEach((pt, i) => { const p = project(pt.lat, pt.lon); i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y); });
+  ctx.stroke(); ctx.restore();
+  // Dots + numbers
   optimizedPath.forEach((pt, i) => {
     const p = project(pt.lat, pt.lon);
-    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+    ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = '#2ecc71'; ctx.fill();
+    if (i % 10 === 0) {
+      ctx.fillStyle = 'rgba(46,204,113,0.7)'; ctx.font = '9px monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillText(String(i), p.x, p.y - 5);
+    }
   });
-  ctx.stroke();
-  ctx.restore();
-  // Dots
-  optimizedPath.forEach((pt, i) => {
-    const p = project(pt.lat, pt.lon);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = '#2ecc71';
-    ctx.fill();
-  });
+  ctx.fillStyle = 'rgba(46,204,113,0.7)'; ctx.font = '11px monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText(`Opt: ${optimizedPath.length} pts`, 8, 22);
 }
 
 function drawAnalyzeTrack() {
