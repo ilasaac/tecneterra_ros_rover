@@ -383,15 +383,11 @@ def auto_split_corridors(
         # Turn marker cluster (speed < 0 from GQC) — flush corridor,
         # collapse cluster to centroid, start new corridor.
         if spd_list[i] < 0:
-            turn_lats = []
-            turn_lons = []
+            # First turn-marked point = where rover stopped moving forward
+            turn_lat, turn_lon = points[i]
             while i < len(points) and spd_list[i] < 0:
-                turn_lats.append(points[i][0])
-                turn_lons.append(points[i][1])
-                i += 1
-            clat = sum(turn_lats) / len(turn_lats)
-            clon = sum(turn_lons) / len(turn_lons)
-            current_pts.append((clat, clon))
+                i += 1  # skip rest of cluster (GPS drift during spin)
+            current_pts.append((turn_lat, turn_lon))
             current_spd.append(0.0)
             if len(current_pts) >= 2:
                 corridors.append(Corridor(

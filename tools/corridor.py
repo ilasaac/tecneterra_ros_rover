@@ -381,15 +381,10 @@ def auto_split_corridors(
     i = 1
     while i < len(points):
         if spd_list[i] < 0:
-            turn_lats = []
-            turn_lons = []
+            turn_lat, turn_lon = points[i]
             while i < len(points) and spd_list[i] < 0:
-                turn_lats.append(points[i][0])
-                turn_lons.append(points[i][1])
                 i += 1
-            clat = sum(turn_lats) / len(turn_lats)
-            clon = sum(turn_lons) / len(turn_lons)
-            current_pts.append((clat, clon))
+            current_pts.append((turn_lat, turn_lon))
             current_spd.append(0.0)
             if len(current_pts) >= 2:
                 corridors.append(Corridor(
