@@ -1762,6 +1762,48 @@ function _gpsFinishCapture() {
   status(`GPS vertex ${_gpsSurveyPts.length} captured (avg of ${_gpsAvgBuf.length}).`);
 }
 
+function _perimeterToWalls(verts, wallWidth) {
+  // Convert a closed perimeter polygon into thin wall strips along each edge,
+  // offset outward. The rover stays inside; walls block exit.
+  // wallWidth in metres.
+  const walls = [];
+  const n = verts.length;
+  const DEG_PER_M = 1.0 / 111320;
+  // Compute polygon winding (positive = CCW in lat/lon)
+  let area2 = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area2 += (verts[j][1] - verts[i][1]) * (verts[j][0] + verts[i][0]);
+  }
+  const ccw = area2 > 0;  // if true, outward normal is to the right of edge direction
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const lat0 = verts[i][0], lon0 = verts[i][1];
+    const lat1 = verts[j][0], lon1 = verts[j][1];
+    const cosLat = Math.cos(((lat0 + lat1) / 2) * Math.PI / 180);
+    // Edge vector in metres
+    const dx = (lon1 - lon0) * 111320 * cosLat;
+    const dy = (lat1 - lat0) * 111320;
+    const edgeLen = Math.sqrt(dx * dx + dy * dy);
+    if (edgeLen < 0.01) continue;
+    // Outward normal (perpendicular, pointing outside polygon)
+    let nx, ny;
+    if (ccw) { nx = dy / edgeLen; ny = -dx / edgeLen; }
+    else     { nx = -dy / edgeLen; ny = dx / edgeLen; }
+    // Offset in degrees
+    const offLat = ny * wallWidth * DEG_PER_M;
+    const offLon = nx * wallWidth * DEG_PER_M / cosLat;
+    // Wall = thin rectangle: inner edge = original, outer edge = offset outward
+    walls.push([
+      [lat0, lon0],
+      [lat1, lon1],
+      [lat1 + offLat, lon1 + offLon],
+      [lat0 + offLat, lon0 + offLon],
+    ]);
+  }
+  return walls;
+}
+
 function gpsClosePoly() {
   if (_gpsSurveyPts.length < 3) {
     status('Need at least 3 vertices to close polygon.', '#e74c3c'); return;
@@ -1769,9 +1811,10 @@ function gpsClosePoly() {
   const mode = document.getElementById('gps-survey-mode').value;
   if (mode === 'perimeter') {
     _gpsPerimeter = [..._gpsSurveyPts];
-    // Perimeter stored as first obstacle (convention: index 0 = fence)
-    obstacles.unshift([..._gpsSurveyPts]);
-    status(`Perimeter saved (${_gpsSurveyPts.length} vertices). Added as fence polygon.`);
+    // Generate thin wall strips along each fence edge (3m wide outward)
+    const walls = _perimeterToWalls(_gpsSurveyPts, 3.0);
+    walls.forEach(w => obstacles.push(w));
+    status(`Perimeter: ${_gpsSurveyPts.length} vertices → ${walls.length} wall strips added.`);
   } else {
     obstacles.push([..._gpsSurveyPts]);
     status(`Obstacle ${obstacles.length} saved (${_gpsSurveyPts.length} vertices).`);
@@ -1805,8 +1848,29 @@ function _gpsUpdatePolyInfo() {
   }
 }
 
-// GPS survey dot + in-progress polygon on canvas
+// GPS survey dot + in-progress polygon + perimeter overlay on canvas
 function drawGpsSurvey() {
+  // Draw saved perimeter outline (green solid boundary)
+  if (_gpsPerimeter && _gpsPerimeter.length >= 3) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(46,204,113,0.7)';
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([10, 5]);
+    ctx.beginPath();
+    _gpsPerimeter.forEach(([la, lo], i) => {
+      const p = project(la, lo);
+      i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+    });
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+    // Label vertices
+    _gpsPerimeter.forEach(([la, lo], i) => {
+      const p = project(la, lo);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(46,204,113,0.8)'; ctx.fill();
+    });
+  }
   // Draw in-progress survey polygon (green dashed for perimeter, red dashed for obstacle)
   if (_gpsSurveyPts.length > 0) {
     const mode = document.getElementById('gps-survey-mode').value;
