@@ -771,6 +771,13 @@ tr:hover td{background:#1e1e3a}
                style="width:36px;background:#0a1020;color:#eee;border:1px solid #446;padding:1px 3px;border-radius:2px;font-size:10px"
                title="Number of fixes to average per capture">
         <span style="color:#888;font-size:9px">fixes</span>
+        <span style="color:#aaa;font-size:10px;margin-left:4px">Wall:</span>
+        <input id="gps-wall-width" type="number" value="3.0" min="0.5" max="20" step="0.5"
+               style="width:36px;background:#0a1020;color:#eee;border:1px solid #446;padding:1px 3px;border-radius:2px;font-size:10px"
+               title="Perimeter wall strip width in metres (outward from fence)">
+        <span style="color:#888;font-size:9px">m</span>
+      </div>
+      <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
         <button id="gps-capture-btn" class="btn-green" style="flex:1;padding:4px;font-size:11px;font-weight:bold" onclick="gpsCapture()" disabled>&#9678; Capture Point</button>
       </div>
       <div style="display:flex;gap:3px;align-items:center">
@@ -1811,8 +1818,9 @@ function gpsClosePoly() {
   const mode = document.getElementById('gps-survey-mode').value;
   if (mode === 'perimeter') {
     _gpsPerimeter = [..._gpsSurveyPts];
-    // Generate thin wall strips along each fence edge (3m wide outward)
-    const walls = _perimeterToWalls(_gpsSurveyPts, 3.0);
+    // Generate thin wall strips along each fence edge, offset outward
+    const wallW = parseFloat(document.getElementById('gps-wall-width').value) || 3.0;
+    const walls = _perimeterToWalls(_gpsSurveyPts, wallW);
     walls.forEach(w => obstacles.push(w));
     status(`Perimeter: ${_gpsSurveyPts.length} vertices → ${walls.length} wall strips added.`);
   } else {
