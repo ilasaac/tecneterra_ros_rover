@@ -35,6 +35,130 @@ from sim_navigator import (  # noqa: E402
     DEFAULT_NAV, DEFAULT_PHYS, SimWaypoint, simulate, compute_pivot_wps,
 )
 
+# ── u-blox GPS survey module ─────────────────────────────────────────────────
+_gps_serial = None          # serial.Serial instance (or None)
+_gps_lock   = _threading.Lock()
+_gps_fix: dict = {}         # {lat, lon, alt, fix, sats, hdop, ts, port}
+_gps_thread: _threading.Thread | None = None
+_gps_stop   = _threading.Event()
+
+
+def _parse_nmea_coord(raw: str, hemi: str) -> float | None:
+    """Convert NMEA ddmm.mmmm(m) string to decimal degrees."""
+    if not raw:
+        return None
+    try:
+        dot = raw.index('.')
+        deg = int(raw[:dot - 2])
+        minutes = float(raw[dot - 2:])
+        val = deg + minutes / 60.0
+        if hemi in ('S', 'W'):
+            val = -val
+        return val
+    except (ValueError, IndexError):
+        return None
+
+
+def _gps_reader(port: str, baud: int):
+    """Background thread: read NMEA from u-blox, update _gps_fix."""
+    import serial
+    global _gps_serial
+    try:
+        ser = serial.Serial(port, baud, timeout=1)
+    except Exception as e:
+        print(f'[gps] Cannot open {port}: {e}', flush=True)
+        with _gps_lock:
+            _gps_fix.clear()
+            _gps_fix['error'] = str(e)
+        return
+    with _gps_lock:
+        _gps_serial = ser
+    print(f'[gps] Opened {port} @ {baud}', flush=True)
+    buf = b''
+    while not _gps_stop.is_set():
+        try:
+            chunk = ser.read(max(1, ser.in_waiting or 1))
+        except Exception:
+            break
+        if not chunk:
+            continue
+        buf += chunk
+        while b'\n' in buf:
+            line, buf = buf.split(b'\n', 1)
+            try:
+                sentence = line.decode('ascii', errors='ignore').strip()
+            except Exception:
+                continue
+            if sentence.startswith('$') and 'GGA' in sentence[:7]:
+                parts = sentence.split(',')
+                if len(parts) < 15:
+                    continue
+                lat = _parse_nmea_coord(parts[2], parts[3])
+                lon = _parse_nmea_coord(parts[4], parts[5])
+                try:
+                    fix = int(parts[6]) if parts[6] else 0
+                except ValueError:
+                    fix = 0
+                try:
+                    sats = int(parts[7]) if parts[7] else 0
+                except ValueError:
+                    sats = 0
+                try:
+                    hdop = float(parts[8]) if parts[8] else 99.9
+                except ValueError:
+                    hdop = 99.9
+                try:
+                    alt = float(parts[9]) if parts[9] else 0.0
+                except ValueError:
+                    alt = 0.0
+                with _gps_lock:
+                    _gps_fix.update({
+                        'lat': lat, 'lon': lon, 'alt': alt,
+                        'fix': fix, 'sats': sats, 'hdop': hdop,
+                        'ts': _time.time(), 'port': port,
+                    })
+                    _gps_fix.pop('error', None)
+    ser.close()
+    with _gps_lock:
+        _gps_serial = None
+    print(f'[gps] Closed {port}', flush=True)
+
+
+def _gps_list_ports() -> list[dict]:
+    """List available serial ports on this PC."""
+    try:
+        from serial.tools.list_ports import comports
+        return [{'port': p.device, 'desc': p.description} for p in sorted(comports())]
+    except ImportError:
+        return []
+
+
+def _gps_connect(port: str, baud: int = 9600) -> dict:
+    global _gps_thread
+    _gps_disconnect()
+    _gps_stop.clear()
+    _gps_thread = _threading.Thread(target=_gps_reader, args=(port, baud), daemon=True)
+    _gps_thread.start()
+    return {'ok': True, 'port': port, 'baud': baud}
+
+
+def _gps_disconnect() -> dict:
+    global _gps_thread, _gps_serial
+    _gps_stop.set()
+    with _gps_lock:
+        if _gps_serial:
+            try:
+                _gps_serial.close()
+            except Exception:
+                pass
+            _gps_serial = None
+    if _gps_thread and _gps_thread.is_alive():
+        _gps_thread.join(timeout=2)
+    _gps_thread = None
+    with _gps_lock:
+        _gps_fix.clear()
+    return {'ok': True}
+
 DEFAULT_LAT  = 20.727715
 DEFAULT_LON  = -103.566782
 DEFAULT_PORT = 8089
@@ -618,8 +742,44 @@ tr:hover td{background:#1e1e3a}
     <div id="pb-time" style="font-size:10px;color:#888;margin-bottom:3px">t=0.00s  frame 0/0</div>
     <div id="pb-info" style="font-size:11px;color:#ccc;line-height:1.5;font-family:monospace"></div>
   </div>
-  <!-- ── Sensor Control (bottom of sidebar) ── -->
+  <!-- ── GPS Survey (bottom of sidebar) ── -->
   <div style="margin-top:auto">
+    <div style="padding:4px 8px;background:#0a2a1a;border-top:2px solid #2a8a4a;border-bottom:1px solid #333">
+      <b style="color:#6f8;font-size:12px">GPS SURVEY</b>
+    </div>
+    <div class="section" style="background:#0a1a0a">
+      <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
+        <select id="gps-port" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px;border-radius:2px;font-size:11px">
+          <option value="">-- select port --</option>
+        </select>
+        <button class="btn-blue" style="padding:2px 6px;font-size:10px" onclick="gpsRefreshPorts()" title="Refresh port list">&#8635;</button>
+        <button id="gps-conn-btn" class="btn-green" style="padding:2px 8px;font-size:10px" onclick="gpsToggleConnect()">Connect</button>
+      </div>
+      <div id="gps-fix-info" style="font-size:10px;color:#888;margin-bottom:4px;font-family:monospace;line-height:1.5">
+        Not connected
+      </div>
+      <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
+        <span style="color:#aaa;font-size:10px">Mode:</span>
+        <select id="gps-survey-mode" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px;border-radius:2px;font-size:11px">
+          <option value="perimeter">Perimeter (fence)</option>
+          <option value="obstacle">Obstacle</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
+        <span style="color:#aaa;font-size:10px">Avg:</span>
+        <input id="gps-avg-count" type="number" value="5" min="1" max="60"
+               style="width:36px;background:#0a1020;color:#eee;border:1px solid #446;padding:1px 3px;border-radius:2px;font-size:10px"
+               title="Number of fixes to average per capture">
+        <span style="color:#888;font-size:9px">fixes</span>
+        <button id="gps-capture-btn" class="btn-green" style="flex:1;padding:4px;font-size:11px;font-weight:bold" onclick="gpsCapture()" disabled>&#9678; Capture Point</button>
+      </div>
+      <div style="display:flex;gap:3px;align-items:center">
+        <button id="gps-close-btn" class="btn-orange" style="flex:1;padding:3px;font-size:10px" onclick="gpsClosePoly()" disabled>Close Polygon</button>
+        <button class="btn-red" style="padding:3px 8px;font-size:10px" onclick="gpsDiscardPoly()">Discard</button>
+      </div>
+      <div id="gps-poly-info" style="font-size:10px;color:#888;margin-top:3px"></div>
+    </div>
+    <!-- ── Sensor Control ── -->
     <div style="padding:4px 8px;background:#2a0a0a;border-top:2px solid #aa3a3a;border-bottom:1px solid #333">
       <b style="color:#f88;font-size:12px">SENSOR CONTROL</b>
     </div>
@@ -810,6 +970,7 @@ function redraw() {
   drawRover();
   drawAnalyzeTrack();
   drawLiveRovers();
+  drawGpsSurvey();
   drawMeasureOverlay();
 }
 
@@ -1472,10 +1633,240 @@ function clearObstacles() {
   obstacles = []; obsCurPts = []; redraw();
 }
 
+// ── GPS Survey ───────────────────────────────────────────────────
+let _gpsConnected = false;
+let _gpsFix = null;           // {lat, lon, fix, sats, hdop, ts}
+let _gpsSurveyPts = [];       // current polygon being surveyed
+let _gpsAvgBuf = [];          // accumulator for averaging
+let _gpsAvgTarget = 0;        // how many fixes to collect
+let _gpsCapturing = false;    // currently averaging?
+let _gpsPerimeter = null;     // [[lat,lon], ...] — single perimeter polygon
+let _gpsPollTimer = null;
+
+async function gpsRefreshPorts() {
+  const resp = await fetch('/gps_list_ports');
+  const ports = await resp.json();
+  const sel = document.getElementById('gps-port');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">-- select port --</option>';
+  ports.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.port;
+    opt.textContent = `${p.port} — ${p.desc}`;
+    sel.appendChild(opt);
+  });
+  if (prev) sel.value = prev;
+  status(`Found ${ports.length} serial port(s).`);
+}
+
+async function gpsToggleConnect() {
+  if (_gpsConnected) {
+    await fetch('/gps_disconnect', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    _gpsConnected = false;
+    _gpsFix = null;
+    if (_gpsPollTimer) { clearInterval(_gpsPollTimer); _gpsPollTimer = null; }
+    document.getElementById('gps-conn-btn').textContent = 'Connect';
+    document.getElementById('gps-conn-btn').className = 'btn-green';
+    document.getElementById('gps-fix-info').textContent = 'Not connected';
+    document.getElementById('gps-capture-btn').disabled = true;
+    redraw();
+    return;
+  }
+  const port = document.getElementById('gps-port').value;
+  if (!port) { status('Select a serial port first.', '#e74c3c'); return; }
+  const resp = await fetch('/gps_connect', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({port, baud: 9600}),
+  });
+  const r = await resp.json();
+  if (r.error) { status(`GPS: ${r.error}`, '#e74c3c'); return; }
+  _gpsConnected = true;
+  document.getElementById('gps-conn-btn').textContent = 'Disconnect';
+  document.getElementById('gps-conn-btn').className = 'btn-red';
+  _gpsPollTimer = setInterval(gpsPollStatus, 500);
+  status(`GPS connected on ${port}.`);
+}
+
+async function gpsPollStatus() {
+  try {
+    const resp = await fetch('/gps_status');
+    const d = await resp.json();
+    if (!d.connected) {
+      _gpsConnected = false;
+      if (_gpsPollTimer) { clearInterval(_gpsPollTimer); _gpsPollTimer = null; }
+      document.getElementById('gps-conn-btn').textContent = 'Connect';
+      document.getElementById('gps-conn-btn').className = 'btn-green';
+      document.getElementById('gps-fix-info').textContent = d.error ? `Error: ${d.error}` : 'Disconnected';
+      document.getElementById('gps-capture-btn').disabled = true;
+      _gpsFix = null;
+      redraw();
+      return;
+    }
+    if (d.error) {
+      document.getElementById('gps-fix-info').innerHTML = `<span style="color:#f44">${d.error}</span>`;
+      _gpsFix = null;
+      document.getElementById('gps-capture-btn').disabled = true;
+      redraw();
+      return;
+    }
+    _gpsFix = d;
+    const fixNames = {0:'No fix', 1:'GPS', 2:'DGPS', 4:'RTK Fix', 5:'RTK Float', 6:'Dead reck'};
+    const fixName = fixNames[d.fix] || `Fix ${d.fix}`;
+    const fixColor = d.fix >= 4 ? '#0f0' : d.fix >= 1 ? '#ff0' : '#f44';
+    const age = d.ts ? Math.max(0, (Date.now()/1000 - d.ts)).toFixed(0) : '?';
+    const capBtn = document.getElementById('gps-capture-btn');
+    capBtn.disabled = !d.lat || d.fix < 1;
+    let info = `<span style="color:${fixColor}">${fixName}</span> Sats:${d.sats} HDOP:${(d.hdop||0).toFixed(1)}`;
+    if (d.lat) info += `\n${d.lat.toFixed(8)}, ${d.lon.toFixed(8)}`;
+    if (_gpsCapturing) info += `\n<span style="color:#ff0">Averaging: ${_gpsAvgBuf.length}/${_gpsAvgTarget}</span>`;
+    document.getElementById('gps-fix-info').innerHTML = info.replace(/\n/g, '<br>');
+    // Accumulate for averaging if capturing
+    if (_gpsCapturing && d.lat && d.fix >= 1) {
+      _gpsAvgBuf.push([d.lat, d.lon]);
+      if (_gpsAvgBuf.length >= _gpsAvgTarget) {
+        _gpsFinishCapture();
+      }
+    }
+    redraw();
+  } catch(e) {}
+}
+
+function gpsCapture() {
+  if (!_gpsFix || !_gpsFix.lat) return;
+  _gpsAvgTarget = parseInt(document.getElementById('gps-avg-count').value) || 5;
+  if (_gpsAvgTarget <= 1) {
+    // Instant capture, no averaging
+    _gpsSurveyPts.push([_gpsFix.lat, _gpsFix.lon]);
+    _gpsUpdatePolyInfo();
+    redraw();
+    status(`GPS vertex ${_gpsSurveyPts.length} captured.`);
+    return;
+  }
+  _gpsAvgBuf = [];
+  _gpsCapturing = true;
+  document.getElementById('gps-capture-btn').disabled = true;
+  document.getElementById('gps-capture-btn').textContent = 'Averaging...';
+  status(`Collecting ${_gpsAvgTarget} fixes for average...`);
+}
+
+function _gpsFinishCapture() {
+  _gpsCapturing = false;
+  document.getElementById('gps-capture-btn').disabled = false;
+  document.getElementById('gps-capture-btn').innerHTML = '&#9678; Capture Point';
+  if (!_gpsAvgBuf.length) return;
+  const avgLat = _gpsAvgBuf.reduce((s, p) => s + p[0], 0) / _gpsAvgBuf.length;
+  const avgLon = _gpsAvgBuf.reduce((s, p) => s + p[1], 0) / _gpsAvgBuf.length;
+  _gpsSurveyPts.push([avgLat, avgLon]);
+  _gpsUpdatePolyInfo();
+  redraw();
+  status(`GPS vertex ${_gpsSurveyPts.length} captured (avg of ${_gpsAvgBuf.length}).`);
+}
+
+function gpsClosePoly() {
+  if (_gpsSurveyPts.length < 3) {
+    status('Need at least 3 vertices to close polygon.', '#e74c3c'); return;
+  }
+  const mode = document.getElementById('gps-survey-mode').value;
+  if (mode === 'perimeter') {
+    _gpsPerimeter = [..._gpsSurveyPts];
+    // Perimeter stored as first obstacle (convention: index 0 = fence)
+    obstacles.unshift([..._gpsSurveyPts]);
+    status(`Perimeter saved (${_gpsSurveyPts.length} vertices). Added as fence polygon.`);
+  } else {
+    obstacles.push([..._gpsSurveyPts]);
+    status(`Obstacle ${obstacles.length} saved (${_gpsSurveyPts.length} vertices).`);
+  }
+  _gpsSurveyPts = [];
+  _gpsUpdatePolyInfo();
+  redraw();
+}
+
+function gpsDiscardPoly() {
+  _gpsSurveyPts = [];
+  _gpsCapturing = false;
+  _gpsAvgBuf = [];
+  document.getElementById('gps-capture-btn').innerHTML = '&#9678; Capture Point';
+  _gpsUpdatePolyInfo();
+  redraw();
+  status('Survey polygon discarded.');
+}
+
+function _gpsUpdatePolyInfo() {
+  const mode = document.getElementById('gps-survey-mode').value;
+  const label = mode === 'perimeter' ? 'Perimeter' : 'Obstacle';
+  const el = document.getElementById('gps-poly-info');
+  const closeBtn = document.getElementById('gps-close-btn');
+  if (_gpsSurveyPts.length === 0) {
+    el.textContent = '';
+    closeBtn.disabled = true;
+  } else {
+    el.textContent = `${label}: ${_gpsSurveyPts.length} vertex(es)`;
+    closeBtn.disabled = _gpsSurveyPts.length < 3;
+  }
+}
+
+// GPS survey dot + in-progress polygon on canvas
+function drawGpsSurvey() {
+  // Draw in-progress survey polygon (green dashed for perimeter, red dashed for obstacle)
+  if (_gpsSurveyPts.length > 0) {
+    const mode = document.getElementById('gps-survey-mode').value;
+    const color = mode === 'perimeter' ? 'rgba(46,204,113,0.8)' : 'rgba(231,76,60,0.7)';
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    _gpsSurveyPts.forEach(([la, lo], i) => {
+      const p = project(la, lo);
+      i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+    });
+    if (_gpsSurveyPts.length > 1) {
+      const p0 = project(_gpsSurveyPts[0][0], _gpsSurveyPts[0][1]);
+      ctx.lineTo(p0.x, p0.y);
+    }
+    ctx.stroke();
+    ctx.restore();
+    // Vertex dots
+    _gpsSurveyPts.forEach(([la, lo], i) => {
+      const p = project(la, lo);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = color; ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = '9px monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillText(String(i + 1), p.x, p.y - 6);
+    });
+  }
+  // Draw live GPS position as pulsing dot
+  if (_gpsFix && _gpsFix.lat) {
+    const p = project(_gpsFix.lat, _gpsFix.lon);
+    const pulse = 6 + 3 * Math.sin(Date.now() / 200);
+    const fixColor = _gpsFix.fix >= 4 ? '#0f0' : _gpsFix.fix >= 1 ? '#ff0' : '#f44';
+    // Outer glow
+    ctx.beginPath(); ctx.arc(p.x, p.y, pulse + 4, 0, Math.PI * 2);
+    ctx.fillStyle = _gpsFix.fix >= 4 ? 'rgba(0,255,0,0.15)' : _gpsFix.fix >= 1 ? 'rgba(255,255,0,0.15)' : 'rgba(255,68,68,0.15)';
+    ctx.fill();
+    // Core dot
+    ctx.beginPath(); ctx.arc(p.x, p.y, pulse, 0, Math.PI * 2);
+    ctx.fillStyle = fixColor;
+    ctx.globalAlpha = 0.8;
+    ctx.fill();
+    ctx.globalAlpha = 1.0;
+    // Crosshair
+    ctx.strokeStyle = fixColor; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(p.x - 12, p.y); ctx.lineTo(p.x + 12, p.y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p.x, p.y - 12); ctx.lineTo(p.x, p.y + 12); ctx.stroke();
+  }
+}
+
+// Auto-refresh port list on page load
+gpsRefreshPorts();
+
 // ── Clear all ─────────────────────────────────────────────────────
 function clearAll() {
   waypoints = []; simResult = null;
   clearObstacles();
+  _gpsSurveyPts = []; _gpsPerimeter = null;
+  _gpsUpdatePolyInfo();
   refreshTable();
   document.getElementById('stats').style.display = 'none';
   redraw();
@@ -2304,6 +2695,15 @@ class _Handler(BaseHTTPRequestHandler):
                 data = {str(k): v for k, v in _rover_live.items()}
             self._json(data)
 
+        elif self.path == '/gps_status':
+            with _gps_lock:
+                data = dict(_gps_fix)
+            data['connected'] = _gps_serial is not None
+            self._json(data)
+
+        elif self.path == '/gps_list_ports':
+            self._json(_gps_list_ports())
+
         else:
             self.send_error(404)
 
@@ -2612,6 +3012,18 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        elif self.path == '/gps_connect':
+            data = json.loads(raw)
+            port = data.get('port', '')
+            baud = int(data.get('baud', 9600))
+            if not port:
+                self._json({'error': 'port required'}); return
+            self._json(_gps_connect(port, baud))
+
+        elif self.path == '/gps_disconnect':
+            self._json(_gps_disconnect())
+
         else:
             self.send_error(404)
 
