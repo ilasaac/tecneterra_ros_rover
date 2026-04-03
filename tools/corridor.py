@@ -371,7 +371,11 @@ def auto_split_corridors(
     current_spd: list[float] = [spd_list[0]]
     prev_heading: float | None = None
 
+    # Skip leading turn markers — first corridor must start with driving points
     i = 1
+    while i < len(points) and spd_list[i] < 0:
+        i += 1
+
     while i < len(points):
         if spd_list[i] < 0:
             turn_lat, turn_lon = points[i]

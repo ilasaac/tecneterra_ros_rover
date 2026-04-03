@@ -375,10 +375,12 @@ def auto_split_corridors(
     current_spd: list[float] = [spd_list[0]]
     prev_heading: float | None = None
 
+    # Skip leading turn markers — first corridor must start with driving points
     i = 1
+    while i < len(points) and spd_list[i] < 0:
+        i += 1
+
     while i < len(points):
-        # Turn marker cluster (speed < 0 from GQC) — flush corridor,
-        # collapse cluster to centroid, start new corridor.
         if spd_list[i] < 0:
             # First turn-marked point = where rover stopped moving forward
             turn_lat, turn_lon = points[i]
