@@ -169,6 +169,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val ppm = roverPpmChannels[selectedRoverId]
                 val throttle = ppm?.getOrNull(0) ?: 1500
                 val isTurning = Math.abs(throttle - 1500) < THROTTLE_NEUTRAL_DEADBAND
+                android.util.Log.d("REC", "thr=$throttle ppm=${ppm?.take(4)?.toList()} sel=$selectedRoverId turn=$isTurning dist=${"%.2f".format(dist)}")
 
                 if (isTurning) {
                     // Always record turn points (no distance check) — speed=-1 = turn marker
