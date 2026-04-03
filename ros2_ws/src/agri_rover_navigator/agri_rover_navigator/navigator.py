@@ -889,6 +889,8 @@ class NavigatorNode(Node):
                 'obstacles': [[(round(lat, 7), round(lon, 7)) for lat, lon in poly]
                               for poly in self._obstacle_polygons],
                 'rerouted_path': path_data,
+                'corridor_mode': self._corridor_mode,
+                'algorithm': self._algo if not self._corridor_mode else 'corridor',
             }
             path = os.path.join(self._run_dir, 'mission.json')
             with open(path, 'w') as f:

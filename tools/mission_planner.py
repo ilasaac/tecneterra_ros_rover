@@ -754,6 +754,7 @@ let liveRovers    = {};   // sysid → {lat, lon, hdg, ts}
 let analyzeMode   = false;
 let analyzeResult = null;
 let logFileData   = null;
+let fetchedMission = null;  // mission metadata from rover run (corridor_mode, algorithm)
 
 // Drag / pan tracking
 let _drag    = null;   // {type:'wp',idx} | {type:'pan',sx,sy,sLat,sLon}
@@ -2118,7 +2119,8 @@ async function fetchAndCompare() {
     document.getElementById('az-log-name').textContent = runDir;
     _showSaveBtn('navigator_diag.csv');
 
-    // Load mission waypoints + obstacles from run
+    // Load mission waypoints + obstacles + metadata from run
+    fetchedMission = d.mission;
     if (d.mission && d.mission.waypoints && d.mission.waypoints.length) {
       waypoints = d.mission.waypoints.map((w, i) => ({...w, idx: i}));
       if (d.mission.obstacles) obstacles = d.mission.obstacles;
@@ -2157,7 +2159,15 @@ async function runComparison() {
     const startLat = track.length ? track[0].lat : waypoints[0].lat;
     const startLon = track.length ? track[0].lon : waypoints[0].lon;
     const algoSel = document.getElementById('algo-select') ? document.getElementById('algo-select').value : '';
+    const isCorridor = fetchedMission && fetchedMission.corridor_mode;
+    const roverAlgo  = (fetchedMission && fetchedMission.algorithm) || '';
     const navParams = algoSel ? {control_algorithm: algoSel} : {};
+    // Corridor missions: disable pivots and reduce acceptance radius for dense polyline
+    if (isCorridor && !algoSel) {
+      navParams.pivot_threshold = 180;
+      navParams.default_acceptance_radius = 0.15;
+      navParams.align_threshold = 180;
+    }
 
     const sResp = await fetch('/simulate', {
       method: 'POST',
@@ -2175,15 +2185,17 @@ async function runComparison() {
     const simDur = (sData.total_steps / 25).toFixed(1);
     const dRms = o.cte_rms - sData.rms_xte;
     const dMax = o.cte_max - sData.max_xte;
+    const modeTag = isCorridor ? '<span style="color:#4f8">corridor</span>' :
+                    roverAlgo ? `<span style="color:#4f8">${roverAlgo}</span>` : '';
     overall.innerHTML =
-      `<b style="color:#ff9">Real rover:</b><br>` +
+      `<b style="color:#ff9">Real rover:</b>${modeTag ? ' ' + modeTag : ''}<br>` +
       `Pts: <b>${o.n_points}</b>  Dur: <b>${o.duration_s.toFixed(1)} s</b>  ` +
       `RTK: <b style="color:${o.rtk_pct > 80 ? '#0f0' : '#ff0'}">${o.rtk_pct.toFixed(1)}%</b><br>` +
       `CTE rms <b style="color:#7ef">${o.cte_rms.toFixed(3)} m</b>  ` +
       `max <b style="color:#f97">${o.cte_max.toFixed(3)} m</b>  ` +
       `mean <b>${o.cte_mean.toFixed(3)} m</b>` +
       `<hr style="border-color:#335;margin:4px 0">` +
-      `<b style="color:#4af">Simulation:</b><br>` +
+      `<b style="color:#4af">Simulation:</b> <span style="color:#4af">${algoSel || sData.algorithm || 'stanley'}${isCorridor ? ' (corridor params)' : ''}</span><br>` +
       `Steps: <b>${sData.total_steps}</b>  Dur: <b>${simDur} s</b>  ` +
       `WPs: <b>${(sData.waypoints_reached||[]).length}/${waypoints.length}</b><br>` +
       `XTE rms <b style="color:#4af">${sData.rms_xte.toFixed(3)} m</b>  ` +
