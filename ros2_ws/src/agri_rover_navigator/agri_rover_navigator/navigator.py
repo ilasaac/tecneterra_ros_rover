@@ -1343,19 +1343,10 @@ class NavigatorNode(Node):
                 self.get_logger().warn('Corridor mission: empty path')
                 return
 
-            # Detect turn points: last point of each corridor (except the last
-            # corridor) is a shared centroid = turn point in the path.
-            turn_indices = set()
-            idx = 0
-            for ci, c in enumerate(mission.corridors):
-                n = len(c.centerline)
-                if ci < len(mission.corridors) - 1 and c.turn_type == 'none':
-                    turn_indices.add(idx + n - 1)  # last point = turn centroid
-                idx += n
-                # Shared point: next corridor starts at same point, skip 1
-                if ci < len(mission.corridors) - 1 and c.turn_type == 'none':
-                    idx -= 1
-            self._corridor_turn_indices = turn_indices
+            # Turn indices come directly from corridors_to_path (is_turn flag)
+            self._corridor_turn_indices = {
+                i for i, pt in enumerate(path_pts) if pt[4]
+            }
 
             # New run — create timestamped directory for diag + mission
             self._start_new_run()
@@ -1373,7 +1364,7 @@ class NavigatorNode(Node):
             self._corridor_widths.clear()
 
             # Build path from corridor polyline
-            for i, (lat, lon, speed, width) in enumerate(path_pts):
+            for i, (lat, lon, speed, width, _is_turn) in enumerate(path_pts):
                 wp = MissionWaypoint()
                 wp.seq               = i
                 wp.latitude          = lat

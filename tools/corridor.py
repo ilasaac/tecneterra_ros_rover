@@ -210,22 +210,18 @@ def _corridor_entry_heading(corridor: Corridor) -> float:
 def corridors_to_path(
     mission: CorridorMission,
     default_speed: float = 0.0,
-) -> list[tuple[float, float, float, float]]:
+) -> list[tuple[float, float, float, float, bool]]:
     """Convert a corridor mission into a continuous polyline path.
 
-    Returns a list of (lat, lon, speed, corridor_half_width) tuples.
-    The Stanley controller follows this as a simple polyline.
-
-    Turn arcs or spin points are inserted between consecutive corridors.
+    Returns a list of (lat, lon, speed, corridor_half_width, is_turn) tuples.
+    is_turn=True at corridor boundary points (where rover should stop and spin).
     """
     if not mission.corridors:
         return []
 
-    # Build corridor lookup
     by_id = {c.corridor_id: c for c in mission.corridors}
 
-    # Walk the corridor chain
-    path: list[tuple[float, float, float, float]] = []
+    path: list[tuple[float, float, float, float, bool]] = []
     current = mission.corridors[0]
     visited = set()
 
@@ -233,11 +229,15 @@ def corridors_to_path(
         visited.add(current.corridor_id)
         fallback_speed = current.speed if current.speed > 0 else default_speed
         has_per_vertex = len(current.speeds) == len(current.centerline)
+        next_c = by_id.get(current.next_corridor_id)
+        is_last_corridor = next_c is None or next_c.corridor_id in visited
 
-        # Append all centerline points of this corridor
         for i, (lat, lon) in enumerate(current.centerline):
             spd = current.speeds[i] if has_per_vertex and current.speeds[i] > 0 else fallback_speed
-            path.append((lat, lon, spd, current.width))
+            is_turn = (i == len(current.centerline) - 1
+                       and not is_last_corridor
+                       and current.turn_type == 'none')
+            path.append((lat, lon, spd, current.width, is_turn))
 
         # Find next corridor
         next_c = by_id.get(current.next_corridor_id)
@@ -262,14 +262,8 @@ def corridors_to_path(
         crossing_width = mission.headland_width if mission.headland_width > 0 else max(current.width, next_c.width) * 2
 
         if turn_type == 'headland':
-            # 3-point headland: straight crossing segment between row ends.
-            # The rover will:
-            #   1. Reach row end → spin (heading error to crossing bearing > align_thresh)
-            #   2. Drive straight across headland (CTE on crossing segment)
-            #   3. Reach crossing end → spin (heading error to next row > align_thresh)
-            # No new control code needed — align-spin handles the spins naturally.
-            path.append((exit_pt[0], exit_pt[1], 0.0, crossing_width))   # crossing start
-            path.append((entry_pt[0], entry_pt[1], 0.0, crossing_width)) # crossing end
+            path.append((exit_pt[0], exit_pt[1], 0.0, crossing_width, True))
+            path.append((entry_pt[0], entry_pt[1], 0.0, crossing_width, False))
 
         elif turn_type == 'arc':
             arc_pts = compute_turn_arc(
@@ -279,13 +273,12 @@ def corridors_to_path(
             )
             turn_width = min(current.width, next_c.width)
             for lat, lon in arc_pts[1:]:
-                path.append((lat, lon, 0.0, turn_width))
+                path.append((lat, lon, 0.0, turn_width, False))
 
         elif turn_type == 'spin':
-            # Legacy single-point spin (rover spins at row end, then drives to next row)
-            path.append((exit_pt[0], exit_pt[1], 0.0, crossing_width))
+            path.append((exit_pt[0], exit_pt[1], 0.0, crossing_width, True))
 
-        # else: 'none' — corridors connect directly
+        # else: 'none' — corridors connect directly (turn marked inline)
 
         current = next_c
 
