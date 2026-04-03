@@ -380,12 +380,27 @@ def auto_split_corridors(
     while i < len(points) and spd_list[i] < 0:
         i += 1
 
+    TURN_CLEAR_M = 1.5  # remove points closer than this to the turn point
+
     while i < len(points):
         if spd_list[i] < 0:
             # First turn-marked point = where rover stopped moving forward
             turn_lat, turn_lon = points[i]
             while i < len(points) and spd_list[i] < 0:
                 i += 1  # skip rest of cluster (GPS drift during spin)
+            # Skip points too close AFTER the turn (noisy exit)
+            while i < len(points) and spd_list[i] >= 0:
+                d = _haversine(turn_lat, turn_lon, points[i][0], points[i][1])
+                if d >= TURN_CLEAR_M:
+                    break
+                i += 1
+            # Trim points too close BEFORE the turn from current corridor
+            while len(current_pts) > 1:
+                d = _haversine(current_pts[-1][0], current_pts[-1][1], turn_lat, turn_lon)
+                if d >= TURN_CLEAR_M:
+                    break
+                current_pts.pop()
+                current_spd.pop()
             current_pts.append((turn_lat, turn_lon))
             current_spd.append(0.0)
             if len(current_pts) >= 2:
