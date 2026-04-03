@@ -1494,11 +1494,20 @@ class NavigatorNode(Node):
 
         target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
 
-        # Pivot at turn point: stop, spin to next corridor heading, then continue
+        # Pivot at turn point: drive past it, then stop and spin when distance increases
         if turn_idx is not None:
             dist_to_turn = turn_s - s_nearest
-            # Close enough to turn point — stop and spin
-            if dist_to_turn < self._accept_r:
+            tp = self._path[turn_idx]
+            direct_dist = haversine(rlat, rlon, tp.latitude, tp.longitude)
+            # Track closest approach to turn point
+            if not hasattr(self, '_pivot_min_dist') or self._pivot_min_dist is None:
+                self._pivot_min_dist = direct_dist
+            if direct_dist < self._pivot_min_dist:
+                self._pivot_min_dist = direct_dist
+            # Trigger: within acceptance radius AND distance is increasing (passed it)
+            passed_turn = (self._pivot_min_dist < self._accept_r
+                           and direct_dist > self._pivot_min_dist + 0.05)
+            if passed_turn:
                 # Find a point well into the next corridor for a stable bearing.
                 # Use at least 2m ahead (or the farthest available point).
                 tp = self._path[turn_idx]
@@ -1530,6 +1539,7 @@ class NavigatorNode(Node):
                 # Spin complete — advance past turn into new corridor
                 self._corridor_turn_indices.discard(turn_idx)
                 self._spin_target_brg = None
+                self._pivot_min_dist = None  # reset for next turn
                 self._path_idx = nxt  # first distinct point of new corridor
                 self._corridor_entered = False  # re-enter corridor grace
                 self.get_logger().info(
