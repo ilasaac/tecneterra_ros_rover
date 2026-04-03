@@ -980,8 +980,82 @@ class NavigatorNode(Node):
         if self._expanded_polygons:
             self._reroute_path()
 
+    def _collapse_spin_clusters(self):
+        """Collapse spin-in-place waypoint clusters into single waypoints.
+
+        During recording the GPS antenna sweeps a ~0.35 m arc around the rotation
+        centre.  This creates 2-5 waypoints at nearly the same location with
+        zero-length segments.  Replace each cluster with one waypoint at the
+        centroid, keeping the outgoing speed of the last point in the cluster.
+        """
+        if len(self._path_original) < 3:
+            return
+        CLUSTER_RADIUS = 0.5  # metres — points closer than this are a spin cluster
+        result: list[MissionWaypoint] = []
+        cluster: list[MissionWaypoint] = [self._path_original[0]]
+
+        for i in range(1, len(self._path_original)):
+            wp = self._path_original[i]
+            prev = cluster[0]  # compare to cluster start
+            d = haversine(prev.latitude, prev.longitude, wp.latitude, wp.longitude)
+            if d < CLUSTER_RADIUS:
+                cluster.append(wp)
+            else:
+                # Flush cluster
+                result.append(self._merge_cluster(cluster))
+                cluster = [wp]
+        # Flush last cluster
+        result.append(self._merge_cluster(cluster))
+
+        removed = len(self._path_original) - len(result)
+        if removed > 0:
+            self.get_logger().info(
+                f'Spin optimizer: {len(self._path_original)} → {len(result)} wps '
+                f'({removed} spin-cluster points collapsed)')
+            # Rebuild path and arc-lengths from optimized list
+            self._path_original = result
+            self._path = list(result)
+            self._bypass_indices.clear()
+            self._path_s = self._rebuild_path_s(
+                self._path, self._path_origin_lat, self._path_origin_lon)
+            # Re-number sequences
+            for i, wp in enumerate(self._path):
+                wp.seq = i
+
+    @staticmethod
+    def _merge_cluster(cluster: list[MissionWaypoint]) -> MissionWaypoint:
+        """Merge a cluster of spin-in-place waypoints into one.
+
+        Uses the centroid position.  Speed = last non-zero speed in the cluster
+        (the outgoing speed).  Hold = max hold in cluster.
+        """
+        if len(cluster) == 1:
+            return cluster[0]
+        lat_avg = sum(wp.latitude for wp in cluster) / len(cluster)
+        lon_avg = sum(wp.longitude for wp in cluster) / len(cluster)
+        # Use last non-zero speed (outgoing direction speed)
+        speed = 0.0
+        for wp in reversed(cluster):
+            if wp.speed > 0:
+                speed = wp.speed
+                break
+        hold = max(wp.hold_secs for wp in cluster)
+        merged = MissionWaypoint()
+        merged.seq = cluster[0].seq
+        merged.latitude = lat_avg
+        merged.longitude = lon_avg
+        merged.speed = speed
+        merged.acceptance_radius = cluster[0].acceptance_radius
+        merged.hold_secs = hold
+        return merged
+
     def _cb_mission_fence(self, msg: String):
         """Parse JSON fence polygons and reroute the current mission path."""
+        # Optimize spin clusters before rerouting — collapse identical-position
+        # waypoints recorded during spin-in-place turns.
+        if self._path_original and not self._corridor_mode:
+            self._collapse_spin_clusters()
+
         try:
             data  = json.loads(msg.data)
             polys = data.get('polygons', [])
