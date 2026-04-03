@@ -367,7 +367,9 @@ sealed class MissionAction {
 }
 ```
 
-Waypoint speed: recorded with timestamps during REC, then smoothed post-hoc via 5-point sliding-window average (`smoothRecordedSpeeds()`), clamped [0.3, 1.5] m/s; sent as `z` field of NAV_WAYPOINT; first WP uses 0 (navigator default). `holdSecs = -1` marks a **waiting point** (rover disarms on arrival).
+Waypoint speed: recorded with timestamps during REC, then smoothed post-hoc via 5-point sliding-window average (`smoothRecordedSpeeds()`), clamped [0.3, 1.5] m/s; sent as `z` field of NAV_WAYPOINT; first WP uses 0 (navigator default). `holdSecs = -1` marks a **waiting point** (rover disarms on arrival). `speed = -1` marks a **turn point** (zero-throttle during REC) — navigator collapses consecutive turn points into one centroid.
+
+**Turn-point detection (REC):** During recording, GQC checks throttle PPM channel. If within ±80 µs of neutral (1500), the waypoint is marked `speed = -1` (turn marker, no min-distance check). `smoothRecordedSpeeds()` skips these. `mavlink_bridge` passes negative speed through. Navigator `_collapse_spin_clusters()` merges consecutive `speed < 0` waypoints into a single centroid waypoint with `speed = 0` (navigator default). `sim_navigator` has matching logic.
 
 **Safety:**
 - E-STOP → `sendCriticalCommand` DISARM (cmd 400, p1=0) to all rovers.
