@@ -1493,10 +1493,16 @@ class NavigatorNode(Node):
             dist_to_turn = turn_s - s_nearest
             # Close enough to turn point — stop and spin
             if dist_to_turn < self._accept_r:
-                # Compute heading of the segment AFTER the turn point
-                nxt = min(turn_idx + 1, len(self._path) - 1)
+                # Find first distinct point after turn (skip shared/duplicate coords)
+                tp = self._path[turn_idx]
+                nxt = turn_idx + 1
+                while nxt < len(self._path) - 1:
+                    if haversine(tp.latitude, tp.longitude,
+                                 self._path[nxt].latitude, self._path[nxt].longitude) > 0.1:
+                        break
+                    nxt += 1
                 next_brg = bearing_to(
-                    self._path[turn_idx].latitude, self._path[turn_idx].longitude,
+                    tp.latitude, tp.longitude,
                     self._path[nxt].latitude, self._path[nxt].longitude)
                 pivot_err = ((next_brg - self._heading + 180) % 360) - 180
                 if abs(pivot_err) > self._hdb:
