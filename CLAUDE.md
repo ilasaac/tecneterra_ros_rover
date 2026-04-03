@@ -40,7 +40,7 @@ ros_agri_rover/
     ├── monitor.py               ← terminal dashboard + Leaflet map (HTTP :8088); auto-fit, localStorage zoom, 5s refresh
     ├── mission_uploader.py      ← CSV waypoints → MAVLink mission upload
     ├── dynamics_collector.py    ← manual-drive data logger for model tuning (PPM + GPS → CSV)
-    └── mission_data_collector.py ← ROS2 mission data collector for sim comparison (GPS + commands + mission capture → /tmp/mission_data_*/)
+    └── mission_data_collector.py ← ROS2 mission data collector for sim comparison (GPS + commands + mission capture → /tmp/mission_data_*/; largely superseded by navigator's auto-save to /tmp/rover_runs/)
 ```
 
 ---
