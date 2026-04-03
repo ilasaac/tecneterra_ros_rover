@@ -36,7 +36,7 @@ ros_agri_rover/
     ├── rtk_forwarder.py         ← NTRIP/E610 RTCM3 → u-blox serial
     ├── start_rover1_sim.sh / start_rover2_sim.sh ← single-command sim launchers
     ├── sim_navigator.py         ← SIL: Stanley+MPC+TTR+pivot+obstacle; reads rover1_params.yaml; --algo flag overrides; TTR uses DiffDriveState (track-width kinematics + SmoothSpeed + angular limit from Robot.cpp); diagnostics → tools/obstacle_debug.log
-    ├── mission_planner.py       ← web mission editor + SIL (HTTP :8089); Gen button: Grid/Zigzag/Scatter/Spiral
+    ├── mission_planner.py       ← web mission editor + SIL (HTTP :8089); Gen button: Grid/Zigzag/Scatter/Spiral; GPS Survey (u-blox USB)
     ├── monitor.py               ← terminal dashboard + Leaflet map (HTTP :8088); auto-fit, localStorage zoom, 5s refresh
     ├── mission_uploader.py      ← CSV waypoints → MAVLink mission upload
     ├── dynamics_collector.py    ← manual-drive data logger for model tuning (PPM + GPS → CSV)
@@ -452,6 +452,31 @@ lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))
 **mission_planner.py**: "Corridor Grid" generation pattern in web UI. `/generate_corridor` API endpoint.
 
 **GQC corridor editor**: TODO — currently corridors uploaded via mission_planner.py.
+
+---
+
+## GPS Survey (mission_planner.py)
+
+Connect a **u-blox GPS module** via USB serial to the host PC running mission_planner. Walk the field to capture perimeter fence vertices and obstacle polygon vertices directly onto the map.
+
+**Backend** (Python):
+- NMEA reader thread parses `$GNGGA`/`$GPGGA` for lat, lon, fix quality, satellites, HDOP
+- Endpoints: `GET /gps_status`, `GET /gps_list_ports`, `POST /gps_connect`, `POST /gps_disconnect`
+- Requires `pyserial` (`pip install pyserial`)
+
+**UI** (GPS SURVEY panel, bottom of sidebar):
+- COM port selector + refresh + connect/disconnect
+- Live fix display: fix type (color-coded), satellite count, HDOP, coordinates
+- Mode: **Perimeter** (fence — inserted as `obstacles[0]`) or **Obstacle** (appended)
+- **Averaging**: 1–60 fixes per capture (higher = more accurate vertex position)
+- Capture Point → Close Polygon → saved into obstacles array, persisted with mission JSON
+
+**Map rendering**:
+- Pulsing GPS dot: green = RTK Fix (4), yellow = GPS/DGPS (1–2), red = no fix
+- Crosshair at current position
+- In-progress polygon: green dashed (perimeter) / red dashed (obstacle) with numbered vertices
+
+**Typical workflow**: connect u-blox → select Perimeter → walk fence corners pressing Capture at each → Close Polygon → switch to Obstacle → walk around tree/rock pressing Capture → Close Polygon → Save mission → Upload to rover.
 
 ---
 
