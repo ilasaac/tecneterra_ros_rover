@@ -1476,10 +1476,16 @@ class NavigatorNode(Node):
         turn_s = None
         turn_idx = None
         for ti in sorted(self._corridor_turn_indices):
-            if ti < len(self._path_s) and self._path_s[ti] > s_nearest:
+            if ti < len(self._path_s) and self._path_s[ti] >= s_nearest - self._accept_r:
                 turn_s = self._path_s[ti]
                 turn_idx = ti
                 break
+
+        # Clamp s_nearest to not overshoot past the turn point.
+        # _nearest_on_path searches 10 segments ahead and may project onto
+        # the next corridor, making s_nearest > turn_s.
+        if turn_s is not None and s_nearest > turn_s:
+            s_nearest = turn_s
 
         # Lookahead — clamp to turn point so rover never sees next corridor
         s_limit = turn_s if turn_s is not None else self._corridor_total_s
@@ -1493,17 +1499,23 @@ class NavigatorNode(Node):
             dist_to_turn = turn_s - s_nearest
             # Close enough to turn point — stop and spin
             if dist_to_turn < self._accept_r:
-                # Find first distinct point after turn (skip shared/duplicate coords)
+                # Find a point well into the next corridor for a stable bearing.
+                # Use at least 2m ahead (or the farthest available point).
                 tp = self._path[turn_idx]
                 nxt = turn_idx + 1
-                while nxt < len(self._path) - 1:
-                    if haversine(tp.latitude, tp.longitude,
-                                 self._path[nxt].latitude, self._path[nxt].longitude) > 0.1:
+                best_nxt = min(nxt, len(self._path) - 1)
+                while nxt < len(self._path):
+                    d = haversine(tp.latitude, tp.longitude,
+                                  self._path[nxt].latitude, self._path[nxt].longitude)
+                    if d > 0.1:
+                        best_nxt = nxt  # at least a distinct point
+                    if d >= 2.0:
+                        best_nxt = nxt
                         break
                     nxt += 1
                 next_brg = bearing_to(
                     tp.latitude, tp.longitude,
-                    self._path[nxt].latitude, self._path[nxt].longitude)
+                    self._path[best_nxt].latitude, self._path[best_nxt].longitude)
                 pivot_err = ((next_brg - self._heading + 180) % 360) - 180
                 if abs(pivot_err) > self._hdb:
                     # Still turning — spin in place
