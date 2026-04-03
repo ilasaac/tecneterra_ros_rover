@@ -1322,9 +1322,18 @@ class NavigatorNode(Node):
             self._publish_halt()
             return
 
-        # CTE to current segment
+        # CTE to current segment — skip zero-length segments (spin-in-place
+        # waypoints) which return CTE=0 regardless of rover position.
         seg_idx = min(best_seg, len(self._path) - 1)
         cte = self._cte_to_seg(flat, flon, seg_idx)
+        if cte == 0.0 and seg_idx + 1 < len(self._path):
+            # Zero-length segment: try the next non-degenerate segment for CTE
+            for try_seg in range(seg_idx + 1, min(seg_idx + 10, len(self._path))):
+                try_cte = self._cte_to_seg(flat, flon, try_seg)
+                if try_cte != 0.0:
+                    cte = try_cte
+                    seg_idx = try_seg
+                    break
 
         # Corridor width boundary — only enforce once the rover has entered the
         # corridor (CTE was within width at least once).  On mission start the
@@ -1829,7 +1838,9 @@ class NavigatorNode(Node):
         seg_dx  = (b_lon - a_lon) * m_lon
         seg_len = math.hypot(seg_dx, seg_dy)
         if seg_len < 0.01:
-            return 0.0
+            # Zero-length segment (spin-in-place waypoint): return distance to the
+            # point as unsigned CTE.  Returning 0 hides the rover drifting away.
+            return math.hypot((lat - b_lat) * m_lat, (lon - b_lon) * m_lon)
 
         rv_dy = (lat - a_lat) * m_lat
         rv_dx = (lon - a_lon) * m_lon
