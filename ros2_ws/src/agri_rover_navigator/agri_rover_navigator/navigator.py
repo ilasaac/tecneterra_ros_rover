@@ -1520,11 +1520,11 @@ class NavigatorNode(Node):
                 self._spin_target_brg = None
                 self._path_idx = nxt  # first distinct point of new corridor
                 self._corridor_entered = False  # re-enter corridor grace
-                self._pivot_debug_until = time.time() + 5.0  # log for 5s after pivot
                 self.get_logger().info(
                     f'PIVOT DONE: turn_idx={turn_idx} nxt={nxt} '
                     f'new_path_idx={self._path_idx} hdg={self._heading:.1f} '
                     f'next_brg={next_brg:.1f} remaining_turns={self._corridor_turn_indices}')
+                return  # recompute everything on next tick with new _path_idx
 
         # Freeze target bearing during align-spin
         if self._spin_target_brg is not None:
