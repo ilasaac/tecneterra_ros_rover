@@ -136,7 +136,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     // --- CORRIDOR RECORDING ---
     // Each REC cycle adds a corridor. UPLOAD sends all as a corridor mission.
     // Each corridor point = Triple(LatLng, speed m/s). Speed from smoothRecordedSpeeds().
-    private var isCorridorMode = false
+    private var isCorridorMode = true   // always corridor mode
     private val corridorList = mutableListOf<List<Pair<LatLng, Float>>>()  // (position, speed)
     private var corridorWidth = 1.5f   // half-width in metres (default)
 
@@ -274,11 +274,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             runOnUiThread { handleLinkMismatch(reason) }
         },
 
-        // Rerouted path from navigator — draw as dashed orange/cyan overlay
+        // Rerouted path from navigator — this IS the rover's actual mission view.
+        // Redraw mission overlays to show the corrected path (with bypass segments,
+        // spin points, etc.) instead of the raw uploaded waypoints.
         onReroutedPath = { sysId, path ->
             runOnUiThread {
                 roverReroutedPaths[sysId] = path
-                redrawReroutedPath(sysId)
+                roverMissionVisible[sysId] = true
+                redrawRoverMissions()
             }
         },
 
@@ -984,10 +987,24 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
             overlays.clear()
         }
-        for ((roverId, points) in roverMissions) {
-            if (roverMissionVisible[roverId] == false || points.isEmpty()) continue
+        for ((roverId, _) in roverMissions) {
+            if (roverMissionVisible[roverId] == false) continue
+
+            // Use rerouted path (what rover actually follows) if available,
+            // fall back to uploaded mission points
+            val rerouted = roverReroutedPaths[roverId]
+            val points: List<LatLng>
+            val bypass: List<Boolean>
+            if (rerouted != null && rerouted.isNotEmpty()) {
+                points = rerouted.map { LatLng(it.first, it.second) }
+                bypass = rerouted.map { it.third }
+            } else {
+                points = roverMissions[roverId] ?: continue
+                bypass = roverMissionBypass[roverId] ?: emptyList()
+            }
+            if (points.isEmpty()) continue
+
             val overlays     = roverMissionOverlays.getOrPut(roverId) { mutableListOf() }
-            val bypass       = roverMissionBypass[roverId] ?: emptyList()
             val pendingColor = if (roverId == 1) Color.parseColor("#F44336")
                                else              Color.parseColor("#2196F3")
             val walkedColor  = if (roverId == 1) Color.parseColor("#FFCDD2")
@@ -1034,7 +1051,31 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     .icon(createDotBitmap(dotColor, 7)).flat(true).zIndex(2f))
                     ?.also { overlays.add(it) }
             }
+
+            // Spin-in-place markers — detect sharp turns from waypoint geometry
+            val pivotThreshold = 50.0  // degrees — matches navigator pivot_threshold
+            for (i in 1 until points.size - 1) {
+                val inBrg  = bearingTo(points[i - 1], points[i])
+                val outBrg = bearingTo(points[i], points[i + 1])
+                val turn   = Math.abs(((outBrg - inBrg + 180) % 360) - 180)
+                if (turn >= pivotThreshold) {
+                    val spinColor = if (i < walkedIdx) walkedColor else Color.parseColor("#FFC107")
+                    map.addMarker(MarkerOptions().position(points[i]).anchor(0.5f, 0.5f)
+                        .icon(createDotBitmap(spinColor, 12)).flat(true).zIndex(3f)
+                        .title("Spin ${turn.toInt()}°"))
+                        ?.also { overlays.add(it) }
+                }
+            }
         }
+    }
+
+    private fun bearingTo(a: LatLng, b: LatLng): Double {
+        val lat1 = Math.toRadians(a.latitude)
+        val lat2 = Math.toRadians(b.latitude)
+        val dLon = Math.toRadians(b.longitude - a.longitude)
+        val x = Math.sin(dLon) * Math.cos(lat2)
+        val y = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon)
+        return (Math.toDegrees(Math.atan2(x, y)) + 360) % 360
     }
 
     private fun distanceMeters(a: LatLng, b: LatLng): Double {
@@ -1253,7 +1294,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val popup = PopupMenu(this, view)
         popup.menu.add("Upload Mission")
         popup.menu.add("Add Wait Point")
-        popup.menu.add(if (isCorridorMode) "Switch to Waypoint Mode" else "Switch to Corridor Mode")
         popup.menu.add("Save")
         popup.menu.add("Load")
         popup.menu.add("Clear")
@@ -1263,16 +1303,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             when (item.title) {
                 "Upload Mission"             -> doUploadMission()
                 "Add Wait Point"             -> addWaitPoint()
-                "Switch to Corridor Mode"    -> {
-                    isCorridorMode = true
-                    corridorList.clear()
-                    Toast.makeText(this, "Corridor mode: REC each row, then UPLOAD", Toast.LENGTH_LONG).show()
-                }
-                "Switch to Waypoint Mode"    -> {
-                    isCorridorMode = false
-                    corridorList.clear()
-                    Toast.makeText(this, "Waypoint mode", Toast.LENGTH_SHORT).show()
-                }
+                // Corridor mode is always active — no mode switch needed
                 "Save"                -> showSaveDialog()
                 "Load"                -> showLoadDialog()
                 "Clear"               -> clearMission()
