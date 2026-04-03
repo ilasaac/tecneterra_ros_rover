@@ -467,6 +467,7 @@ class NavigatorNode(Node):
         self._diag_file   = None
         self._diag_writer = None
         self._run_dir     = None   # per-run directory under /tmp/rover_runs/
+        self._raw_corridor_json = None  # raw corridor JSON for saving
         if self._diag_enabled:
             self._open_diag_log(self.get_parameter('diag_log_path').value)
 
@@ -895,6 +896,22 @@ class NavigatorNode(Node):
             path = os.path.join(self._run_dir, 'mission.json')
             with open(path, 'w') as f:
                 json.dump(mission_out, f, separators=(',', ':'))
+
+            # Save raw corridor data (original vertices with turn markers)
+            if hasattr(self, '_raw_corridor_json') and self._raw_corridor_json:
+                raw_path = os.path.join(self._run_dir, 'original_corridors.json')
+                with open(raw_path, 'w') as f:
+                    f.write(self._raw_corridor_json)
+
+            # Save optimized path (what the rover actually follows)
+            opt_data = [
+                {'lat': round(wp.latitude, 7), 'lon': round(wp.longitude, 7),
+                 'speed': round(wp.speed, 2)}
+                for wp in self._path
+            ]
+            opt_path = os.path.join(self._run_dir, 'optimized_path.json')
+            with open(opt_path, 'w') as f:
+                json.dump(opt_data, f, separators=(',', ':'))
         except Exception:
             pass
 
@@ -1299,6 +1316,9 @@ class NavigatorNode(Node):
             )
 
             mission = corridor_mission_from_json(msg.data)
+
+            # Save raw corridor data before any optimization
+            self._raw_corridor_json = msg.data
 
             # Auto-split: if mission has only 1 corridor with many points,
             # it's likely a raw recording. Split at sharp turns into multiple

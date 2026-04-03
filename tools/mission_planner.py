@@ -716,6 +716,13 @@ tr:hover td{background:#1e1e3a}
       <span style="margin-left:6px;color:#4af">|</span>
       <span style="color:#4af">&#9473; Sim</span>
     </div>
+    <div style="padding:3px 8px;background:#0d0d1a;border-bottom:1px solid #222;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:10px">
+      <span style="color:#888">Layers:</span>
+      <label style="color:#fff"><input type="checkbox" id="layer-raw" checked onchange="redraw()" style="width:auto;vertical-align:middle"> Raw</label>
+      <label style="color:#2c6"><input type="checkbox" id="layer-opt" checked onchange="redraw()" style="width:auto;vertical-align:middle"> Optimized</label>
+      <label style="color:#0e6"><input type="checkbox" id="layer-real" checked onchange="redraw()" style="width:auto;vertical-align:middle"> Real</label>
+      <label style="color:#4af"><input type="checkbox" id="layer-sim" checked onchange="redraw()" style="width:auto;vertical-align:middle"> Sim</label>
+    </div>
     <div id="az-overall"></div>
     <div style="max-height:150px;overflow-y:auto">
       <table id="az-seg-table">
@@ -928,6 +935,8 @@ let liveRovers    = {};   // sysid → {lat, lon, hdg, ts}
 let analyzeResult = null;
 let logFileData   = null;
 let fetchedMission = null;  // mission metadata from rover run (corridor_mode, algorithm)
+let originalCorridors = null;  // raw corridor vertices from rover (with speed markers)
+let optimizedPath = null;      // optimized path from rover (what it actually follows)
 
 // Drag / pan tracking
 let _drag    = null;   // {type:'wp',idx} | {type:'pan',sx,sy,sLat,sLon}
@@ -972,12 +981,19 @@ function redraw() {
   drawObstacles();
   drawObsPreview();
   drawRoute();
-  drawSimPath();
+  // Layer toggles
+  const showRaw  = document.getElementById('layer-raw')?.checked ?? true;
+  const showOpt  = document.getElementById('layer-opt')?.checked ?? true;
+  const showReal = document.getElementById('layer-real')?.checked ?? true;
+  const showSim  = document.getElementById('layer-sim')?.checked ?? true;
+  if (showRaw)  drawRawCorridors();
+  if (showOpt)  drawOptimizedPath();
+  if (showSim)  drawSimPath();
   drawPivotMarkers();
   drawWaypoints();
   drawStartMarker();
   drawRover();
-  drawAnalyzeTrack();
+  if (showReal) drawAnalyzeTrack();
   drawLiveRovers();
   drawGpsSurvey();
   drawMeasureOverlay();
@@ -2582,6 +2598,8 @@ async function fetchAndCompare() {
 
     // Load mission waypoints + obstacles + metadata from run
     fetchedMission = d.mission;
+    originalCorridors = d.original_corridors || null;
+    optimizedPath = d.optimized_path || null;
     if (d.mission && d.mission.waypoints && d.mission.waypoints.length) {
       waypoints = d.mission.waypoints.map((w, i) => ({...w, idx: i}));
       if (d.mission.obstacles) obstacles = d.mission.obstacles;
@@ -2684,6 +2702,67 @@ async function runComparison() {
   } catch(e) {
     status('Comparison error: ' + e, '#e74c3c');
   }
+}
+
+// ── Layer: Raw corridor vertices (white dots, turn markers = yellow) ──
+function drawRawCorridors() {
+  if (!originalCorridors) return;
+  const corrs = originalCorridors.corridors || [];
+  corrs.forEach(c => {
+    const cl = c.centerline || [];
+    const sp = c.speeds || [];
+    // Draw line connecting vertices
+    if (cl.length > 1) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      cl.forEach(([la, lo], i) => {
+        const p = project(la, lo);
+        i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+      ctx.restore();
+    }
+    // Draw vertex dots
+    cl.forEach(([la, lo], i) => {
+      const p = project(la, lo);
+      const isTurn = sp[i] !== undefined && sp[i] < 0;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, isTurn ? 6 : 3, 0, Math.PI * 2);
+      ctx.fillStyle = isTurn ? '#ffeb3b' : '#ffffff';
+      ctx.fill();
+      if (isTurn) {
+        ctx.strokeStyle = '#f44336'; ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    });
+  });
+}
+
+// ── Layer: Optimized path (green solid line + dots at waypoints) ──
+function drawOptimizedPath() {
+  if (!optimizedPath || !optimizedPath.length) return;
+  // Line
+  ctx.save();
+  ctx.strokeStyle = 'rgba(46,204,113,0.7)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  optimizedPath.forEach((pt, i) => {
+    const p = project(pt.lat, pt.lon);
+    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+  });
+  ctx.stroke();
+  ctx.restore();
+  // Dots
+  optimizedPath.forEach((pt, i) => {
+    const p = project(pt.lat, pt.lon);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = '#2ecc71';
+    ctx.fill();
+  });
 }
 
 function drawAnalyzeTrack() {
@@ -3022,9 +3101,23 @@ class _Handler(BaseHTTPRequestHandler):
                 if mission_raw:
                     try: mission = json.loads(mission_raw)
                     except: pass
+                # Fetch additional corridor debug files (optional)
+                original_raw = _scp_file(f'{base_path}/original_corridors.json')
+                original_corridors = None
+                if original_raw:
+                    try: original_corridors = json.loads(original_raw)
+                    except: pass
+                optimized_raw = _scp_file(f'{base_path}/optimized_path.json')
+                optimized_path = None
+                if optimized_raw:
+                    try: optimized_path = json.loads(optimized_raw)
+                    except: pass
                 if not log_csv:
                     self._json({'error': f'No navigator_diag.csv in {run_dir}'}); return
-                self._json({'ok': True, 'log_csv': log_csv, 'mission': mission, 'run_dir': run_dir})
+                self._json({'ok': True, 'log_csv': log_csv, 'mission': mission,
+                             'original_corridors': original_corridors,
+                             'optimized_path': optimized_path,
+                             'run_dir': run_dir})
             except FileNotFoundError:
                 self._json({'error': 'scp not found — install OpenSSH client'})
             except subprocess.TimeoutExpired:
