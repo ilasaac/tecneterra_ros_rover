@@ -1518,8 +1518,12 @@ class NavigatorNode(Node):
                 # Spin complete — advance past turn into new corridor
                 self._corridor_turn_indices.discard(turn_idx)
                 self._spin_target_brg = None
-                self._path_idx = nxt  # start searching from new corridor
+                self._path_idx = turn_idx + 1  # skip past shared point
                 self._corridor_entered = False  # re-enter corridor grace
+                self.get_logger().info(
+                    f'PIVOT DONE: turn_idx={turn_idx} nxt={nxt} '
+                    f'new_path_idx={self._path_idx} hdg={self._heading:.1f} '
+                    f'next_brg={next_brg:.1f} remaining_turns={self._corridor_turn_indices}')
 
         # Freeze target bearing during align-spin
         if self._spin_target_brg is not None:
