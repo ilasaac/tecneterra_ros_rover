@@ -234,10 +234,11 @@ def corridors_to_path(
         next_c = by_id.get(current.next_corridor_id)
         is_last_corridor = next_c is None or next_c.corridor_id in visited
 
-        # Append all centerline points of this corridor
+        # Append centerline points — skip first if duplicate of last in path
         for i, (lat, lon) in enumerate(current.centerline):
+            if i == 0 and path and abs(lat - path[-1][0]) < 1e-9 and abs(lon - path[-1][1]) < 1e-9:
+                continue
             spd = current.speeds[i] if has_per_vertex and current.speeds[i] > 0 else fallback_speed
-            # Last point of corridor with turn_type='none' = turn point
             is_turn = (i == len(current.centerline) - 1
                        and not is_last_corridor
                        and current.turn_type == 'none')
