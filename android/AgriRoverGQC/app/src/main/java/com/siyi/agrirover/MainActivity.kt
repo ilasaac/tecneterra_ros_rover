@@ -219,7 +219,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             runOnUiThread { updateRover(sysId, lat, lon, hdg) }
         },
         onMissionAck = { msg ->
-            runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
+            runOnUiThread {
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                // If upload succeeded via rosbridge, set STATUS=MSL locally
+                // (mavlink_bridge may not know about the upload)
+                if (msg.contains("via rosbridge")) {
+                    roverNavStatus[selectedRoverId] = "MSL"
+                    updateNavStatus(selectedRoverId, "MSL")
+                }
+            }
         },
         onSensorUpdate = { sysId, bat, temp, tank, _ ->
             runOnUiThread { updateRoverSensors(sysId, bat, temp, tank) }
