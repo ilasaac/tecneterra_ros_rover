@@ -2168,24 +2168,50 @@ async function uploadRover(roverId) {
   }
   const rover_ip = document.getElementById(`r-ip-rv${roverId}`).value.trim();
   if (!rover_ip) { status(`Enter RV${roverId} IP.`, '#e74c3c'); return; }
-  const ssh_user = document.getElementById('az-ssh-user').value.trim() || 'ilasa1';
-  const ssh_key  = document.getElementById('az-ssh-key').value.trim();
-  status(`Uploading to RV${roverId} via SSH...`, '#f39c12');
+  const wsPort = roverId === 1 ? 9090 : 9091;
+  const ns = `/rv${roverId}`;
+  status(`Uploading to RV${roverId} via rosbridge...`, '#f39c12');
   if (obsMode) obsFinish();
   try {
-    // Build mission JSON
-    let mission;
-    if (window._lastCorridorJson) {
-      mission = JSON.parse(window._lastCorridorJson);
-    } else {
-      mission = {waypoints, obstacles};
-    }
-    const resp = await fetch('/upload_rover_ssh', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({mission, rover_ip, rover_sysid: roverId, user: ssh_user, key: ssh_key}),
+    const ws = new WebSocket(`ws://${rover_ip}:${wsPort}`);
+    await new Promise((resolve, reject) => {
+      ws.onopen = resolve;
+      ws.onerror = () => reject(new Error('WebSocket connection failed'));
+      setTimeout(() => reject(new Error('WebSocket timeout')), 5000);
     });
-    const d = await resp.json();
-    status(d.ok ? d.message : ('Upload failed: ' + (d.error || d.message)), d.ok ? '#27ae60' : '#e74c3c');
+    // Build and publish mission
+    if (window._lastCorridorJson) {
+      // Corridor mission — publish JSON string on corridor_mission topic
+      ws.send(JSON.stringify({
+        op: 'publish', topic: `${ns}/corridor_mission`,
+        type: 'std_msgs/msg/String',
+        msg: {data: window._lastCorridorJson},
+      }));
+      ws.close();
+      status(`Corridor mission uploaded to RV${roverId} via rosbridge`, '#27ae60');
+    } else {
+      // Waypoint mission — publish each waypoint + fence
+      for (let i = 0; i < waypoints.length; i++) {
+        const wp = waypoints[i];
+        ws.send(JSON.stringify({
+          op: 'publish', topic: `${ns}/mission`,
+          type: 'agri_rover_interfaces/msg/MissionWaypoint',
+          msg: {seq: i, latitude: wp.lat, longitude: wp.lon,
+                speed: wp.speed || 0, hold_secs: wp.hold_secs || 0,
+                acceptance_radius: wp.acceptance_radius || 0},
+        }));
+      }
+      // Publish obstacles as fence
+      if (obstacles.length) {
+        ws.send(JSON.stringify({
+          op: 'publish', topic: `${ns}/mission_fence`,
+          type: 'std_msgs/msg/String',
+          msg: {data: JSON.stringify({polygons: obstacles})},
+        }));
+      }
+      ws.close();
+      status(`Uploaded ${waypoints.length} waypoints to RV${roverId} via rosbridge`, '#27ae60');
+    }
   } catch(e) {
     status(`Upload failed: ${e.message}`, '#e74c3c');
   }

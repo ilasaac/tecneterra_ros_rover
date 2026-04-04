@@ -43,7 +43,10 @@ RUN apt-get update && \
         ros-${ROS_DISTRO}-isaac-ros-nitros \
         ros-${ROS_DISTRO}-isaac-ros-argus-camera \
         ros-${ROS_DISTRO}-isaac-ros-h264-encoder \
-     || echo "Isaac ROS apt packages not found — assuming pre-installed in base image") \
+     || echo "Isaac ROS apt packages not found — assuming pre-installed in base image") && \
+    (apt-get install -y --no-install-recommends \
+        ros-${ROS_DISTRO}-rosbridge-server \
+     || echo "rosbridge-server not in apt — will install via pip") \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Workspace ─────────────────────────────────────────────────────────────────

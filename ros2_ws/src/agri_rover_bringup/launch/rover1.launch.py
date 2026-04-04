@@ -98,4 +98,13 @@ def generate_launch_description():
              namespace=ns,
              parameters=[config],
              output='screen'),
+
+        # ── rosbridge WebSocket server (port 9090) ───────────────────────
+        # Exposes all ROS2 topics via WebSocket JSON protocol.
+        # Used by GQC (Android), mission_planner (PC), and web clients
+        # for reliable TCP-based mission upload and telemetry.
+        Node(package='rosbridge_server',
+             executable='rosbridge_websocket',
+             parameters=[{'port': 9090}],
+             output='screen'),
     ])

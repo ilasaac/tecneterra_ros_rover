@@ -48,12 +48,13 @@ ros_agri_rover/
 
 ## Communication layers
 
-| Layer   | Protocol           | Path                                           | Rate   | Purpose               |
-|---------|--------------------|------------------------------------------------|--------|-----------------------|
-| RC      | SBUS → SX1278 LoRa | MK32→HM30→RP2040(master)→SX1278→RP2040(slave) | 25 Hz  | Manual control/safety |
-| MAVLink | UDP / WiFi         | Android GQC ↔ Each Jetson                      | 10 Hz  | Telemetry/missions    |
-| Video   | RTSP / WiFi        | Each Jetson → GQC                              | 30 fps | Camera feeds          |
-| ROS2    | DDS / WiFi         | Jetson ↔ Jetson (same domain)                  | varies | Autonomy              |
+| Layer     | Protocol           | Path                                           | Rate   | Purpose               |
+|-----------|--------------------| -----------------------------------------------|--------|-----------------------|
+| RC        | SBUS → SX1278 LoRa | MK32→HM30→RP2040(master)→SX1278→RP2040(slave) | 25 Hz  | Manual control/safety |
+| MAVLink   | UDP / WiFi         | Android GQC ↔ Each Jetson                      | 10 Hz  | Telemetry (being replaced by rosbridge) |
+| rosbridge | WebSocket / WiFi   | GQC/PC ↔ Each Jetson (port 9090/9091)          | varies | Mission upload, telemetry (Phase 1: upload) |
+| Video     | RTSP / WiFi        | Each Jetson → GQC                              | 30 fps | Camera feeds          |
+| ROS2      | DDS / WiFi         | Jetson ↔ Jetson (same domain)                  | varies | Autonomy              |
 
 ---
 

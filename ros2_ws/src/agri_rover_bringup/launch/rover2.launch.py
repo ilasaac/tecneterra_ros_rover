@@ -86,4 +86,10 @@ def generate_launch_description():
              namespace=ns,
              parameters=[config],
              output='screen'),
+
+        # ── rosbridge WebSocket server (port 9091 for RV2) ───────────────
+        Node(package='rosbridge_server',
+             executable='rosbridge_websocket',
+             parameters=[{'port': 9091}],
+             output='screen'),
     ])
