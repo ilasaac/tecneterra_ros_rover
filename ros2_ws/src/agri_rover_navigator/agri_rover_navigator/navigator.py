@@ -1337,7 +1337,7 @@ class NavigatorNode(Node):
                     width=c0.width, speeds=c0.speeds,
                     ch5s=c0.ch5, ch6s=c0.ch6, ch7s=c0.ch7, ch8s=c0.ch8)
                 self.get_logger().info(
-                    f'Auto-split: {len(raw_pts)} points -> '
+                    f'Auto-split: {len(c0.centerline)} points -> '
                     f'{len(mission.corridors)} corridors')
 
             path_pts = corridors_to_path(mission, default_speed=self._max_speed,
