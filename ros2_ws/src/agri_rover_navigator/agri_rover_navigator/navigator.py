@@ -1560,7 +1560,7 @@ class NavigatorNode(Node):
                 self._corridor_turn_indices.discard(turn_idx)
                 self._spin_target_brg = None
                 self._pivot_min_dist = None  # reset for next turn
-                self._path_idx = nxt  # first distinct point of new corridor
+                self._path_idx = turn_idx + 1  # post-turn slow point
                 self._corridor_entered = False  # re-enter corridor grace
                 self.get_logger().info(
                     f'PIVOT DONE: turn_idx={turn_idx} nxt={nxt} '
