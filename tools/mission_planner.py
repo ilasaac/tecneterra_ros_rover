@@ -2168,25 +2168,24 @@ async function uploadRover(roverId) {
   }
   const rover_ip = document.getElementById(`r-ip-rv${roverId}`).value.trim();
   if (!rover_ip) { status(`Enter RV${roverId} IP.`, '#e74c3c'); return; }
-  status(`Uploading to RV${roverId}...`, '#f39c12');
+  const ssh_user = document.getElementById('az-ssh-user').value.trim() || 'ilasa1';
+  const ssh_key  = document.getElementById('az-ssh-key').value.trim();
+  status(`Uploading to RV${roverId} via SSH...`, '#f39c12');
   if (obsMode) obsFinish();
   try {
-    // If corridor JSON exists (from corridor generation), upload as corridor mission
+    // Build mission JSON
+    let mission;
     if (window._lastCorridorJson) {
-      const resp = await fetch('/upload_corridor_rover', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({corridor_json: window._lastCorridorJson, rover_ip, rover_port: 14550, rover_sysid: roverId}),
-      });
-      const d = await resp.json();
-      status(d.message, d.ok ? '#27ae60' : '#e74c3c');
+      mission = JSON.parse(window._lastCorridorJson);
     } else {
-      const resp = await fetch('/upload_rover', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({waypoints, obstacles, rover_ip, rover_port: 14550, rover_sysid: roverId, servos: getServos()}),
-      });
-      const d = await resp.json();
-      status(d.message, d.ok ? '#27ae60' : '#e74c3c');
+      mission = {waypoints, obstacles};
     }
+    const resp = await fetch('/upload_rover_ssh', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mission, rover_ip, rover_sysid: roverId, user: ssh_user, key: ssh_key}),
+    });
+    const d = await resp.json();
+    status(d.ok ? d.message : ('Upload failed: ' + (d.error || d.message)), d.ok ? '#27ae60' : '#e74c3c');
   } catch(e) {
     status(`Upload failed: ${e.message}`, '#e74c3c');
   }
@@ -3195,6 +3194,67 @@ class _Handler(BaseHTTPRequestHandler):
                                       data.get('real_track'))
             print(f'[save] {path}', flush=True)
             self._json({'ok': True, 'name': name})
+
+        elif self.path == '/upload_rover_ssh':
+            import subprocess, tempfile
+            try:
+                data = json.loads(raw)
+                rover_ip = data.get('rover_ip', '').strip()
+                rover_sysid = int(data.get('rover_sysid', 1))
+                ssh_user = (data.get('user', '') or 'ilasa1').strip()
+                ssh_key = (data.get('key', '') or '').strip()
+                mission = data.get('mission', {})
+                if not rover_ip:
+                    self._json({'error': 'rover IP required'}); return
+                ns = f'/rv{rover_sysid}'
+
+                # 1. Write mission JSON to temp file
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp:
+                    json.dump(mission, tmp)
+                    tmp_path = tmp.name
+
+                # 2. SCP to rover
+                scp_cmd = ['scp', '-o', 'StrictHostKeyChecking=no',
+                           '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes']
+                if ssh_key:
+                    scp_cmd += ['-i', os.path.expanduser(ssh_key)]
+                remote_path = '/tmp/mission_upload.json'
+                scp_cmd += [tmp_path, f'{ssh_user}@{rover_ip}:{remote_path}']
+                res = subprocess.run(scp_cmd, capture_output=True, timeout=15)
+                os.unlink(tmp_path)
+                if res.returncode != 0:
+                    err = res.stderr.decode(errors='replace').strip()
+                    self._json({'error': f'SCP failed: {err}'}); return
+
+                # 3. SSH: run upload_mission.py inside Docker container
+                ssh_cmd = ['ssh', '-o', 'StrictHostKeyChecking=no',
+                           '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes']
+                if ssh_key:
+                    ssh_cmd += ['-i', os.path.expanduser(ssh_key)]
+                ssh_cmd += [f'{ssh_user}@{rover_ip}',
+                            f'docker exec agri_rover_rv{rover_sysid} bash -c '
+                            f'"source /opt/ros/*/setup.bash && '
+                            f'source /workspaces/isaac_ros-dev/install/setup.bash && '
+                            f'python3 /workspaces/isaac_ros-dev/tools/upload_mission.py '
+                            f'{remote_path} --ns {ns}"']
+                res = subprocess.run(ssh_cmd, capture_output=True, timeout=30)
+                stdout = res.stdout.decode(errors='replace').strip()
+                stderr = res.stderr.decode(errors='replace').strip()
+                if res.returncode != 0:
+                    self._json({'error': f'SSH upload failed: {stderr or stdout}'}); return
+
+                mission_type = 'corridor' if 'corridors' in mission else 'waypoint'
+                n_items = len(mission.get('corridors', [])) or len(mission.get('waypoints', []))
+                print(f'[upload_ssh] {mission_type} mission ({n_items} items) uploaded to RV{rover_sysid}', flush=True)
+                self._json({'ok': True, 'message': f'Uploaded {mission_type} mission to RV{rover_sysid} via SSH'})
+
+            except FileNotFoundError:
+                self._json({'error': 'ssh/scp not found — install OpenSSH client'})
+            except subprocess.TimeoutExpired:
+                self._json({'error': f'SSH connection timed out'})
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._json({'error': str(e)})
 
         elif self.path == '/upload_rover':
             try:
