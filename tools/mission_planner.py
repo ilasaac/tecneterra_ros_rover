@@ -1977,11 +1977,17 @@ gpsRefreshPorts();
 // ── Clear all ─────────────────────────────────────────────────────
 function clearAll() {
   waypoints = []; simResult = null;
+  originalCorridors = null; optimizedPath = null;
+  simPreflight = null; simDiagCsv = null;
+  analyzeResult = null; logFileData = null; fetchedMission = null;
   clearObstacles();
   _gpsSurveyPts = []; _gpsPerimeter = null;
   _gpsUpdatePolyInfo();
   refreshTable();
   document.getElementById('stats').style.display = 'none';
+  document.getElementById('az-log-name').textContent = 'no file';
+  const saveBtn = document.getElementById('btn-save-log');
+  if (saveBtn) saveBtn.style.display = 'none';
   redraw();
   status('Cleared.');
 }
