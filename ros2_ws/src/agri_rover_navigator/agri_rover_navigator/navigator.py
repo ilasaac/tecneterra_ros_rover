@@ -1923,9 +1923,10 @@ class NavigatorNode(Node):
         rover = DiffDriveState(rear_lat, rear_lon, hdg,
                                max_steer=self._max_steer)
 
-        dt = 1.0 / self._control_rate
+        dt = self._dt
+        rate = 1.0 / dt
         total_s = self._path_s[-1] if self._path_s else 0.0
-        max_steps = int(600.0 * self._control_rate)  # 10 min hard cap
+        max_steps = int(600.0 * rate)  # 10 min hard cap
 
         # Sim-local state (does NOT touch self._path_idx etc.)
         sim_path_idx = 0
