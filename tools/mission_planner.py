@@ -3129,15 +3129,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return subprocess.run(cmd, capture_output=True, timeout=ssh_timeout)
 
             try:
-                # 1. Stop production stack + start sim container
-                print(f'[sim_harness] Starting sim on {rover_ip}...', flush=True)
-                _ssh_cmd('cd /home/*/ros_agri_rover 2>/dev/null || cd ~/ros_agri_rover; '
-                         'docker compose down rover1 2>/dev/null; '
-                         'docker compose up -d sim1', ssh_timeout=30)
-                # 2. Wait for mavlink_bridge to bind port
-                _time.sleep(4)
-
-                # 3. Upload mission via MAVLink
+                # 1. Upload mission via MAVLink (rover1 + mavlink_bridge already running)
+                print(f'[sim_harness] Uploading mission to {rover_ip}...', flush=True)
                 wps = data.get('waypoints', [])
                 obs = data.get('obstacles', [])
                 servos = data.get('servos', {})
@@ -3151,34 +3144,34 @@ class _Handler(BaseHTTPRequestHandler):
                     upload_result = _mavlink_upload(
                         wps, obs, rover_ip, 14550, rover_sysid, servos)
                 if not upload_result.get('ok'):
-                    _ssh_cmd('cd /home/*/ros_agri_rover 2>/dev/null || cd ~/ros_agri_rover; '
-                             'docker compose down sim1 2>/dev/null', ssh_timeout=15)
                     self._json({'error': f'Upload failed: {upload_result.get("message", "?")}'})
                     return
 
-                print(f'[sim_harness] Mission uploaded, waiting for sim to complete...', flush=True)
+                # 2. Start sim_harness inside running rover1 container (blocking SSH)
+                # sim_harness auto-exits when navigator publishes wp_active=-1
+                print(f'[sim_harness] Running sim_harness inside rover1...', flush=True)
+                sim_cmd = (
+                    'docker exec agri_rover_rv1 bash -c "'
+                    'source /opt/ros/*/setup.bash && '
+                    'source /workspaces/isaac_ros-dev/install/setup.bash && '
+                    'ros2 run agri_rover_simulator sim_harness '
+                    '--ros-args -r __ns:=/rv1 '
+                    '--params-file /workspaces/isaac_ros-dev/install/agri_rover_bringup/share/agri_rover_bringup/config/rover1_params.yaml'
+                    '"'
+                )
+                res = _ssh_cmd(sim_cmd, ssh_timeout=timeout + 10)
+                print(f'[sim_harness] Sim complete (rc={res.returncode})', flush=True)
+                if res.returncode != 0:
+                    stderr = res.stderr.decode(errors='replace').strip()
+                    if stderr:
+                        print(f'[sim_harness] stderr: {stderr}', flush=True)
 
-                # 4. Poll until sim container exits or timeout
-                poll_start = _time.monotonic()
-                while _time.monotonic() - poll_start < timeout:
-                    _time.sleep(3)
-                    res = _ssh_cmd(
-                        'docker inspect -f "{{.State.Running}}" agri_rover_rv1_sim 2>/dev/null || echo false',
-                        ssh_timeout=10)
-                    out = res.stdout.decode(errors='replace').strip()
-                    if out != 'true':
-                        break
-
-                # 5. Clean up
-                _ssh_cmd('cd /home/*/ros_agri_rover 2>/dev/null || cd ~/ros_agri_rover; '
-                         'docker compose down sim1 2>/dev/null', ssh_timeout=15)
-                print(f'[sim_harness] Sim complete on {rover_ip}', flush=True)
                 self._json({'ok': True})
 
             except FileNotFoundError:
                 self._json({'error': 'ssh not found — install OpenSSH client'})
             except subprocess.TimeoutExpired:
-                self._json({'error': f'Connection to {rover_ip} timed out'})
+                self._json({'error': f'Sim timed out after {timeout}s'})
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._json({'error': str(e)})

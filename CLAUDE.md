@@ -438,20 +438,24 @@ Runs the **real navigator** inside Docker with `DiffDriveState` physics replacin
 
 **`diff_drive.py`** — pure-Python physics module (no ROS2), shared by sim_harness and tools/sim_navigator. `DiffDriveState`: track-width kinematics, SmoothSpeed accel cap, steering lag, rotation center offset.
 
-**Docker:** `docker compose up sim1` starts the sim stack. `tools/start_sim_harness.sh` handles stop/start/timeout via SSH.
+**Execution:** runs inside the **already-running rover1 container** via `docker exec`. No need to stop rover1 — sim_harness just adds a node to the existing ROS2 graph. When it exits, rover1 continues normally.
 
-**mission_planner.py integration:** "Sim" button → SSH starts sim container → MAVLink upload → polls for completion → fetches run from `/tmp/rover_runs/` via SCP → displays in 4-layer viz.
+```bash
+# Manual:
+docker exec agri_rover_rv1 bash -c \
+  'source /opt/ros/*/setup.bash && source /workspaces/isaac_ros-dev/install/setup.bash && \
+   ros2 run agri_rover_simulator sim_harness --ros-args -r __ns:=/rv1 \
+   --params-file .../config/rover1_params.yaml'
 
-**Flow:**
+# Via script (SSH from PC):
+bash tools/start_sim_harness.sh [timeout_seconds]
 ```
-mission_planner → SSH: docker compose up -d sim1
-                → sleep 4s (wait for mavlink_bridge)
-                → MAVLink UDP upload mission
-                → poll docker inspect until container exits
-                → SCP fetch /tmp/rover_runs/run_*/
-```
+
+**mission_planner.py integration:** "Sim" button → MAVLink upload mission → SSH `docker exec` sim_harness (blocking) → SCP fetch `/tmp/rover_runs/` → displays in 4-layer viz.
 
 **Config:** `/rv1/sim_harness` in `rover1_params.yaml` — physics params must match the real rover.
+
+**Note:** `docker compose sim1` service also exists in `docker-compose.yml` for standalone sim (without rover1 running), but the primary path is `docker exec` into rover1.
 
 ---
 
