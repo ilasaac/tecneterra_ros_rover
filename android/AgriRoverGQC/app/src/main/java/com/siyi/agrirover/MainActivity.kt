@@ -506,16 +506,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         waypointTimestamps.clear()
         nextWaypointIndex = 0
         lastRecordedPos = null
-        // Snapshot current servo state (PPM CH5-CH8) and prepend as initial
-        // DO_SET_SERVO items. RC_CHANNELS is in SBUS order — map to PPM:
-        //   PPM CH5 = SBUS[10], CH6 = SBUS[11],
-        //   CH7 = SBUS[6] (inverted), CH8 = SBUS[7] (inverted)
+        // Snapshot current servo state (PPM CH5-CH8) — logical indices [4..7]
         val ch = roverPpmChannels[selectedRoverId]
-        val sbusIdx = intArrayOf(10, 11, 6, 7)
-        val inverted = booleanArrayOf(false, false, true, true)
         for (i in 0..3) {
-            val raw = if (ch != null && sbusIdx[i] < ch.size) ch[sbusIdx[i]] else 1500
-            val pwm = if (inverted[i]) 3000 - raw else raw
+            val pwm = if (ch != null && (i + 4) < ch.size) ch[i + 4] else 1500
             lastAuxPwm[i] = pwm
             recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = pwm))
         }
@@ -599,13 +593,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
      * Servo numbers 5–8 match the RP2040 PPM CH5–CH8 outputs.
      */
     private fun checkAuxChannelChanges(channels: IntArray) {
-        // Map PPM servo channels to SBUS indices (same as startRecording)
-        val sbusIdx = intArrayOf(10, 11, 6, 7)
-        val inverted = booleanArrayOf(false, false, true, true)
+        // channels is in LOGICAL/PPM order: [4]=CH5, [5]=CH6, [6]=CH7, [7]=CH8
         for (i in 0..3) {
-            if (sbusIdx[i] >= channels.size) continue
-            val raw = channels[sbusIdx[i]]
-            val newPwm = if (inverted[i]) 3000 - raw else raw
+            val idx = i + 4
+            if (idx >= channels.size) continue
+            val newPwm = channels[idx]
             if (Math.abs(newPwm - lastAuxPwm[i]) > 100) {
                 lastAuxPwm[i] = newPwm
                 recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = newPwm))
@@ -1406,16 +1398,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 return
             }
             // Capture current servo state (CH5-CH8) for the corridor upload.
-            // RC_CHANNELS is in SBUS order — map PPM servo channels to SBUS indices:
-            //   PPM CH5 (servo5/pump) = SBUS[10], PPM CH6 = SBUS[11],
-            //   PPM CH7 = SBUS[6] (inverted), PPM CH8 = SBUS[7] (inverted)
+            // roverPpmChannels is in LOGICAL/PPM order after remapSbusToLogical:
+            //   [4]=CH5, [5]=CH6, [6]=CH7, [7]=CH8
             val servoState = mutableMapOf<Int, Int>()
             val ch = roverPpmChannels[selectedRoverId]
             if (ch != null) {
-                servoState[5] = if (ch.size > 10) ch[10] else 1500
-                servoState[6] = if (ch.size > 11) ch[11] else 1500
-                servoState[7] = if (ch.size > 6) 3000 - ch[6] else 1500   // un-invert
-                servoState[8] = if (ch.size > 7) 3000 - ch[7] else 1500   // un-invert
+                servoState[5] = if (ch.size > 4) ch[4] else 1500
+                servoState[6] = if (ch.size > 5) ch[5] else 1500
+                servoState[7] = if (ch.size > 6) ch[6] else 1500
+                servoState[8] = if (ch.size > 7) ch[7] else 1500
             }
             val allSpeeds = corridorList.flatten().map { it.second }
             val turnMarkers = allSpeeds.count { it < 0f }
