@@ -1364,9 +1364,7 @@ class NavigatorNode(Node):
             self._spin_target_brg   = None
             self._corridor_mode     = True
             self._corridor_entered  = False
-            self._last_wp_pub       = 0
             self._pivot_min_dist    = None
-            self._pivot_spinning    = False
             self._corridor_widths.clear()
 
             # Build path from corridor polyline
@@ -1471,16 +1469,18 @@ class NavigatorNode(Node):
         xte_msg = Float32(); xte_msg.data = abs(cte)
         self.xte_pub.publish(xte_msg)
 
-        # Publish progress as waypoint index (for GQC WP display).
-        # Only move forward — never publish a lower index than before.
-        # Do NOT update _path_idx here — it's managed by pivot logic.
-        if not hasattr(self, '_last_wp_pub'):
-            self._last_wp_pub = 0
-        approx_wp = max(0, seg_idx)
-        if approx_wp > self._last_wp_pub:
-            self._last_wp_pub = approx_wp
-            wp_msg = Int32(); wp_msg.data = approx_wp
-            self.wp_pub.publish(wp_msg)
+        # Advance _path_idx forward with the rover, clamped at next turn point.
+        if seg_idx > self._path_idx:
+            limit = len(self._path)
+            for ti in sorted(self._corridor_turn_indices):
+                if ti > self._path_idx:
+                    limit = ti
+                    break
+            new_idx = min(seg_idx, limit)
+            if new_idx > self._path_idx:
+                self._path_idx = new_idx
+                wp_msg = Int32(); wp_msg.data = self._path_idx
+                self.wp_pub.publish(wp_msg)
 
         # Find next turn point ahead (corridor boundary)
         turn_s = None
