@@ -110,3 +110,24 @@
     base_acceptance_m: 1.5    # arrival radius at base station (metres)
     enable_diag_log:           true
     diag_log_path:             '/tmp/navigator_diag.csv'
+
+/rv1/sim_harness:
+  ros__parameters:
+    physics_rate_hz:             25.0
+    antenna_baseline_m:          1.0
+    arm_delay_s:                 1.0
+    shutdown_delay_s:            2.0
+    # Must match navigator params for consistent physics
+    max_speed:                   1.5
+    max_steering:                0.8
+    wheelbase_m:                 0.6
+    # DiffDriveState physics (tuned from real rover dynamics)
+    track_width_m:               0.9
+    max_wheel_mms:               1650.0
+    steering_scale:              0.37
+    accel_cap_mms_per_tick:      7.0
+    decel_divisor:               1.0
+    angular_diff_limit_mms:      275.0
+    smooth_tick_hz:              100.0
+    rotation_center_offset_m:    0.35
+    steer_lag_s:                 0.25

@@ -39,3 +39,9 @@ services:
     <<: *rover-base
     container_name: agri_rover_rv2
     command: ros2 launch agri_rover_bringup rover2.launch.py camera_source:=${CAMERA_SOURCE:-csi}
+
+  sim1:
+    <<: *rover-base
+    container_name: agri_rover_rv1_sim
+    restart: "no"
+    command: ros2 launch agri_rover_bringup sim_harness.launch.py

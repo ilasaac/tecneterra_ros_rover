@@ -710,6 +710,7 @@ tr:hover td{background:#1e1e3a}
           <option value="">— select a run —</option>
         </select>
         <button class="btn-green" style="padding:2px 9px;font-size:11px" onclick="fetchAndCompare()" title="Fetch run data + simulate + compare">&#8644; Compare</button>
+        <button class="btn-blue" style="padding:2px 7px;font-size:11px" onclick="runSimOnRover()" title="Upload mission + run sim on rover + fetch results">&#9654; Sim</button>
       </div>
       <div style="display:flex;gap:3px;align-items:center;margin-bottom:4px">
         <span style="color:#888;font-size:10px">or:</span>
@@ -2645,6 +2646,47 @@ async function fetchAndCompare() {
   } catch(e) { status('Fetch error: ' + e, '#e74c3c'); }
 }
 
+async function runSimOnRover() {
+  if (waypoints.length < 2) { status('Need at least 2 waypoints.', '#e74c3c'); return; }
+  const ip   = document.getElementById('az-rover-ip').value.trim();
+  const user = document.getElementById('az-ssh-user').value.trim() || 'ilasa1';
+  const key  = document.getElementById('az-ssh-key').value.trim();
+  if (!ip) { status('Set rover IP first.', '#e74c3c'); return; }
+  status('Starting sim on rover ' + ip + '...', '#f39c12');
+  try {
+    const resp = await fetch('/run_sim_harness', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        ip, user, key, timeout: 300,
+        waypoints, obstacles,
+        rover_sysid: 1, servos: typeof getServos === 'function' ? getServos() : {},
+        corridor_json: typeof corridorJson !== 'undefined' ? corridorJson : null,
+      }),
+    });
+    const d = await resp.json();
+    if (d.error) { status('Sim error: ' + d.error, '#e74c3c'); return; }
+    if (!d.ok) { status('Sim failed: ' + (d.message || 'unknown'), '#e74c3c'); return; }
+    status('Sim complete — fetching results...', '#f39c12');
+    // Auto-fetch the latest run
+    const listResp = await fetch('/list_rover_runs', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip, user, key}),
+    });
+    const listData = await listResp.json();
+    if (listData.runs && listData.runs.length) {
+      const sel = document.getElementById('az-run-select');
+      sel.innerHTML = '<option value="">— select a run —</option>' +
+        listData.runs.map(r => `<option value="${r.dir}">${r.label}</option>`).join('');
+      sel.value = listData.runs[0].dir;
+      await fetchAndCompare();
+    } else {
+      status('Sim done but no runs found on rover.', '#e74c3c');
+    }
+  } catch(e) { status('Sim error: ' + e, '#e74c3c'); }
+}
+
 async function runComparison() {
   if (!logFileData) { status('Load a log CSV first (Browse or fetch from rover).', '#e74c3c'); return; }
   const missionName = document.getElementById('az-m-select').value;
@@ -3067,6 +3109,79 @@ class _Handler(BaseHTTPRequestHandler):
             data = json.loads(raw)
             result = _compute_analysis(data.get('log', ''), data.get('mission', ''))
             self._json(result)
+
+        elif self.path == '/run_sim_harness':
+            import subprocess, time as _time
+            data     = json.loads(raw)
+            rover_ip = data.get('ip', '').strip()
+            ssh_user = (data.get('user', '') or 'ilasa1').strip()
+            ssh_key  = (data.get('key', '') or '').strip()
+            timeout  = int(data.get('timeout', 300))
+            if not rover_ip:
+                self._json({'error': 'rover IP required'}); return
+
+            def _ssh_cmd(remote_cmd, ssh_timeout=15):
+                cmd = ['ssh', '-o', 'StrictHostKeyChecking=no',
+                       '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes']
+                if ssh_key:
+                    cmd += ['-i', os.path.expanduser(ssh_key)]
+                cmd += [f'{ssh_user}@{rover_ip}', remote_cmd]
+                return subprocess.run(cmd, capture_output=True, timeout=ssh_timeout)
+
+            try:
+                # 1. Stop production stack + start sim container
+                print(f'[sim_harness] Starting sim on {rover_ip}...', flush=True)
+                _ssh_cmd('cd /home/*/ros_agri_rover 2>/dev/null || cd ~/ros_agri_rover; '
+                         'docker compose down rover1 2>/dev/null; '
+                         'docker compose up -d sim1', ssh_timeout=30)
+                # 2. Wait for mavlink_bridge to bind port
+                _time.sleep(4)
+
+                # 3. Upload mission via MAVLink
+                wps = data.get('waypoints', [])
+                obs = data.get('obstacles', [])
+                servos = data.get('servos', {})
+                corridor_json = data.get('corridor_json')
+                rover_sysid = int(data.get('rover_sysid', 1))
+
+                if corridor_json:
+                    upload_result = _mavlink_upload_corridor(
+                        corridor_json, rover_ip, 14550, rover_sysid)
+                else:
+                    upload_result = _mavlink_upload(
+                        wps, obs, rover_ip, 14550, rover_sysid, servos)
+                if not upload_result.get('ok'):
+                    _ssh_cmd('cd /home/*/ros_agri_rover 2>/dev/null || cd ~/ros_agri_rover; '
+                             'docker compose down sim1 2>/dev/null', ssh_timeout=15)
+                    self._json({'error': f'Upload failed: {upload_result.get("message", "?")}'})
+                    return
+
+                print(f'[sim_harness] Mission uploaded, waiting for sim to complete...', flush=True)
+
+                # 4. Poll until sim container exits or timeout
+                poll_start = _time.monotonic()
+                while _time.monotonic() - poll_start < timeout:
+                    _time.sleep(3)
+                    res = _ssh_cmd(
+                        'docker inspect -f "{{.State.Running}}" agri_rover_rv1_sim 2>/dev/null || echo false',
+                        ssh_timeout=10)
+                    out = res.stdout.decode(errors='replace').strip()
+                    if out != 'true':
+                        break
+
+                # 5. Clean up
+                _ssh_cmd('cd /home/*/ros_agri_rover 2>/dev/null || cd ~/ros_agri_rover; '
+                         'docker compose down sim1 2>/dev/null', ssh_timeout=15)
+                print(f'[sim_harness] Sim complete on {rover_ip}', flush=True)
+                self._json({'ok': True})
+
+            except FileNotFoundError:
+                self._json({'error': 'ssh not found — install OpenSSH client'})
+            except subprocess.TimeoutExpired:
+                self._json({'error': f'Connection to {rover_ip} timed out'})
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._json({'error': str(e)})
 
         elif self.path == '/list_rover_runs':
             import subprocess

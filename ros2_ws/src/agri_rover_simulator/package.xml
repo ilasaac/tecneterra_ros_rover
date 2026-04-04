@@ -9,6 +9,7 @@
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>agri_rover_interfaces</depend>
 
   <exec_depend>isaac_ros_common</exec_depend>
 

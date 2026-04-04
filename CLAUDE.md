@@ -24,7 +24,7 @@ ros_agri_rover/
 │   ├── agri_rover_navigator/    ← Stanley/MPC/TTR path follower + pivot turns + obstacle reroute
 │   ├── agri_rover_sensors/      ← agricultural sensor node (stub)
 │   ├── agri_rover_video/        ← GStreamer RTSP streamer node
-│   ├── agri_rover_simulator/    ← dead-reckoning GPS simulator (separate Jetson)
+│   ├── agri_rover_simulator/    ← dead-reckoning GPS simulator + on-Jetson SIL harness
 │   └── agri_rover_bringup/      ← launch files + per-rover YAML configs
 ├── firmware/rc_link_sx1278/
 │   ├── master/                  ← RP2040: SBUS→PIO, PPM→PIO+DMA, SX1278 TX
@@ -35,6 +35,7 @@ ros_agri_rover/
     ├── nmea_wifi_rx.py          ← UDP NMEA → PTY virtual serial ports
     ├── rtk_forwarder.py         ← NTRIP/E610 RTCM3 → u-blox serial
     ├── start_rover1_sim.sh / start_rover2_sim.sh ← single-command sim launchers
+    ├── start_sim_harness.sh             ← on-Jetson SIL: stops rover1, starts sim1 container
     ├── sim_navigator.py         ← SIL: Stanley+MPC+TTR+pivot+obstacle; reads rover1_params.yaml; --algo flag overrides; TTR uses DiffDriveState (track-width kinematics + SmoothSpeed + angular limit from Robot.cpp); diagnostics → tools/obstacle_debug.log
     ├── mission_planner.py       ← web mission editor + SIL (HTTP :8089); Gen button: Grid/Zigzag/Scatter/Spiral; GPS Survey (u-blox USB)
     ├── monitor.py               ← terminal dashboard + Leaflet map (HTTP :8088); auto-fit, localStorage zoom, 5s refresh
@@ -67,7 +68,8 @@ ros_agri_rover/
 | agri_rover_navigator  | ament_python | navigator       | Stanley/MPC/TTR + pivot turns + obstacle pre-reroute; publishes XTE |
 | agri_rover_sensors    | ament_python | sensor_node     | Tank/temp/humidity/pressure (stub)                          |
 | agri_rover_video      | ament_python | video_streamer  | GStreamer RTSP server                                        |
-| agri_rover_simulator  | ament_python | simulator       | Dead-reckoning GPS simulator                                |
+| agri_rover_simulator  | ament_python | simulator       | Dead-reckoning GPS simulator (separate Jetson)              |
+| agri_rover_simulator  | ament_python | sim_harness     | On-Jetson SIL: DiffDriveState physics → GPS feedback loop   |
 | agri_rover_bringup    | ament_cmake  | —               | rover1.launch.py, rover2.launch.py                          |
 
 **ROS2 namespaces:** `/rv1/` master, `/rv2/` slave. Same `ROS_DOMAIN_ID`.
@@ -418,6 +420,38 @@ lat += speed * cos(heading) * dt / 111320
 lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))
 ```
 `turn_scale` default **1.0** (full differential, matches MPC model). Pass `--turn-scale` or set in `simulator_params.yaml`.
+
+---
+
+## On-Jetson SIL simulation (sim_harness)
+
+Runs the **real navigator** inside Docker with `DiffDriveState` physics replacing GPS hardware. Zero code duplication — navigator produces identical diag output as a field run.
+
+**Architecture:** `sim_harness.launch.py` starts 3 nodes: `mavlink_bridge` + `navigator` + `sim_harness`. No gps_driver, rp2040_bridge, sensors, or video.
+
+**`sim_harness_node`** (`agri_rover_simulator/sim_harness_node.py`):
+- Subscribes to `cmd_override` (throttle/steer from navigator)
+- Runs `DiffDriveState` physics (from `diff_drive.py`) at 25 Hz
+- Publishes `fix`, `fix_front`, `heading` back to navigator
+- Publishes `mode=AUTONOMOUS` + `armed=True` after mission upload
+- Auto-exits when `wp_active == -1` (mission complete)
+
+**`diff_drive.py`** — pure-Python physics module (no ROS2), shared by sim_harness and tools/sim_navigator. `DiffDriveState`: track-width kinematics, SmoothSpeed accel cap, steering lag, rotation center offset.
+
+**Docker:** `docker compose up sim1` starts the sim stack. `tools/start_sim_harness.sh` handles stop/start/timeout via SSH.
+
+**mission_planner.py integration:** "Sim" button → SSH starts sim container → MAVLink upload → polls for completion → fetches run from `/tmp/rover_runs/` via SCP → displays in 4-layer viz.
+
+**Flow:**
+```
+mission_planner → SSH: docker compose up -d sim1
+                → sleep 4s (wait for mavlink_bridge)
+                → MAVLink UDP upload mission
+                → poll docker inspect until container exits
+                → SCP fetch /tmp/rover_runs/run_*/
+```
+
+**Config:** `/rv1/sim_harness` in `rover1_params.yaml` — physics params must match the real rover.
 
 ---
 

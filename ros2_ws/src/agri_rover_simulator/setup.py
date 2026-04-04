@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'simulator = agri_rover_simulator.simulator_node:main',
+            'sim_harness = agri_rover_simulator.sim_harness_node:main',
         ],
     },
 )
