@@ -681,7 +681,7 @@ tr:hover td{background:#1e1e3a}
   </div>
   <div id="wp-list" style="flex:1;overflow-y:auto">
     <table>
-      <thead><tr><th>#</th><th>Spd</th><th>Turn</th></tr></thead>
+      <thead><tr><th>#</th><th>Spd</th><th>Turn</th><th>Servo</th></tr></thead>
       <tbody id="wp-tbody"></tbody>
     </table>
   </div>
@@ -1466,18 +1466,25 @@ function _wpHasServos(wp) {
 function refreshTable() {
   const tb = document.getElementById('wp-tbody');
   tb.innerHTML = '';
-  // Show optimized path from fetched run (corridor points with speed + turn)
+  // Servo events from original_corridors (keyed by vertex index)
+  const srvMap = (originalCorridors && originalCorridors.servo_events) || {};
+
+  // Show optimized path from fetched run
   if (optimizedPath && optimizedPath.length) {
     optimizedPath.forEach((pt, i) => {
       const tr = document.createElement('tr');
       const isTurn = pt.turn === true;
       const spdColor = pt.speed < 0 ? '#ffeb3b' : pt.speed <= 0.5 ? '#ff9800' : '#ccc';
       const turnLabel = isTurn ? '<span style="color:#ff5722">T</span>' : '';
+      const srv = srvMap[String(i)];
+      const srvText = srv ? Object.entries(srv).map(([ch,pw]) => `${ch}:${pw}`).join(' ') : '';
       tr.innerHTML = `
         <td style="color:#aaa">${i}</td>
         <td style="color:${spdColor}">${pt.speed.toFixed(1)}</td>
-        <td>${turnLabel}</td>`;
+        <td>${turnLabel}</td>
+        <td style="color:#5a8;font-size:9px">${srvText}</td>`;
       if (isTurn) tr.style.background = '#2a1a0a';
+      if (srvText) tr.style.background = '#0a1a2a';
       tb.appendChild(tr);
     });
     return;
@@ -1491,11 +1498,15 @@ function refreshTable() {
         const tr = document.createElement('tr');
         const isTurn = spd < 0;
         const spdColor = isTurn ? '#ffeb3b' : '#ccc';
+        const srv = srvMap[String(gi)];
+        const srvText = srv ? Object.entries(srv).map(([ch,pw]) => `${ch}:${pw}`).join(' ') : '';
         tr.innerHTML = `
           <td style="color:#aaa">${gi}</td>
           <td style="color:${spdColor}">${spd.toFixed(1)}</td>
-          <td>${isTurn ? '<span style="color:#ffeb3b">T</span>' : ''}</td>`;
+          <td>${isTurn ? '<span style="color:#ffeb3b">T</span>' : ''}</td>
+          <td style="color:#5a8;font-size:9px">${srvText}</td>`;
         if (isTurn) tr.style.background = '#2a2a0a';
+        if (srvText) tr.style.background = '#0a1a2a';
         tb.appendChild(tr);
         gi++;
       });

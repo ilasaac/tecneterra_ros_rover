@@ -869,9 +869,15 @@ class MavlinkBridgeNode(Node):
                 }
             corridors[cid]['centerline'].append([v['lat'], v['lon']])
             corridors[cid]['speeds'].append(v['speed'])
+        # Attach per-vertex servo changes from _wp_servo_map
+        # Key = corridor vertex index (global across all corridors)
+        servo_map = {}
+        for wp_seq, servos in self._wp_servo_map.items():
+            servo_map[str(wp_seq)] = servos
         data = {
-            'min_turn_radius': 3.0,  # default, can be overridden by nav params
+            'min_turn_radius': 3.0,
             'corridors': list(corridors.values()),
+            'servo_events': servo_map,
         }
         return json.dumps(data, separators=(',', ':'))
 
