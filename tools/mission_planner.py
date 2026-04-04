@@ -3129,14 +3129,30 @@ class _Handler(BaseHTTPRequestHandler):
                 return subprocess.run(cmd, capture_output=True, timeout=ssh_timeout)
 
             try:
-                # 1. Upload mission via MAVLink (rover1 + mavlink_bridge already running)
-                print(f'[sim_harness] Uploading mission to {rover_ip}...', flush=True)
                 wps = data.get('waypoints', [])
                 obs = data.get('obstacles', [])
                 servos = data.get('servos', {})
                 corridor_json = data.get('corridor_json')
                 rover_sysid = int(data.get('rover_sysid', 1))
 
+                # 1. Start sim_harness in background (must subscribe before upload)
+                print(f'[sim_harness] Starting sim_harness on {rover_ip}...', flush=True)
+                sim_cmd = (
+                    'docker exec -d agri_rover_rv1 bash -c "'
+                    'source /opt/ros/*/setup.bash && '
+                    'source /workspaces/isaac_ros-dev/install/setup.bash && '
+                    'ros2 run agri_rover_simulator sim_harness '
+                    '--ros-args -r __ns:=/rv1 '
+                    '--params-file /workspaces/isaac_ros-dev/install/agri_rover_bringup/share/agri_rover_bringup/config/rover1_params.yaml'
+                    '"'
+                )
+                _ssh_cmd(sim_cmd, ssh_timeout=15)
+
+                # 2. Wait for sim_harness to start and subscribe to topics
+                _time.sleep(3)
+
+                # 3. Upload mission via MAVLink
+                print(f'[sim_harness] Uploading mission to {rover_ip}...', flush=True)
                 if corridor_json:
                     upload_result = _mavlink_upload_corridor(
                         corridor_json, rover_ip, 14550, rover_sysid)
@@ -3147,25 +3163,19 @@ class _Handler(BaseHTTPRequestHandler):
                     self._json({'error': f'Upload failed: {upload_result.get("message", "?")}'})
                     return
 
-                # 2. Start sim_harness inside running rover1 container (blocking SSH)
-                # sim_harness auto-exits when navigator publishes wp_active=-1
-                print(f'[sim_harness] Running sim_harness inside rover1...', flush=True)
-                sim_cmd = (
-                    'docker exec agri_rover_rv1 bash -c "'
-                    'source /opt/ros/*/setup.bash && '
-                    'source /workspaces/isaac_ros-dev/install/setup.bash && '
-                    'ros2 run agri_rover_simulator sim_harness '
-                    '--ros-args -r __ns:=/rv1 '
-                    '--params-file /workspaces/isaac_ros-dev/install/agri_rover_bringup/share/agri_rover_bringup/config/rover1_params.yaml'
-                    '"'
-                )
-                res = _ssh_cmd(sim_cmd, ssh_timeout=timeout + 10)
-                print(f'[sim_harness] Sim complete (rc={res.returncode})', flush=True)
-                if res.returncode != 0:
-                    stderr = res.stderr.decode(errors='replace').strip()
-                    if stderr:
-                        print(f'[sim_harness] stderr: {stderr}', flush=True)
+                # 4. Poll until sim_harness process exits (mission complete)
+                print(f'[sim_harness] Mission uploaded, waiting for sim...', flush=True)
+                poll_start = _time.monotonic()
+                while _time.monotonic() - poll_start < timeout:
+                    _time.sleep(3)
+                    res = _ssh_cmd(
+                        'docker exec agri_rover_rv1 pgrep -f sim_harness_node > /dev/null 2>&1 && echo running || echo done',
+                        ssh_timeout=10)
+                    out = res.stdout.decode(errors='replace').strip()
+                    if 'done' in out:
+                        break
 
+                print(f'[sim_harness] Sim complete on {rover_ip}', flush=True)
                 self._json({'ok': True})
 
             except FileNotFoundError:
