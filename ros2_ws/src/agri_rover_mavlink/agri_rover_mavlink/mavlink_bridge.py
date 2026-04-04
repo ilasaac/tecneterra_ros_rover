@@ -869,20 +869,26 @@ class MavlinkBridgeNode(Node):
                 }
             corridors[cid]['centerline'].append([v['lat'], v['lon']])
             corridors[cid]['speeds'].append(v['speed'])
-        # Build per-vertex full servo state (running accumulator).
-        # Each vertex gets the current CH5-CH8 values at that point.
-        state = {}  # running servo state
+        # Per-vertex servo state: running accumulator seeded from initial servo commands.
+        # Every vertex gets CH5-CH8 values, just like lat/lon/speed.
+        ch = dict(self._servo_pwm)  # seed from initial DO_SET_SERVO items
         global_idx = 0
         for cid_key in corridors:
             c = corridors[cid_key]
-            servo_list = []
+            ch5s, ch6s, ch7s, ch8s = [], [], [], []
             for _ in c['centerline']:
                 changes = self._wp_servo_map.get(global_idx)
                 if changes:
-                    state.update(changes)
-                servo_list.append(dict(state) if state else None)
+                    ch.update(changes)
+                ch5s.append(ch.get(5, 1500))
+                ch6s.append(ch.get(6, 1500))
+                ch7s.append(ch.get(7, 1500))
+                ch8s.append(ch.get(8, 1500))
                 global_idx += 1
-            c['servos'] = servo_list
+            c['ch5'] = ch5s
+            c['ch6'] = ch6s
+            c['ch7'] = ch7s
+            c['ch8'] = ch8s
         data = {
             'min_turn_radius': 3.0,
             'corridors': list(corridors.values()),

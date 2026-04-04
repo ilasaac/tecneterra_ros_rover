@@ -907,12 +907,12 @@ class NavigatorNode(Node):
 
             # Save optimized path (what the rover actually follows)
             turn_set = getattr(self, '_corridor_turn_indices', set())
-            servo_map = getattr(self, '_corridor_servo_map', {})
+            servo_list = getattr(self, '_corridor_servo', [])
             opt_data = [
                 {'lat': round(wp.latitude, 7), 'lon': round(wp.longitude, 7),
                  'speed': round(wp.speed, 2),
                  'turn': i in turn_set,
-                 'servo': servo_map.get(i)}
+                 'servo': servo_list[i] if i < len(servo_list) else None}
                 for i, wp in enumerate(self._path)
             ]
             opt_path = os.path.join(self._run_dir, 'optimized_path.json')
@@ -1331,12 +1331,11 @@ class NavigatorNode(Node):
             # corridors with headland crossings.
             if (len(mission.corridors) == 1
                     and len(mission.corridors[0].centerline) > 5):
-                raw_pts = mission.corridors[0].centerline
-                raw_width = mission.corridors[0].width
-                raw_speeds = mission.corridors[0].speeds
+                c0 = mission.corridors[0]
                 mission = auto_split_corridors(
-                    raw_pts, turn_threshold_deg=70.0,
-                    width=raw_width, speeds=raw_speeds)
+                    c0.centerline, turn_threshold_deg=70.0,
+                    width=c0.width, speeds=c0.speeds,
+                    ch5s=c0.ch5, ch6s=c0.ch6, ch7s=c0.ch7, ch8s=c0.ch8)
                 self.get_logger().info(
                     f'Auto-split: {len(raw_pts)} points -> '
                     f'{len(mission.corridors)} corridors')
@@ -1352,9 +1351,7 @@ class NavigatorNode(Node):
             self._corridor_turn_indices = {
                 i for i, pt in enumerate(path_pts) if pt[4]
             }
-            self._corridor_servo_map = {
-                i: pt[5] for i, pt in enumerate(path_pts) if pt[5]
-            }
+            self._corridor_servo = [pt[5] for pt in path_pts]
 
             # New run — create timestamped directory for diag + mission
             self._start_new_run()

@@ -73,7 +73,10 @@ class Corridor:
     width: float = 1.5                       # half-width in metres
     speed: float = 0.0                       # target speed m/s (0 = use default)
     speeds: list[float] = field(default_factory=list)  # per-vertex speeds (parallel to centerline)
-    servo_events: list = field(default_factory=list)    # per-vertex servo dicts (parallel, None if no change)
+    ch5: list[int] = field(default_factory=list)        # per-vertex CH5 PPM (parallel)
+    ch6: list[int] = field(default_factory=list)
+    ch7: list[int] = field(default_factory=list)
+    ch8: list[int] = field(default_factory=list)
     next_corridor_id: int = -1               # -1 = last corridor
     turn_type: str = 'auto'                  # 'auto' | 'arc' | 'spin'
     headland_width: float = 0.0              # available turn space in metres (0 = auto)
@@ -237,7 +240,7 @@ def corridors_to_path(
         is_last_corridor = next_c is None or next_c.corridor_id in visited
 
         # Append centerline points — skip first if duplicate of last in path
-        has_servos = len(current.servo_events) == len(current.centerline)
+        has_ch = len(current.ch5) == len(current.centerline)
         for i, (lat, lon) in enumerate(current.centerline):
             if i == 0 and path and abs(lat - path[-1][0]) < 1e-9 and abs(lon - path[-1][1]) < 1e-9:
                 continue
@@ -245,7 +248,8 @@ def corridors_to_path(
             is_turn = (i == len(current.centerline) - 1
                        and not is_last_corridor
                        and current.turn_type == 'none')
-            srv = current.servo_events[i] if has_servos else None
+            srv = {5: current.ch5[i], 6: current.ch6[i],
+                   7: current.ch7[i], 8: current.ch8[i]} if has_ch else None
             path.append((lat, lon, spd, current.width, is_turn, srv))
 
         # Find next corridor
@@ -344,13 +348,17 @@ def corridor_mission_from_json(json_str: str) -> CorridorMission:
     data = json.loads(json_str)
     corridors = []
     for c in data.get('corridors', []):
+        n = len(c['centerline'])
         corridors.append(Corridor(
             corridor_id=c['corridor_id'],
             centerline=[(pt[0], pt[1]) for pt in c['centerline']],
             width=c.get('width', 1.5),
             speed=c.get('speed', 0.0),
             speeds=c.get('speeds', []),
-            servo_events=c.get('servos', []),
+            ch5=c.get('ch5', [1500]*n),
+            ch6=c.get('ch6', [1500]*n),
+            ch7=c.get('ch7', [1500]*n),
+            ch8=c.get('ch8', [1500]*n),
             next_corridor_id=c.get('next_corridor_id', -1),
             turn_type=c.get('turn_type', 'auto'),
             headland_width=c.get('headland_width', 0.0),
@@ -370,7 +378,10 @@ def auto_split_corridors(
     min_segment_points: int = 3,
     width: float = 1.5,
     speeds: list[float] | None = None,
-    servo_events: list | None = None,
+    ch5s: list[int] | None = None,
+    ch6s: list[int] | None = None,
+    ch7s: list[int] | None = None,
+    ch8s: list[int] | None = None,
 ) -> CorridorMission:
     """Split a raw GPS polyline into corridors at sharp turns.
 
@@ -393,14 +404,21 @@ def auto_split_corridors(
     if len(points) < 2:
         return CorridorMission()
 
-    spd_list = speeds if speeds and len(speeds) == len(points) else [0.0] * len(points)
-    srv_list = servo_events if servo_events and len(servo_events) == len(points) else [None] * len(points)
+    n = len(points)
+    spd_list = speeds if speeds and len(speeds) == n else [0.0] * n
+    c5 = ch5s if ch5s and len(ch5s) == n else [1500] * n
+    c6 = ch6s if ch6s and len(ch6s) == n else [1500] * n
+    c7 = ch7s if ch7s and len(ch7s) == n else [1500] * n
+    c8 = ch8s if ch8s and len(ch8s) == n else [1500] * n
     has_turn_markers = any(s < 0 for s in spd_list)
 
     corridors: list[Corridor] = []
     current_pts: list[tuple[float, float]] = [points[0]]
     current_spd: list[float] = [spd_list[0]]
-    current_srv: list = [srv_list[0]]
+    cur_c5: list[int] = [c5[0]]
+    cur_c6: list[int] = [c6[0]]
+    cur_c7: list[int] = [c7[0]]
+    cur_c8: list[int] = [c8[0]]
     prev_heading: float | None = None
 
     # Skip leading turn markers — first corridor must start with driving points
@@ -427,25 +445,29 @@ def auto_split_corridors(
                 d = _haversine(current_pts[-1][0], current_pts[-1][1], turn_lat, turn_lon)
                 if d >= TURN_CLEAR_M:
                     break
-                current_pts.pop()
-                current_spd.pop()
-                current_srv.pop()
+                current_pts.pop(); current_spd.pop()
+                cur_c5.pop(); cur_c6.pop(); cur_c7.pop(); cur_c8.pop()
             current_pts.append((turn_lat, turn_lon))
             current_spd.append(0.0)
-            current_srv.append(None)
+            # Turn point inherits last servo state
+            cur_c5.append(cur_c5[-1] if cur_c5 else 1500)
+            cur_c6.append(cur_c6[-1] if cur_c6 else 1500)
+            cur_c7.append(cur_c7[-1] if cur_c7 else 1500)
+            cur_c8.append(cur_c8[-1] if cur_c8 else 1500)
             if len(current_pts) >= 2:
                 corridors.append(Corridor(
                     corridor_id=len(corridors),
-                    centerline=list(current_pts),
-                    width=width,
+                    centerline=list(current_pts), width=width,
                     speeds=list(current_spd),
-                    servo_events=list(current_srv),
+                    ch5=list(cur_c5), ch6=list(cur_c6),
+                    ch7=list(cur_c7), ch8=list(cur_c8),
                     next_corridor_id=len(corridors) + 1,
                     turn_type='none',
                 ))
             current_pts = [(turn_lat, turn_lon)]
             current_spd = [0.0]
-            current_srv = [None]
+            cur_c5 = [cur_c5[-1]]; cur_c6 = [cur_c6[-1]]
+            cur_c7 = [cur_c7[-1]]; cur_c8 = [cur_c8[-1]]
             prev_heading = None
             continue
 
@@ -458,19 +480,20 @@ def auto_split_corridors(
             if delta >= turn_threshold_deg and len(current_pts) >= min_segment_points:
                 corridors.append(Corridor(
                     corridor_id=len(corridors),
-                    centerline=list(current_pts),
-                    width=width,
+                    centerline=list(current_pts), width=width,
                     speeds=list(current_spd),
-                    servo_events=list(current_srv),
+                    ch5=list(cur_c5), ch6=list(cur_c6),
+                    ch7=list(cur_c7), ch8=list(cur_c8),
                     next_corridor_id=len(corridors) + 1,
                 ))
-                current_pts = [current_pts[-1]]
-                current_spd = [current_spd[-1]]
-                current_srv = [current_srv[-1]]
+                current_pts = [current_pts[-1]]; current_spd = [current_spd[-1]]
+                cur_c5 = [cur_c5[-1]]; cur_c6 = [cur_c6[-1]]
+                cur_c7 = [cur_c7[-1]]; cur_c8 = [cur_c8[-1]]
 
         current_pts.append((points[i][0], points[i][1]))
         current_spd.append(spd_list[i])
-        current_srv.append(srv_list[i])
+        cur_c5.append(c5[i]); cur_c6.append(c6[i])
+        cur_c7.append(c7[i]); cur_c8.append(c8[i])
         prev_heading = heading
         i += 1
 
@@ -478,10 +501,10 @@ def auto_split_corridors(
     if len(current_pts) >= 2:
         corridors.append(Corridor(
             corridor_id=len(corridors),
-            centerline=list(current_pts),
-            width=width,
+            centerline=list(current_pts), width=width,
             speeds=list(current_spd),
-            servo_events=list(current_srv),
+            ch5=list(cur_c5), ch6=list(cur_c6),
+            ch7=list(cur_c7), ch8=list(cur_c8),
             next_corridor_id=-1,
         ))
 
