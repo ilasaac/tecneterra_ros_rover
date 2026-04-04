@@ -1934,10 +1934,16 @@ class NavigatorNode(Node):
         best_seg  = self._path_idx
         best_dist = float('inf')
 
-        # In corridor mode, search more segments (dense polyline with short segments).
-        # In waypoint mode, search only the current segment (prevents zigzag snap-ahead).
-        search_ahead = 10 if self._corridor_mode else 1
-        for seg_k in range(self._path_idx, min(self._path_idx + search_ahead, len(self._path))):
+        # Search ahead limit: 3 segments in corridor mode, 1 in waypoint mode.
+        # Clamped to the next turn point so the rover never snaps to the return pass.
+        search_ahead = 3 if self._corridor_mode else 1
+        search_limit = self._path_idx + search_ahead
+        if self._corridor_mode:
+            for ti in sorted(self._corridor_turn_indices):
+                if ti > self._path_idx:
+                    search_limit = min(search_limit, ti)
+                    break
+        for seg_k in range(self._path_idx, min(search_limit, len(self._path))):
             # Segment endpoints and arc-length bounds
             if seg_k == 0:
                 if self._path_origin_lat is None:
