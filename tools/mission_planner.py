@@ -957,6 +957,7 @@ let logFileData   = null;
 let fetchedMission = null;  // mission metadata from rover run (corridor_mode, algorithm)
 let originalCorridors = null;  // raw corridor vertices from rover (with speed markers)
 let optimizedPath = null;      // optimized path from rover (what it actually follows)
+let simPreflight = null;       // preflight sim result from navigator (sim_preflight.json)
 
 // Drag / pan tracking
 let _drag    = null;   // {type:'wp',idx} | {type:'pan',sx,sy,sLat,sLon}
@@ -1006,7 +1007,7 @@ function redraw() {
   const showReal = document.getElementById('layer-real')?.checked ?? true;
   const showSim  = document.getElementById('layer-sim')?.checked ?? true;
   if (showRaw)  drawRawCorridors();
-  if (showOpt)  drawOptimizedPath();
+  if (showOpt)  { drawOptimizedPath(); drawSimPreflight(); }
   if (showSim)  { drawRoute(); drawSimPath(); drawPivotMarkers(); drawWaypoints(); drawStartMarker(); }
   drawRover();
   if (showReal) drawAnalyzeTrack();
@@ -2635,14 +2636,24 @@ async function fetchAndCompare() {
     fetchedMission = d.mission;
     originalCorridors = d.original_corridors || null;
     optimizedPath = d.optimized_path || null;
+    simPreflight = d.sim_preflight || null;
     if (d.mission && d.mission.waypoints && d.mission.waypoints.length) {
       waypoints = d.mission.waypoints.map((w, i) => ({...w, idx: i}));
       if (d.mission.obstacles) obstacles = d.mission.obstacles;
     }
 
     refreshTable();
-    status('Run loaded. Running comparison...', '#f39c12');
-    await runComparison();
+    if (simPreflight) {
+      const sp = simPreflight;
+      const col = sp.max_cte < 0.5 ? '#27ae60' : sp.max_cte < 1.0 ? '#f39c12' : '#e74c3c';
+      status(`Preflight sim: max CTE ${sp.max_cte.toFixed(3)}m, avg ${sp.avg_cte.toFixed(3)}m, ${sp.complete ? 'complete' : 'INCOMPLETE'}`, col);
+    }
+    if (d.log_csv) {
+      status('Run loaded. Running comparison...', '#f39c12');
+      await runComparison();
+    } else {
+      renderAll();
+    }
   } catch(e) { status('Fetch error: ' + e, '#e74c3c'); }
 }
 
@@ -2848,6 +2859,22 @@ function drawOptimizedPath() {
   ctx.fillStyle = 'rgba(46,204,113,0.7)'; ctx.font = '11px monospace';
   ctx.textAlign = 'left'; ctx.textBaseline = 'top';
   ctx.fillText(`Opt: ${optimizedPath.length} pts, ${turnCount} turns`, 8, 22);
+}
+
+// ── Layer: Sim Preflight — fast offline sim trace ──
+function drawSimPreflight() {
+  if (!simPreflight || !simPreflight.sim_path || !simPreflight.sim_path.length) return;
+  const pts = simPreflight.sim_path;
+  ctx.save(); ctx.strokeStyle = 'rgba(156,39,176,0.7)'; ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]); ctx.beginPath();
+  pts.forEach((pt, i) => { const p = project(pt[0], pt[1]); i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y); });
+  ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+  // Label
+  const sp = simPreflight;
+  const col = sp.max_cte < 0.5 ? '#27ae60' : sp.max_cte < 1.0 ? '#f39c12' : '#e74c3c';
+  ctx.fillStyle = col; ctx.font = '11px monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText(`Sim: max CTE ${sp.max_cte.toFixed(3)}m, avg ${sp.avg_cte.toFixed(3)}m`, 8, 34);
 }
 
 function drawAnalyzeTrack() {
@@ -3277,11 +3304,17 @@ class _Handler(BaseHTTPRequestHandler):
                 if optimized_raw:
                     try: optimized_path = json.loads(optimized_raw)
                     except: pass
-                if not log_csv:
-                    self._json({'error': f'No navigator_diag.csv in {run_dir}'}); return
+                sim_preflight_raw = _scp_file(f'{base_path}/sim_preflight.json')
+                sim_preflight = None
+                if sim_preflight_raw:
+                    try: sim_preflight = json.loads(sim_preflight_raw)
+                    except: pass
+                if not log_csv and not sim_preflight:
+                    self._json({'error': f'No data in {run_dir}'}); return
                 self._json({'ok': True, 'log_csv': log_csv, 'mission': mission,
                              'original_corridors': original_corridors,
                              'optimized_path': optimized_path,
+                             'sim_preflight': sim_preflight,
                              'run_dir': run_dir})
             except FileNotFoundError:
                 self._json({'error': 'scp not found — install OpenSSH client'})
