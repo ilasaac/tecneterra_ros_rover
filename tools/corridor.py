@@ -285,6 +285,19 @@ def corridors_to_path(
 
         current = next_c
 
+    # Smooth speeds: 5-point sliding window average, skip turn points
+    W = 2
+    smoothed = [pt[2] for pt in path]
+    for i in range(len(path)):
+        if path[i][4]:
+            continue
+        lo = max(0, i - W)
+        hi = min(len(path) - 1, i + W)
+        vals = [path[j][2] for j in range(lo, hi + 1) if not path[j][4] and path[j][2] > 0]
+        if vals:
+            smoothed[i] = sum(vals) / len(vals)
+    path = [(lat, lon, smoothed[i], w, t) for i, (lat, lon, _, w, t) in enumerate(path)]
+
     # Set first point after each turn to post_turn_speed for alignment
     for i, pt in enumerate(path):
         if pt[4] and i + 1 < len(path):
