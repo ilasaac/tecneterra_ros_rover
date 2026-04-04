@@ -43,7 +43,7 @@ RUN apt-get update && \
         ros-${ROS_DISTRO}-isaac-ros-nitros \
         ros-${ROS_DISTRO}-isaac-ros-argus-camera \
         ros-${ROS_DISTRO}-isaac-ros-h264-encoder \
-     || echo "Isaac ROS apt packages not found — assuming pre-installed in base image") && \
+     || echo "Isaac ROS apt packages not found — assuming pre-installed in base image") \
     && rm -rf /var/lib/apt/lists/*
 
 # ── rosbridge WebSocket server ───────────────────────────────────────────────
