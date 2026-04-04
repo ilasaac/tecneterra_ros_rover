@@ -3033,7 +3033,8 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 path_pts = corridors_to_path(mission, default_speed=float(data.get('speed', 1.0)))
                 wps = [{'lat': p[0], 'lon': p[1], 'speed': p[2], 'hold_secs': 0,
-                        'corridor_width': p[3], 'turn': p[4]}
+                        'corridor_width': p[3], 'turn': p[4],
+                        'servo': p[5] if len(p) > 5 else None}
                        for p in path_pts]
                 print(f'[corridor] {len(mission.corridors)} corridors -> {len(wps)} path pts', flush=True)
                 self._json({
