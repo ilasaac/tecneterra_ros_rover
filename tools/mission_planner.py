@@ -168,7 +168,7 @@ _SERVER_VER  = str(int(_time.time()))
 
 # ── Mission file storage ───────────────────────────────────────────────────────
 MISSIONS_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions'))
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mission_logs'))
 os.makedirs(MISSIONS_DIR, exist_ok=True)
 
 def _save_mission_file(name: str, waypoints: list, obstacles: list,
@@ -3144,15 +3144,6 @@ class _Handler(BaseHTTPRequestHandler):
             except FileNotFoundError:
                 self.send_error(404, f'Mission not found: {name}')
 
-        elif self.path.startswith('/load_mission_csv?name='):
-            name = _unquote(self.path.split('=', 1)[1])
-            missions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions')
-            path = os.path.join(missions_dir, name)
-            if not os.path.isfile(path):
-                self._json({'error': f'Not found: {name}'}); return
-            with open(path, encoding='utf-8', errors='replace') as f:
-                csv_text = f.read()
-            self._json({'csv': csv_text})
 
         elif self.path == '/snooped_mission':
             with _snooped_lock:
@@ -3252,21 +3243,6 @@ class _Handler(BaseHTTPRequestHandler):
             print(f'[save] {path}', flush=True)
             self._json({'ok': True, 'name': name})
 
-        elif self.path == '/save_mission_csv':
-            data = json.loads(raw)
-            name = data.get('name', '').strip().replace('/', '_').replace('\\', '_')
-            csv_text = data.get('csv', '')
-            if not name or not csv_text:
-                self._json({'error': 'name and csv required'}); return
-            if not name.endswith('.csv'):
-                name += '.csv'
-            missions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions')
-            os.makedirs(missions_dir, exist_ok=True)
-            path = os.path.join(missions_dir, name)
-            with open(path, 'w') as f:
-                f.write(csv_text)
-            print(f'[save_csv] {path}', flush=True)
-            self._json({'ok': True, 'name': name})
 
         elif self.path == '/upload_rover_ssh':
             import subprocess, tempfile
