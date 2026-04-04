@@ -1390,6 +1390,9 @@ class NavigatorNode(Node):
                                                  self._path_origin_lon)
             self._corridor_total_s = self._path_s[-1] if self._path_s else 0.0
 
+            # Apply servo state for first path point
+            self._apply_corridor_servo(0)
+
             self.get_logger().info(
                 f'Corridor mission loaded: {len(mission.corridors)} corridors, '
                 f'{len(self._path)} path pts, {self._corridor_total_s:.1f} m total')
@@ -1400,6 +1403,24 @@ class NavigatorNode(Node):
             self.get_logger().error(f'Corridor mission parse error: {e}')
             import traceback
             self.get_logger().error(traceback.format_exc())
+
+    def _apply_corridor_servo(self, idx: int):
+        """Apply per-point servo values from corridor path to _servo_ch."""
+        servo_list = getattr(self, '_corridor_servo', [])
+        if idx < 0 or idx >= len(servo_list):
+            return
+        srv = servo_list[idx]
+        if srv is None:
+            return
+        changed = False
+        for ch in (5, 6, 7, 8):
+            val = srv.get(ch, 0) or srv.get(str(ch), 0)
+            if val and val != self._servo_ch[ch - 5]:
+                self._servo_ch[ch - 5] = val
+                changed = True
+        if changed:
+            self.get_logger().info(
+                f'[SERVO] corridor pt {idx} → _servo_ch={self._servo_ch}')
 
     def _control_loop_corridor(self):
         """Corridor-following control: pure CTE minimization on the polyline.
@@ -1480,6 +1501,7 @@ class NavigatorNode(Node):
                     break
             new_idx = min(seg_idx, limit)
             if new_idx > self._path_idx:
+                self._apply_corridor_servo(new_idx)
                 self._path_idx = new_idx
                 wp_msg = Int32(); wp_msg.data = self._path_idx
                 self.wp_pub.publish(wp_msg)
@@ -1570,6 +1592,7 @@ class NavigatorNode(Node):
                 self._spin_target_brg = None
                 self._pivot_min_dist = None  # reset for next turn
                 self._path_idx = turn_idx + 1  # post-turn slow point
+                self._apply_corridor_servo(self._path_idx)
                 self._corridor_entered = False  # re-enter corridor grace
                 self.get_logger().info(
                     f'PIVOT DONE: turn_idx={turn_idx} nxt={nxt} '
