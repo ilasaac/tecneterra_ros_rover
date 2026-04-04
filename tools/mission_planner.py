@@ -694,7 +694,14 @@ tr:hover td{background:#1e1e3a}
            style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px">
     <span style="color:#888;font-size:10px">m/s</span>
     <button onclick="applyBulkSpeed()" style="padding:2px 7px;font-size:11px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer">&#10003;</button>
-    <span style="color:#888;font-size:10px;margin-left:6px">Algo:</span>
+    <span style="color:#888;font-size:10px;margin-left:4px">CH5:</span>
+    <input id="bulk-ch5" type="number" value="1500" min="1000" max="2000" step="50"
+           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 2px;border-radius:2px;font-size:10px">
+    <span style="color:#888;font-size:10px">CH6:</span>
+    <input id="bulk-ch6" type="number" value="1500" min="1000" max="2000" step="50"
+           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 2px;border-radius:2px;font-size:10px">
+    <button onclick="applyBulkServo()" style="padding:2px 5px;font-size:10px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer" title="Set CH5-CH8 for all points">Srv&#10003;</button>
+    <span style="color:#888;font-size:10px;margin-left:4px">Algo:</span>
     <select id="algo-select" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px">
       <option value="">YAML default</option>
       <option value="stanley">Stanley</option>
@@ -1534,7 +1541,9 @@ function refreshTable() {
       const tr = document.createElement('tr');
       const isTurn = pt.turn === true;
       const spdColor = pt.speed < 0 ? '#ffeb3b' : pt.speed <= 0.5 ? '#ff9800' : '#ccc';
-      const turnLabel = isTurn ? '<span style="color:#ff5722">T</span>' : '';
+      const turnLabel = isTurn
+        ? `<span style="color:#ff5722;cursor:pointer" onclick="toggleTurn(${i})" title="Click to remove turn">T</span>`
+        : `<span style="color:#333;cursor:pointer" onclick="toggleTurn(${i})" title="Click to add turn">·</span>`;
       const srv = pt.servo;
       const srvText = srv ? Object.entries(srv).map(([ch,pw]) => `${ch}:${pw}`).join(' ') : '';
       tr.innerHTML = `
@@ -2362,8 +2371,37 @@ function applyGenerate(append) {
 function applyBulkSpeed() {
   const spd = parseFloat(document.getElementById('bulk-speed').value) || 0;
   waypoints.forEach(wp => wp.speed = spd);
+  // Also update optimizedPath if available
+  if (optimizedPath) optimizedPath.forEach(pt => { pt.speed = spd; });
   refresh();
   status(`Speed set to ${spd} m/s on all ${waypoints.length} waypoints.`);
+}
+
+function applyBulkServo() {
+  const ch5 = parseInt(document.getElementById('bulk-ch5').value) || 1500;
+  const ch6 = parseInt(document.getElementById('bulk-ch6').value) || 1500;
+  waypoints.forEach(wp => {
+    if (!wp.servos) wp.servos = {};
+    wp.servos['5'] = ch5; wp.servos['6'] = ch6;
+  });
+  if (optimizedPath) optimizedPath.forEach(pt => {
+    if (!pt.servo) pt.servo = {};
+    pt.servo[5] = ch5; pt.servo[6] = ch6;
+  });
+  refreshTable();
+  status(`CH5=${ch5} CH6=${ch6} set on all points.`);
+}
+
+function toggleTurn(idx) {
+  // Works on optimizedPath if available, otherwise waypoints
+  if (optimizedPath && idx < optimizedPath.length) {
+    optimizedPath[idx].turn = !optimizedPath[idx].turn;
+    if (!optimizedPath[idx].turn && optimizedPath[idx].speed <= 0) optimizedPath[idx].speed = 0.5;
+  } else if (idx < waypoints.length) {
+    if (waypoints[idx].speed < 0) waypoints[idx].speed = 0.5;
+    else waypoints[idx].speed = -1;
+  }
+  refreshTable(); renderAll();
 }
 
 async function sendTestSensors(roverId) {
