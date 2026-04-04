@@ -273,7 +273,7 @@ python3 tools/rtk_forwarder.py --source e610 --e610-host 192.168.1.20 --e610-por
 |--------------------------------------------------------------|-------------------------------------------|
 | `ros2_ws/src/agri_rover_bringup/config/rover1_params.yaml`  | Ports, IPs, speeds for RV1               |
 | `ros2_ws/src/agri_rover_bringup/config/rover2_params.yaml`  | Ports, IPs, speeds for RV2               |
-| `ros2_ws/src/agri_rover_navigator/config/navigator_params.yaml` | Lookahead, speed limits, `obstacle_clearance_m`, `rover_width_m` |
+| `ros2_ws/src/agri_rover_navigator/config/navigator_params.yaml` | Lookahead, speed limits, `obstacle_clearance_m`, `rover_width_m`, `post_turn_speed`, `max_steering` |
 | `ros2_ws/src/agri_rover_video/config/gstreamer.yaml`        | Camera source, resolution, bitrate       |
 
 **YAML key format — critical:** Keys must include the fully-qualified namespace or ROS2 silently ignores them:
@@ -367,9 +367,9 @@ sealed class MissionAction {
 }
 ```
 
-Waypoint speed: recorded with timestamps during REC, then smoothed post-hoc via 5-point sliding-window average (`smoothRecordedSpeeds()`), clamped [0.3, 1.5] m/s; sent as `z` field of NAV_WAYPOINT; first WP uses 0 (navigator default). `holdSecs = -1` marks a **waiting point** (rover disarms on arrival). `speed = -1` marks a **turn point** (zero-throttle during REC) — navigator collapses consecutive turn points into one centroid.
+Waypoint speed: recorded with timestamps during REC; sent as `z` field of NAV_WAYPOINT; first WP uses 0 (navigator default). `holdSecs = -1` marks a **waiting point** (rover disarms on arrival). `speed = -1` marks a **turn point** (zero-throttle during REC). `smoothRecordedSpeeds()` was removed from GQC — navigator handles raw speed data.
 
-**Turn-point detection (REC):** During recording, GQC checks throttle PPM channel. If within ±80 µs of neutral (1500), the waypoint is marked `speed = -1` (turn marker, no min-distance check). `smoothRecordedSpeeds()` skips these. `mavlink_bridge` passes negative speed through. Navigator `_collapse_spin_clusters()` merges consecutive `speed < 0` waypoints into a single centroid waypoint with `speed = 0` (navigator default). `sim_navigator` has matching logic.
+**Turn-point detection (REC):** During recording, GQC checks throttle PPM channel (logical[0] after SBUS remap). If within ±80 µs of neutral (1500), the waypoint is marked `speed = -1` (turn marker). Turn detection only activates after first normal driving point (`lastRecordedPos != null`). Turn points bypass `MIN_RECORD_DIST` check (always recorded). `mavlink_bridge` passes negative speed through (no clamping). For corridor missions, `auto_split_corridors()` uses these markers to split the polyline into corridors. For waypoint missions, `_collapse_spin_clusters()` merges consecutive `speed < 0` waypoints into a single centroid waypoint with `speed = 0`. `sim_navigator` has matching `_collapse_turns()` logic. Save/load preserves -1 markers in CSV files.
 
 **Safety:**
 - E-STOP → `sendCriticalCommand` DISARM (cmd 400, p1=0) to all rovers.
@@ -434,24 +434,35 @@ lon += speed * sin(heading) * dt / (111320 * cos(lat_rad))
 
 **Corridor mode** replaces waypoint-advance with continuous path-following. A corridor mission is a list of corridors (polyline centerline + width), connected via turns at headlands. Turns are adaptive: arc (smooth curve) if headland is wide enough, spin-in-place if tight.
 
-**Data model** (`tools/corridor.py`):
+**Data model** (`tools/corridor.py` and `ros2_ws/src/agri_rover_navigator/agri_rover_navigator/corridor.py`):
 - `Corridor`: corridor_id, centerline [(lat,lon),...], width, speed, next_corridor_id, turn_type, headland_width
 - `CorridorMission`: list of Corridors + min_turn_radius
-- `corridors_to_path()`: converts corridors + arc/spin turns into single polyline
+- `corridors_to_path()`: converts corridors + arc/spin turns into single polyline of `(lat, lon, speed, corridor_half_width, is_turn)` tuples. First point after each turn set to `post_turn_speed` (default 0.5 m/s). `is_turn` flag set directly during path construction.
+- `auto_split_corridors()`: splits a single recorded polyline into corridors using turn markers. If turn markers exist (speed < 0), heading-based splitting is disabled entirely. Turn cluster = all consecutive speed < 0 points; first point = turn location. Noisy points within `TURN_CLEAR_M` (1.5 m) of turn are removed. Leading turn markers at start of recording are skipped. Each turn creates a corridor boundary with `turn_type='none'`.
 - `generate_corridor_grid()`: serpentine parallel rows with configurable spacing
 
-**MAVLink protocol**: `cmd=50100` (custom corridor vertex). Fields: param1=vertex_count, param2=width, param3=speed, param4=next_corridor_id, x=lat*1e7, y=lon*1e7, z=corridor_id. mavlink_bridge groups by corridor_id, publishes as JSON to `corridor_mission` topic.
+**Turn-point detection pipeline** (GQC recording → MAVLink → navigator):
+1. **GQC REC**: checks throttle PPM channel (logical[0] after SBUS remap). If within ±80 µs of neutral (1500) → marks waypoint with `speed = -1` (turn marker). Turn detection only activates after first normal driving point. `smoothRecordedSpeeds()` was removed from GQC — navigator handles raw data. Save/load preserves -1 markers in CSV files.
+2. **MAVLink upload**: GQC uploads corridor missions via `cmd=50100`. `speed = -1` sent in `param3`. `mavlink_bridge` passes negative speed through (no clamping).
+3. **Navigator corridor processing**: `auto_split_corridors()` uses turn markers to split polyline into corridors with explicit turn boundaries.
 
-**Navigator**: subscribes to `corridor_mission`, parses JSON, calls `corridors_to_path()`, builds dense polyline in `_path`. `_corridor_mode=True` activates `_control_loop_corridor()`:
+**MAVLink protocol**: `cmd=50100` (custom corridor vertex). Fields: param1=vertex_count, param2=width, param3=speed, param4=next_corridor_id, x=lat*1e7, y=lon*1e7, z=corridor_id. mavlink_bridge groups by corridor_id, publishes as JSON to `corridor_mission` topic. mavlink_bridge also sends `GLOBAL_POSITION_INT` with center position (rear + front antenna average).
+
+**Navigator corridor control loop** (`_control_loop_corridor()`):
 - Pure CTE minimization on polyline (Stanley controller)
 - Progress by arc-length, no waypoint-advance logic
 - Corridor width = hard CTE boundary (disarms if exceeded)
 - `_nearest_on_path` searches 10 segments ahead (dense polyline)
-- Spin-in-place only for large heading errors (align_threshold)
+- Lookahead clamped to next turn point — rover never sees the next corridor
+- Deceleration ramp approaching turn point (within `pivot_approach_dist`)
+- **Overshoot-based turn trigger**: tracks direct distance to turn point; triggers when distance starts increasing after being within acceptance radius
+- **Pivot spin**: computes bearing to a point >= 2 m into next corridor for stable target heading. After pivot: `path_idx` set to `turn_idx + 1` (post-turn slow point), returns immediately so next tick recomputes with new corridor context
+- Pivot spin logged to diag CSV with `algo='pivot'`
+- `max_steering` raised from 0.8 to 1.0 for full deflection in curves
 
 **SIL**: `sim_navigator.py --corridor missions/test_corridor.json` loads corridor JSON, converts to waypoint polyline, simulates with existing Stanley controller.
 
-**mission_planner.py**: "Corridor Grid" generation pattern in web UI. `/generate_corridor` API endpoint.
+**mission_planner.py**: "Corridor Grid" generation pattern in web UI. `/generate_corridor` API endpoint. 4-layer toggle visualization (Raw/Optimized/Real/Sim) — see mission_planner section below.
 
 **GQC corridor editor**: TODO — currently corridors uploaded via mission_planner.py.
 
@@ -469,9 +480,10 @@ Connect a **u-blox GPS module** via USB serial to the host PC running mission_pl
 **UI** (GPS SURVEY panel, bottom of sidebar):
 - COM port selector + refresh + connect/disconnect
 - Live fix display: fix type (color-coded), satellite count, HDOP, coordinates
-- Mode: **Perimeter** (fence — inserted as `obstacles[0]`) or **Obstacle** (appended)
+- Mode: **Perimeter** (fence — generates thin wall strips along edges, configurable width 0.5–20 m, default 3 m) or **Obstacle** (standard polygon appended)
 - **Averaging**: 1–60 fixes per capture (higher = more accurate vertex position)
 - Capture Point → Close Polygon → saved into obstacles array, persisted with mission JSON
+- Perimeter mode: `_perimeterToWalls()` computes polygon winding, outward normals, and generates rectangular wall strips along each fence edge; green dashed outline on map (distinct from red obstacle fills)
 
 **Map rendering**:
 - Pulsing GPS dot: green = RTK Fix (4), yellow = GPS/DGPS (1–2), red = no fix
@@ -479,6 +491,24 @@ Connect a **u-blox GPS module** via USB serial to the host PC running mission_pl
 - In-progress polygon: green dashed (perimeter) / red dashed (obstacle) with numbered vertices
 
 **Typical workflow**: connect u-blox → select Perimeter → walk fence corners pressing Capture at each → Close Polygon → switch to Obstacle → walk around tree/rock pressing Capture → Close Polygon → Save mission → Upload to rover.
+
+---
+
+## Mission planner visualization (mission_planner.py)
+
+**4-layer toggle system** for corridor mission analysis:
+
+| Layer     | Source                          | Appearance                                       |
+|-----------|---------------------------------|--------------------------------------------------|
+| Raw       | `original_corridors.json`       | White dots + yellow turn markers (speed = -1)    |
+| Optimized | `optimized_path.json`           | Green line + orange T1/T2/T3 turn markers        |
+| Real      | `navigator_diag.csv`            | CTE-colored GPS track (green→red gradient)       |
+| Sim       | sim_navigator output            | Simulation result + waypoints                    |
+
+- **Data source**: all data fetched from rover via SSH (Runs → Compare button)
+- **Real track fields**: algo, target_brg, hdg_err, steer_ppm, throttle_ppm, cte, wp_idx
+- **Save/Load** preserves all layers including `real_track`, `original_corridors`, `optimized_path`
+- Layer visibility toggled via checkboxes; all layers overlay on the same map
 
 ---
 
