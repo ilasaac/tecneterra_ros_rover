@@ -223,9 +223,14 @@ def _compute_analysis(log_csv: str, mission_name: str) -> dict:
                 'lat':         float(row['lat']),
                 'lon':         float(row['lon']),
                 'heading':     float(row.get('heading') or 0),
+                'target_brg':  float(row.get('target_brg') or 0),
+                'hdg_err':     float(row.get('hdg_err') or 0),
                 'cte':         float(row['cte']),
+                'steer_ppm':   int(float(row.get('steer_ppm') or 1500)),
+                'throttle_ppm': int(float(row.get('throttle_ppm') or 1500)),
                 'wp_idx':      int(row['wp_idx']),
                 'speed_tgt':   float(row.get('speed_tgt') or 0),
+                'algo':        row.get('algo', ''),
                 'fix_quality': int(row.get('fix_quality') or -1),
             })
         except (ValueError, KeyError):
@@ -235,7 +240,10 @@ def _compute_analysis(log_csv: str, mission_name: str) -> dict:
         return {'error': 'No valid rows in log (need t,lat,lon,cte,wp_idx columns)'}
 
     track = [{'lat': r['lat'], 'lon': r['lon'], 'heading': r['heading'],
-               'cte': r['cte'], 'wp_idx': r['wp_idx']} for r in rows]
+              'target_brg': r['target_brg'], 'hdg_err': r['hdg_err'],
+              'cte': r['cte'], 'steer_ppm': r['steer_ppm'],
+              'throttle_ppm': r['throttle_ppm'], 'wp_idx': r['wp_idx'],
+              'algo': r['algo']} for r in rows]
 
     # Per-segment stats grouped by wp_idx
     from itertools import groupby as _groupby
