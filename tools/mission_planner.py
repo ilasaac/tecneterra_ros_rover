@@ -656,6 +656,9 @@ tr:hover td{background:#1e1e3a}
       <label style="color:#7ab">&#128190;</label>
       <input id="m-name" size="13" placeholder="mission name" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;flex:1">
       <button class="btn-blue" style="padding:3px 7px;font-size:11px" onclick="saveMission()">Save</button>
+      <button class="btn-orange" style="padding:3px 5px;font-size:10px" onclick="exportCsv()" title="Export mission as CSV for Excel editing">CSV&#8595;</button>
+      <button class="btn-orange" style="padding:3px 5px;font-size:10px" onclick="document.getElementById('csv-import').click()" title="Import edited CSV back">CSV&#8593;</button>
+      <input type="file" id="csv-import" accept=".csv" style="display:none" onchange="importCsv(event)">
     </div>
     <div style="display:flex;gap:3px;align-items:center">
       <select id="m-select" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px;border-radius:2px;font-size:11px">
@@ -1998,6 +2001,70 @@ async function saveMission() {
   status(`Saved "${name}".`);
   refreshMissionList();
   loadAnalyzeMissionList();
+}
+
+function exportCsv() {
+  // Export optimized path (if available) or raw waypoints as CSV
+  let rows = [['idx','lat','lon','speed','turn','hold_secs','ch5','ch6','ch7','ch8']];
+  if (optimizedPath && optimizedPath.length) {
+    optimizedPath.forEach((pt, i) => {
+      const s = pt.servo || {};
+      rows.push([i, pt.lat, pt.lon, pt.speed, pt.turn ? 1 : 0, 0,
+                 s[5]||s['5']||1500, s[6]||s['6']||1500, s[7]||s['7']||1500, s[8]||s['8']||1500]);
+    });
+  } else if (waypoints.length) {
+    waypoints.forEach((wp, i) => {
+      const s = wp.servos || {};
+      rows.push([i, wp.lat, wp.lon, wp.speed || 0, 0, wp.hold_secs || 0,
+                 s[5]||s['5']||1500, s[6]||s['6']||1500, s[7]||s['7']||1500, s[8]||s['8']||1500]);
+    });
+  } else { status('No waypoints to export.', '#e74c3c'); return; }
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (document.getElementById('m-name').value.trim() || 'mission') + '.csv';
+  a.click();
+  status(`Exported ${rows.length - 1} points as CSV.`);
+}
+
+function importCsv(event) {
+  const f = event.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const lines = e.target.result.trim().split('\n');
+    const hdr = lines[0].split(',').map(h => h.trim());
+    const ci = {};
+    hdr.forEach((h, i) => ci[h] = i);
+    if (!('lat' in ci) || !('lon' in ci)) { status('CSV must have lat,lon columns.', '#e74c3c'); return; }
+    waypoints = [];
+    for (let i = 1; i < lines.length; i++) {
+      const c = lines[i].split(',');
+      if (c.length < 2) continue;
+      const wp = {
+        lat: parseFloat(c[ci.lat]),
+        lon: parseFloat(c[ci.lon]),
+        speed: 'speed' in ci ? parseFloat(c[ci.speed]) || 0 : 0,
+        hold_secs: 'hold_secs' in ci ? parseFloat(c[ci.hold_secs]) || 0 : 0,
+        servos: {},
+      };
+      if ('ch5' in ci) wp.servos['5'] = parseInt(c[ci.ch5]) || 1500;
+      if ('ch6' in ci) wp.servos['6'] = parseInt(c[ci.ch6]) || 1500;
+      if ('ch7' in ci) wp.servos['7'] = parseInt(c[ci.ch7]) || 1500;
+      if ('ch8' in ci) wp.servos['8'] = parseInt(c[ci.ch8]) || 1500;
+      if ('turn' in ci && parseInt(c[ci.turn])) wp.speed = -1;
+      waypoints.push(wp);
+    }
+    // Clear corridor layers — imported CSV replaces everything
+    optimizedPath = null;
+    originalCorridors = null;
+    refreshTable();
+    renderAll();
+    status(`Imported ${waypoints.length} waypoints from ${f.name}.`);
+  };
+  reader.readAsText(f);
+  event.target.value = '';
 }
 
 async function loadMission() {
