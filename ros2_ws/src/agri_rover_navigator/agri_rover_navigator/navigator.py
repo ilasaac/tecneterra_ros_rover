@@ -580,6 +580,9 @@ class NavigatorNode(Node):
         self.reroute_pending_pub = self.create_publisher(Bool,    'reroute_pending', 10)
         self.create_subscription(Bool, 'reroute_response', self._cb_reroute_response, 10)
         self._reroute_pending    = False
+        self.nav_status_pub     = self.create_publisher(String,   'nav_status',      10)
+        self._last_nav_status   = ''
+        self.create_timer(1.0, self._publish_nav_status)
         self.nav_params_pub     = self.create_publisher(String,   'nav_params',      10)
         self.create_subscription(String, 'nav_param_set', self._cb_nav_param_set, 10)
         self.add_on_set_parameters_callback(self._on_set_parameters_callback)
@@ -608,6 +611,21 @@ class NavigatorNode(Node):
             f'full-path tracking + obstacle avoidance')
 
     # ── Live parameter tuning ─────────────────────────────────────────────────
+
+    def _publish_nav_status(self):
+        """Publish navigator status: NA (no mission), MSL (mission loaded), ARM (armed+autonomous)."""
+        if self._armed and self._mode == 'AUTONOMOUS':
+            status = 'ARM'
+        elif self._path:
+            status = 'MSL'
+        else:
+            status = 'NA'
+        msg = String()
+        msg.data = status
+        self.nav_status_pub.publish(msg)
+        if status != self._last_nav_status:
+            self.get_logger().info(f'nav_status: {self._last_nav_status} → {status}')
+            self._last_nav_status = status
 
     def _publish_nav_params(self):
         """Publish all exposed parameters as a JSON dict so mavlink_bridge can respond
