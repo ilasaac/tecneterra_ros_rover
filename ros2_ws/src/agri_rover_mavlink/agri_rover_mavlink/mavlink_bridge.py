@@ -1034,17 +1034,19 @@ class MavlinkBridgeNode(Node):
 
         if msg.command == 183:  # MAV_CMD_DO_SET_SERVO
             sn, pw = int(msg.param1), int(msg.param2)
-            if self._last_nav_wp_seq is None:
-                # Before any NAV_WAYPOINT → apply immediately as initial servo state
+            # Use last nav WP or last corridor vertex as the association target
+            last_wp = self._last_nav_wp_seq
+            if last_wp is None and self._corridor_buf:
+                last_wp = len(self._corridor_buf) - 1  # corridor vertex index
+            if last_wp is None:
                 self._apply_servo_cmd(sn, pw)
             else:
-                # After a NAV_WAYPOINT → defer: apply when navigator reaches that waypoint
                 if 5 <= sn <= 8:
-                    if self._last_nav_wp_seq not in self._wp_servo_map:
-                        self._wp_servo_map[self._last_nav_wp_seq] = {}
-                    self._wp_servo_map[self._last_nav_wp_seq][sn] = pw
+                    if last_wp not in self._wp_servo_map:
+                        self._wp_servo_map[last_wp] = {}
+                    self._wp_servo_map[last_wp][sn] = pw
                     self.get_logger().info(
-                        f'Deferred servo CH{sn}={pw} → wp_seq={self._last_nav_wp_seq}')
+                        f'Deferred servo CH{sn}={pw} → wp_seq={last_wp}')
         elif msg.command == 50100:  # Corridor vertex (custom)
             self._corridor_buf.append({
                 'corridor_id': int(msg.z),

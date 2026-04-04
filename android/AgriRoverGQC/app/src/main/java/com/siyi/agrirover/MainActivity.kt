@@ -1408,13 +1408,26 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 servoState[7] = if (ch.size > 6) ch[6] else 1500
                 servoState[8] = if (ch.size > 7) ch[7] else 1500
             }
+            // Extract per-waypoint servo commands from recordedMission.
+            // ServoCmd entries follow the waypoint they apply to.
+            val servoEvents = mutableMapOf<Int, MutableList<MissionAction.ServoCmd>>()
+            var wpIdx = -1
+            for (action in recordedMission) {
+                when (action) {
+                    is MissionAction.Waypoint -> wpIdx++
+                    is MissionAction.ServoCmd -> {
+                        if (wpIdx >= 0)
+                            servoEvents.getOrPut(wpIdx) { mutableListOf() }.add(action)
+                    }
+                }
+            }
             val allSpeeds = corridorList.flatten().map { it.second }
             val turnMarkers = allSpeeds.count { it < 0f }
-            android.util.Log.e("UPLOAD", "CORRIDOR turns=$turnMarkers pts=${allSpeeds.size} speeds=${allSpeeds.take(20)}")
+            val srvCount = servoEvents.values.sumOf { it.size }
             Toast.makeText(this,
-                "TURNS: $turnMarkers / ${allSpeeds.size} — uploading ${corridorList.size} corridor(s)",
+                "TURNS: $turnMarkers / ${allSpeeds.size} + $srvCount servo — uploading ${corridorList.size} corridor(s)",
                 Toast.LENGTH_LONG).show()
-            roverManager.uploadCorridorMission(selectedRoverId, corridorList, corridorWidth, servoState)
+            roverManager.uploadCorridorMission(selectedRoverId, corridorList, corridorWidth, servoState, servoEvents)
             // Show corridors on map
             val allPts = corridorList.flatten().map { it.first }
             roverMissions[selectedRoverId]          = allPts

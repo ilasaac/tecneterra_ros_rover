@@ -381,12 +381,13 @@ class RoverPositionManager(
      *                   Speed = recorded speed (m/s); 0 = use navigator default.
      */
     fun uploadCorridorMission(sysId: Int, corridors: List<List<Pair<LatLng, Float>>>, width: Float,
-                              servos: Map<Int, Int> = emptyMap()) {
+                              servos: Map<Int, Int> = emptyMap(),
+                              servoEvents: Map<Int, List<MissionAction.ServoCmd>> = emptyMap()) {
         uploadJobs[sysId]?.cancel()
         uploadJobs[sysId] = scope.launch {
             var seq = 0
             val items = mutableListOf<MissionItemInt>()
-            // Prepend initial servo state (CH5-CH8) so rover restores pump/actuator positions
+            // Prepend initial servo state (CH5-CH8)
             for (servoNum in 5..8) {
                 val pwm = servos[servoNum] ?: 1500
                 items.add(MissionItemInt.builder()
@@ -398,23 +399,37 @@ class RoverPositionManager(
                     .param3(0f).param4(0f).x(0).y(0).z(0f)
                     .build())
             }
+            var wpIdx = 0
             for ((idx, centerline) in corridors.withIndex()) {
                 val nVerts = centerline.size
                 val nextId = if (idx < corridors.size - 1) idx + 1 else 65535
                 for ((pt, speed) in centerline) {
+                    // Corridor vertex first
                     items.add(MissionItemInt.builder()
                         .seq(seq++).targetSystem(sysId).targetComponent(1)
                         .frame(MavFrame.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT)
                         .command(EnumValue.create(MavCmd::class.java, 50100))
                         .current(0).autocontinue(1)
-                        .param1(nVerts.toFloat())       // vertex_count
-                        .param2(width)                  // corridor half-width
-                        .param3(speed)                  // recorded speed m/s
-                        .param4(nextId.toFloat())       // next_corridor_id
+                        .param1(nVerts.toFloat())
+                        .param2(width)
+                        .param3(speed)
+                        .param4(nextId.toFloat())
                         .x((pt.latitude * 1e7).toInt())
                         .y((pt.longitude * 1e7).toInt())
-                        .z(idx.toFloat())               // corridor_id
+                        .z(idx.toFloat())
                         .build())
+                    // Servo commands AFTER the vertex they apply to
+                    servoEvents[wpIdx]?.forEach { cmd ->
+                        items.add(MissionItemInt.builder()
+                            .seq(seq++).targetSystem(sysId).targetComponent(1)
+                            .frame(MavFrame.MAV_FRAME_MISSION)
+                            .command(MavCmd.MAV_CMD_DO_SET_SERVO)
+                            .current(0).autocontinue(1)
+                            .param1(cmd.servo.toFloat()).param2(cmd.pwm.toFloat())
+                            .param3(0f).param4(0f).x(0).y(0).z(0f)
+                            .build())
+                    }
+                    wpIdx++
                 }
             }
             streamMission(sysId, items)
