@@ -467,9 +467,8 @@ def _mavlink_upload(waypoints: list, obstacles: list,
         mav.srcComponent = 0
         def _send(pkt):
             sock.sendto(pkt.pack(mav), (rover_ip, rover_port))
-        _send(mav.mission_count_encode(rover_sysid, 0, len(items)))
-        _time.sleep(0.15)   # GQC streaming delay
-        for seq, item in enumerate(items):
+        def _send_item(seq):
+            item = items[seq]
             _send(mav.mission_item_int_encode(
                 rover_sysid, 0, seq,
                 6,             # MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
@@ -478,11 +477,34 @@ def _mavlink_upload(waypoints: list, obstacles: list,
                 item['p1'], item['p2'], item['p3'], item['p4'],
                 int(item['lat'] * 1e7), int(item['lon'] * 1e7), item['z'],
             ))
+        _send(mav.mission_count_encode(rover_sysid, 0, len(items)))
+        _time.sleep(0.15)   # GQC streaming delay
+        for seq in range(len(items)):
+            _send_item(seq)
             _time.sleep(0.02)
+        # Listen for REQUEST_INT retries (handles packet loss over WiFi)
+        sock.settimeout(0.5)
+        retry_deadline = _time.monotonic() + 5.0  # wait up to 5s for retries
+        while _time.monotonic() < retry_deadline:
+            try:
+                data, _ = sock.recvfrom(1024)
+                msgs = mav.parse_buffer(data)
+                for m in (msgs or []):
+                    if m.get_type() == 'MISSION_REQUEST_INT':
+                        rseq = m.seq
+                        if 0 <= rseq < len(items):
+                            _send_item(rseq)
+                    elif m.get_type() == 'MISSION_ACK':
+                        break  # rover confirmed receipt
+                else:
+                    continue
+                break  # got MISSION_ACK
+            except OSError:
+                pass  # timeout — no retry requested
         sock.close()
         n_wps = len(waypoints)
         n_obs = len(obstacles or [])
-        return {'ok': True, 'message': f'Uploaded {n_wps} waypoints + {n_obs} obstacles to RV{rover_sysid}'}
+        return {'ok': True, 'message': f'Uploaded {len(items)} items ({n_wps} wps + {n_obs} obs) to RV{rover_sysid}'}
     except Exception as e:
         return {'ok': False, 'message': str(e)}
 
@@ -526,16 +548,38 @@ def _mavlink_upload_corridor(corridor_json: str,
         for _ in range(3):
             _send(mav.command_long_encode(rover_sysid, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0))
             _time.sleep(0.1)
-        _send(mav.mission_count_encode(rover_sysid, 0, len(items)))
-        _time.sleep(0.15)
-        for seq, item in enumerate(items):
+        def _send_item(seq):
+            item = items[seq]
             _send(mav.mission_item_int_encode(
                 rover_sysid, 0, seq,
                 6, item['cmd'], 0, 1,
                 item['p1'], item['p2'], item['p3'], item['p4'],
                 int(item['lat'] * 1e7), int(item['lon'] * 1e7), item['z'],
             ))
+        _send(mav.mission_count_encode(rover_sysid, 0, len(items)))
+        _time.sleep(0.15)
+        for seq in range(len(items)):
+            _send_item(seq)
             _time.sleep(0.02)
+        # Listen for REQUEST_INT retries (handles packet loss over WiFi)
+        sock.settimeout(0.5)
+        retry_deadline = _time.monotonic() + 5.0
+        while _time.monotonic() < retry_deadline:
+            try:
+                data, _ = sock.recvfrom(1024)
+                msgs = mav.parse_buffer(data)
+                for m in (msgs or []):
+                    if m.get_type() == 'MISSION_REQUEST_INT':
+                        rseq = m.seq
+                        if 0 <= rseq < len(items):
+                            _send_item(rseq)
+                    elif m.get_type() == 'MISSION_ACK':
+                        break
+                else:
+                    continue
+                break
+            except OSError:
+                pass
         sock.close()
         return {'ok': True, 'message': f'Uploaded {len(items)} corridor vertices ({len(mission.corridors)} corridors) to RV{rover_sysid}'}
     except Exception as e:
