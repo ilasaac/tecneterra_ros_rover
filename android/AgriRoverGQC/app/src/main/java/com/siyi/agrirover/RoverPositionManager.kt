@@ -159,6 +159,85 @@ class RoverPositionManager(
     private val missionDownloadItems = HashMap<Int, HashMap<Int, Triple<Double, Double, Boolean>>>() // sysId → seq → (lat, lon, bypass)
     private val missionDownloadCount = HashMap<Int, Int>()                        // sysId → expected item count
 
+    // ─── rosbridge WebSocket telemetry ──────────────────────────────────────
+    // Persistent WebSocket per rover — subscribes to ROS2 topics via rosbridge.
+    // Auto-connects when rover IP is discovered from MAVLink, reconnects on failure.
+    private val rosbridgeWs = HashMap<Int, okhttp3.WebSocket>()
+    private val rosbridgeClient = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(0, java.util.concurrent.TimeUnit.SECONDS)  // no read timeout for persistent sub
+        .build()
+
+    private fun connectRosbridge(sysId: Int, ip: InetAddress) {
+        if (rosbridgeWs.containsKey(sysId)) return  // already connected
+        val port = if (sysId == 1) 9090 else 9091
+        val ns = "/rv$sysId"
+        val url = "ws://${ip.hostAddress}:$port"
+        Log.e("ROSBRIDGE", "Connecting to $url for RV$sysId telemetry")
+
+        val request = okhttp3.Request.Builder().url(url).build()
+        val ws = rosbridgeClient.newWebSocket(request, object : okhttp3.WebSocketListener() {
+            override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
+                Log.e("ROSBRIDGE", "Connected to RV$sysId rosbridge")
+                // Subscribe to navigator status
+                webSocket.send("""{"op":"subscribe","topic":"$ns/nav_status","type":"std_msgs/msg/String"}""")
+                // Subscribe to GPS + heading
+                webSocket.send("""{"op":"subscribe","topic":"$ns/fix","type":"sensor_msgs/msg/NavSatFix"}""")
+                webSocket.send("""{"op":"subscribe","topic":"$ns/heading","type":"std_msgs/msg/Float32"}""")
+                // Subscribe to WP progress + XTE
+                webSocket.send("""{"op":"subscribe","topic":"$ns/wp_active","type":"std_msgs/msg/Int32"}""")
+                webSocket.send("""{"op":"subscribe","topic":"$ns/xte","type":"std_msgs/msg/Float32"}""")
+            }
+            override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+                try {
+                    val json = org.json.JSONObject(text)
+                    val topic = json.optString("topic", "")
+                    val msg = json.optJSONObject("msg") ?: return
+                    when {
+                        topic.endsWith("/nav_status") -> {
+                            val status = msg.optString("data", "NA")
+                            scope.launch(Dispatchers.Main) { onNavStatus(sysId, status) }
+                        }
+                        topic.endsWith("/fix") -> {
+                            val lat = msg.optDouble("latitude", 0.0)
+                            val lon = msg.optDouble("longitude", 0.0)
+                            if (lat != 0.0 && lon != 0.0) {
+                                val hdg = rosbridgeHeading.getOrDefault(sysId, 0f)
+                                scope.launch(Dispatchers.Main) { onPositionUpdate(sysId, lat, lon, hdg) }
+                            }
+                        }
+                        topic.endsWith("/heading") -> {
+                            val hdg = msg.optDouble("data", 0.0).toFloat()
+                            rosbridgeHeading[sysId] = hdg
+                        }
+                        topic.endsWith("/wp_active") -> {
+                            val wp = msg.optInt("data", -1)
+                            scope.launch(Dispatchers.Main) { onMissionProgress(sysId, wp) }
+                        }
+                        topic.endsWith("/xte") -> {
+                            // XTE available via rosbridge — could update HUD
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("ROSBRIDGE", "Parse error: ${e.message}")
+                }
+            }
+            override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                Log.e("ROSBRIDGE", "RV$sysId connection failed: ${t.message}")
+                rosbridgeWs.remove(sysId)
+                // Reconnect after 5s
+                scope.launch { delay(5000); roverAddresses[sysId]?.let { connectRosbridge(sysId, it) } }
+            }
+            override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
+                rosbridgeWs.remove(sysId)
+            }
+        })
+        rosbridgeWs[sysId] = ws
+    }
+
+    // Cache heading from rosbridge (updated faster than position callback)
+    private val rosbridgeHeading = HashMap<Int, Float>()
+
     // ─── Public API ──────────────────────────────────────────────────────────
 
     fun startListening(ctx: Context? = null) {
@@ -212,6 +291,8 @@ class RoverPositionManager(
     fun stopListening() {
         isRunning = false
         socket?.close()
+        rosbridgeWs.values.forEach { it.close(1000, "stopping") }
+        rosbridgeWs.clear()
         scope.cancel()
         wifiLock?.let { if (it.isHeld) it.release() }
         wifiLock = null
@@ -727,6 +808,8 @@ class RoverPositionManager(
                 if (!roverAddresses.containsKey(senderId)) {
                     roverAddresses[senderId] = packet.address
                     Log.i("RoverMgr", "Discovered Rover $senderId at ${packet.address.hostAddress}")
+                    // Auto-connect rosbridge for telemetry
+                    connectRosbridge(senderId, packet.address)
                 }
 
                 dispatchMessage(senderId, message.payload)  // non-blocking: UI callbacks use scope.launch
