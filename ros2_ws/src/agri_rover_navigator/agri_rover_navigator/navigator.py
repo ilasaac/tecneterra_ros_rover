@@ -581,6 +581,7 @@ class NavigatorNode(Node):
         self.create_subscription(Bool, 'reroute_response', self._cb_reroute_response, 10)
         self._reroute_pending    = False
         self.nav_status_pub     = self.create_publisher(String,   'nav_status',      10)
+        self.center_pos_pub     = self.create_publisher(NavSatFix, 'center_pos',     10)
         self._last_nav_status   = ''
         self.create_timer(1.0, self._publish_nav_status)
         self.nav_params_pub     = self.create_publisher(String,   'nav_params',      10)
@@ -678,9 +679,25 @@ class NavigatorNode(Node):
     def _cb_fix(self, msg: NavSatFix):
         self._fix      = msg
         self._fix_time = time.time()
+        self._publish_center_pos()
 
     def _cb_fix_front(self, msg: NavSatFix):
         self._fix_front = msg
+
+    def _publish_center_pos(self):
+        """Publish center position (midpoint of rear+front antenna) for GQC map."""
+        if self._fix is None:
+            return
+        clat, clon = self._center_pos()
+        msg = NavSatFix()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'gps'
+        msg.status = self._fix.status
+        msg.latitude = clat
+        msg.longitude = clon
+        msg.altitude = self._fix.altitude
+        msg.position_covariance_type = self._fix.position_covariance_type
+        self.center_pos_pub.publish(msg)
 
     def _center_pos(self) -> tuple[float, float]:
         """Midpoint between rear and front antenna — best estimate of rover centre."""

@@ -179,14 +179,16 @@ class RoverPositionManager(
         val ws = rosbridgeClient.newWebSocket(request, object : okhttp3.WebSocketListener() {
             override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
                 Log.e("ROSBRIDGE", "Connected to RV$sysId rosbridge")
-                // Subscribe to navigator status
-                webSocket.send("""{"op":"subscribe","topic":"$ns/nav_status","type":"std_msgs/msg/String"}""")
-                // Subscribe to GPS + heading
-                webSocket.send("""{"op":"subscribe","topic":"$ns/fix","type":"sensor_msgs/msg/NavSatFix"}""")
+                rosbridgeConnected[sysId] = true
+                // Subscribe to center position (midpoint of dual antennas — same as diag CSV)
+                webSocket.send("""{"op":"subscribe","topic":"$ns/center_pos","type":"sensor_msgs/msg/NavSatFix"}""")
                 webSocket.send("""{"op":"subscribe","topic":"$ns/heading","type":"std_msgs/msg/Float32"}""")
-                // Subscribe to WP progress + XTE
+                // Subscribe to navigator status + progress
+                webSocket.send("""{"op":"subscribe","topic":"$ns/nav_status","type":"std_msgs/msg/String"}""")
                 webSocket.send("""{"op":"subscribe","topic":"$ns/wp_active","type":"std_msgs/msg/Int32"}""")
                 webSocket.send("""{"op":"subscribe","topic":"$ns/xte","type":"std_msgs/msg/Float32"}""")
+                // Subscribe to armed state
+                webSocket.send("""{"op":"subscribe","topic":"$ns/armed","type":"std_msgs/msg/Bool"}""")
             }
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
                 try {
@@ -198,7 +200,7 @@ class RoverPositionManager(
                             val status = msg.optString("data", "NA")
                             scope.launch(Dispatchers.Main) { onNavStatus(sysId, status) }
                         }
-                        topic.endsWith("/fix") -> {
+                        topic.endsWith("/center_pos") -> {
                             val lat = msg.optDouble("latitude", 0.0)
                             val lon = msg.optDouble("longitude", 0.0)
                             if (lat != 0.0 && lon != 0.0) {
@@ -214,6 +216,10 @@ class RoverPositionManager(
                             val wp = msg.optInt("data", -1)
                             scope.launch(Dispatchers.Main) { onMissionProgress(sysId, wp) }
                         }
+                        topic.endsWith("/armed") -> {
+                            val armed = msg.optBoolean("data", false)
+                            scope.launch(Dispatchers.Main) { onArmState(sysId, armed) }
+                        }
                         topic.endsWith("/xte") -> {
                             // XTE available via rosbridge — could update HUD
                         }
@@ -225,11 +231,13 @@ class RoverPositionManager(
             override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
                 Log.e("ROSBRIDGE", "RV$sysId connection failed: ${t.message}")
                 rosbridgeWs.remove(sysId)
+                rosbridgeConnected[sysId] = false
                 // Reconnect after 5s
                 scope.launch { delay(5000); roverAddresses[sysId]?.let { connectRosbridge(sysId, it) } }
             }
             override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
                 rosbridgeWs.remove(sysId)
+                rosbridgeConnected[sysId] = false
             }
         })
         rosbridgeWs[sysId] = ws
@@ -237,6 +245,36 @@ class RoverPositionManager(
 
     // Cache heading from rosbridge (updated faster than position callback)
     private val rosbridgeHeading = HashMap<Int, Float>()
+    // Per-rover rosbridge connection state — when true, MAVLink GPS/STATUS/WP are ignored
+    private val rosbridgeConnected = HashMap<Int, Boolean>()
+
+    // ─── rosbridge command helpers ─────────────────────────────────────────
+
+    /** Publish arm/disarm via rosbridge (TCP reliable). Falls back to MAVLink if not connected. */
+    fun rosbridgeArm(sysId: Int, arm: Boolean) {
+        val ws = rosbridgeWs[sysId]
+        if (ws == null) {
+            // Fallback to MAVLink
+            if (arm) sendCommand(sysId, 400, 1f, 0f)
+            else sendCriticalCommand(sysId, 400, 0f, 0f)
+            return
+        }
+        val ns = "/rv$sysId"
+        ws.send("""{"op":"publish","topic":"$ns/armed","type":"std_msgs/msg/Bool","msg":{"data":$arm}}""")
+    }
+
+    /** Publish mode via rosbridge (TCP reliable). Falls back to MAVLink if not connected. */
+    fun rosbridgeSetMode(sysId: Int, mode: String) {
+        val ws = rosbridgeWs[sysId]
+        if (ws == null) {
+            // Fallback to MAVLink
+            val p2 = if (mode == "MANUAL") 0f else 1f
+            sendCommand(sysId, 176, 0f, p2)
+            return
+        }
+        val ns = "/rv$sysId"
+        ws.send("""{"op":"publish","topic":"$ns/mode","type":"std_msgs/msg/String","msg":{"data":"$mode"}}""")
+    }
 
     // ─── Public API ──────────────────────────────────────────────────────────
 
@@ -352,10 +390,20 @@ class RoverPositionManager(
      *  Use sysId=0 for broadcast (e.g. E-STOP to all rovers).
      */
     fun sendCommand(sysId: Int, commandId: Int, p1: Float, p2: Float) {
+        // Route ARM/DISARM and SET_MODE through rosbridge when connected (TCP reliable)
+        if (rosbridgeConnected[sysId] == true || (sysId == 0 && rosbridgeConnected.values.any { it })) {
+            val targets = if (sysId == 0) listOf(MASTER_SYSID, SLAVE_SYSID) else listOf(sysId)
+            for (t in targets) {
+                if (rosbridgeConnected[t] != true) continue
+                when (commandId) {
+                    400 -> { rosbridgeArm(t, p1 >= 1f); return }
+                    176 -> { rosbridgeSetMode(t, if (p2 == 0f) "MANUAL" else "AUTONOMOUS"); return }
+                }
+            }
+        }
+        // Fallback: MAVLink
         scope.launch {
             val ip = roverIp(sysId)
-            // Send 2× to survive WiFi packet loss — rover ignores duplicate
-            // COMMAND_LONG with same confirmation (idempotent ARM/MODE/etc).
             repeat(2) { attempt ->
                 sendMavlinkTo(ip, CommandLong.builder()
                     .targetSystem(sysId).targetComponent(1)
@@ -375,6 +423,14 @@ class RoverPositionManager(
      * Uses `confirmation` field 0, 1, 2 per MAVLink spec for retries.
      */
     fun sendCriticalCommand(sysId: Int, commandId: Int, p1: Float, p2: Float) {
+        // Route ARM/DISARM through rosbridge when connected (TCP = no packet loss)
+        val targets = if (sysId == 0) listOf(MASTER_SYSID, SLAVE_SYSID) else listOf(sysId)
+        for (t in targets) {
+            if (rosbridgeConnected[t] == true && commandId == 400) {
+                rosbridgeArm(t, p1 >= 1f)
+            }
+        }
+        // Always also send via MAVLink for safety-critical commands (belt + suspenders)
         scope.launch {
             repeat(3) { attempt ->
                 sendMavlinkTo(
@@ -834,19 +890,20 @@ class RoverPositionManager(
                     roverConnected[senderId] = true
                     scope.launch(Dispatchers.Main) { onConnectionChange(senderId, true) }
                 }
-                val armed = (payload.baseMode().value() and 128) != 0
-                scope.launch(Dispatchers.Main) { onArmState(senderId, armed) }
+                // Arm state from rosbridge /armed topic when connected
+                if (rosbridgeConnected[senderId] != true) {
+                    val armed = (payload.baseMode().value() and 128) != 0
+                    scope.launch(Dispatchers.Main) { onArmState(senderId, armed) }
+                }
 
                 // Check state consistency on every heartbeat from either rover
                 if (senderId == SLAVE_SYSID || senderId == MASTER_SYSID) checkLinkMismatch()
             }
 
             // GLOBAL_POSITION_INT (#33) — rover GPS position
+            // Skipped when rosbridge provides center_pos (avoids position jumping)
             is GlobalPositionInt -> {
-                // Discard out-of-order packets (garden AP / any WiFi can reorder UDP).
-                // time_boot_ms is uint32 sent by mavlink_bridge — monotonically increasing.
-                // Exception: a large backward jump (> 30 s) means the rover restarted —
-                // accept the packet so indicators resume updating after a Docker restart.
+                if (rosbridgeConnected[senderId] == true) return
                 val tMs = payload.timeBootMs().toLong() and 0xFFFFFFFFL
                 val lastTms = roverLastPosTms[senderId] ?: -1L
                 if (tMs <= lastTms && lastTms - tMs < 30_000L) return
@@ -950,12 +1007,16 @@ class RoverPositionManager(
                         onSensorUpdate(senderId, -1f, -1f, -1f, value)
                     }
                     "STATUS"  -> {
-                        val s = when {
-                            value >= 2f -> "ARM"
-                            value >= 1f -> "MSL"
-                            else        -> "NA"
+                        // Skip MAVLink STATUS when rosbridge provides nav_status
+                        if (rosbridgeConnected[senderId] == true) {}
+                        else {
+                            val s = when {
+                                value >= 2f -> "ARM"
+                                value >= 1f -> "MSL"
+                                else        -> "NA"
+                            }
+                            scope.launch(Dispatchers.Main) { onNavStatus(senderId, s) }
                         }
-                        scope.launch(Dispatchers.Main) { onNavStatus(senderId, s) }
                     }
                     "SBUS_OK" -> scope.launch(Dispatchers.Main) {
                         onLinkStatus(senderId, "SBUS", value >= 1f)
@@ -969,8 +1030,9 @@ class RoverPositionManager(
                     "HACC"    -> scope.launch(Dispatchers.Main) {
                         onHaccStatus(senderId, value)
                     }
-                    "WP_ACT"  -> scope.launch(Dispatchers.Main) {
-                        onMissionProgress(senderId, value.toInt())
+                    "WP_ACT"  -> {
+                        if (rosbridgeConnected[senderId] != true)
+                            scope.launch(Dispatchers.Main) { onMissionProgress(senderId, value.toInt()) }
                     }
                     "MSN_ID" -> {
                         val newId = value.toInt()
