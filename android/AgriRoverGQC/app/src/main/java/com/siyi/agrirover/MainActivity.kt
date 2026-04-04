@@ -1383,56 +1383,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
         // --- Corridor upload path ---
         if (isCorridorMode) {
-            // Include current recording if in progress
             if (isRecording) stopRecording()
-            // If no corridors recorded but routePoints exist (loaded mission),
-            // auto-create a single corridor from the loaded waypoints.
-            if (corridorList.isEmpty() && routePoints.size >= 2) {
-                val speeds = recordedMission
-                    .filterIsInstance<MissionAction.Waypoint>()
-                    .map { it.speed }
-                val corridor = routePoints.mapIndexed { i, pt ->
-                    Pair(pt, speeds.getOrElse(i) { 0f })
-                }
-                corridorList.add(corridor)
-            }
-            if (corridorList.isEmpty()) {
-                Toast.makeText(this, "No corridors or waypoints to upload.", Toast.LENGTH_SHORT).show()
+            if (recordedMission.filterIsInstance<MissionAction.Waypoint>().isEmpty()) {
+                Toast.makeText(this, "No waypoints recorded.", Toast.LENGTH_SHORT).show()
                 return
             }
-            // Capture current servo state (CH5-CH8) for the corridor upload.
-            // roverPpmChannels is in LOGICAL/PPM order after remapSbusToLogical:
-            //   [4]=CH5, [5]=CH6, [6]=CH7, [7]=CH8
-            val servoState = mutableMapOf<Int, Int>()
-            val ch = roverPpmChannels[selectedRoverId]
-            if (ch != null) {
-                servoState[5] = if (ch.size > 4) ch[4] else 1500
-                servoState[6] = if (ch.size > 5) ch[5] else 1500
-                servoState[7] = if (ch.size > 6) ch[6] else 1500
-                servoState[8] = if (ch.size > 7) ch[7] else 1500
-            }
-            // Extract per-waypoint servo commands from recordedMission.
-            // ServoCmd entries follow the waypoint they apply to.
-            val servoEvents = mutableMapOf<Int, MutableList<MissionAction.ServoCmd>>()
-            var wpIdx = -1
-            for (action in recordedMission) {
-                when (action) {
-                    is MissionAction.Waypoint -> wpIdx++
-                    is MissionAction.ServoCmd -> {
-                        if (wpIdx >= 0)
-                            servoEvents.getOrPut(wpIdx) { mutableListOf() }.add(action)
-                    }
-                }
-            }
-            val allSpeeds = corridorList.flatten().map { it.second }
-            val turnMarkers = allSpeeds.count { it < 0f }
-            val srvCount = servoEvents.values.sumOf { it.size }
+            val wpCount = recordedMission.filterIsInstance<MissionAction.Waypoint>().size
+            val turnCount = recordedMission.filterIsInstance<MissionAction.Waypoint>().count { it.speed < 0 }
             Toast.makeText(this,
-                "TURNS: $turnMarkers / ${allSpeeds.size} + $srvCount servo — uploading ${corridorList.size} corridor(s)",
+                "Uploading $wpCount raw points ($turnCount turns) — rover will optimize",
                 Toast.LENGTH_LONG).show()
-            roverManager.uploadCorridorViaRosbridge(selectedRoverId, corridorList, corridorWidth, servoEvents)
-            // Show corridors on map
-            val allPts = corridorList.flatten().map { it.first }
+            // Send raw recording directly — rover handles all processing
+            roverManager.uploadRawRecording(selectedRoverId, recordedMission, corridorWidth)
+            // Show points on map
+            val allPts = recordedMission.filterIsInstance<MissionAction.Waypoint>()
+                .map { LatLng(it.lat, it.lon) }
             roverMissions[selectedRoverId]          = allPts
             roverMissionBypass[selectedRoverId]     = List(allPts.size) { false }
             roverMissionVisible[selectedRoverId]    = true
