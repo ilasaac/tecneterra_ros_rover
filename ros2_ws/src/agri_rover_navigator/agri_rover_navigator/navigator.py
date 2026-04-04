@@ -1535,6 +1535,23 @@ class NavigatorNode(Node):
                         steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
                                                              self._min_steer_delta)
                     self._publish_cmd(PPM_CENTER, steer_ppm)
+                    # Log pivot spin to diag
+                    if self._diag_writer is not None:
+                        sf = (PPM_CENTER - steer_ppm) / 500.0
+                        self._diag_writer.writerow([
+                            round(time.time(), 4),
+                            round(rlat, 8), round(rlon, 8),
+                            round(self._heading, 2),
+                            round(next_brg, 2),
+                            round(pivot_err, 2),
+                            round(cte, 4),
+                            round(sf, 4),
+                            steer_ppm, PPM_CENTER,
+                            0, round(direct_dist, 3),
+                            seg_idx, 'pivot',
+                            self._fix.status.status if self._fix else -1,
+                            round(self._hacc_mm, 1),
+                        ])
                     return
                 # Spin complete — advance past turn into new corridor
                 self._corridor_turn_indices.discard(turn_idx)

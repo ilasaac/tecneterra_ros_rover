@@ -174,13 +174,16 @@ os.makedirs(MISSIONS_DIR, exist_ok=True)
 def _save_mission_file(name: str, waypoints: list, obstacles: list,
                        servos: dict | None = None,
                        original_corridors: dict | None = None,
-                       optimized_path: list | None = None):
+                       optimized_path: list | None = None,
+                       real_track: list | None = None):
     path = os.path.join(MISSIONS_DIR, f'{name}.json')
     data = {'waypoints': waypoints, 'obstacles': obstacles, 'servos': servos or {}}
     if original_corridors:
         data['original_corridors'] = original_corridors
     if optimized_path:
         data['optimized_path'] = optimized_path
+    if real_track:
+        data['real_track'] = real_track
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
     return path
@@ -1974,6 +1977,7 @@ async function saveMission() {
   const payload = {name, waypoints, obstacles, servos: getServos()};
   if (originalCorridors) payload.original_corridors = originalCorridors;
   if (optimizedPath) payload.optimized_path = optimizedPath;
+  if (analyzeResult && analyzeResult.track) payload.real_track = analyzeResult.track;
   await fetch('/save_mission', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload),
@@ -1994,6 +1998,7 @@ async function loadMission() {
   (d.obstacles || []).forEach(poly => obstacles.push(poly));
   originalCorridors = d.original_corridors || null;
   optimizedPath = d.optimized_path || null;
+  if (d.real_track) analyzeResult = {track: d.real_track};
   setServos(d.servos);
   refresh();
   // Center view on corridor data if available, else waypoints
@@ -2958,7 +2963,8 @@ class _Handler(BaseHTTPRequestHandler):
                                       data.get('obstacles', []),
                                       data.get('servos', {}),
                                       data.get('original_corridors'),
-                                      data.get('optimized_path'))
+                                      data.get('optimized_path'),
+                                      data.get('real_track'))
             print(f'[save] {path}', flush=True)
             self._json({'ok': True, 'name': name})
 
