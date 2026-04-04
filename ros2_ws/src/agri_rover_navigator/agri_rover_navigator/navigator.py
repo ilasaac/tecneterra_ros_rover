@@ -1609,9 +1609,8 @@ class NavigatorNode(Node):
                 f'hdg={self._heading:.1f} tgt_brg={target_bearing:.1f} '
                 f'herr={heading_err:.1f} path_idx={self._path_idx}')
         throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
-        # CTE sign: positive = LEFT of path. Negate for Stanley (positive = RIGHT).
         stanley_ang = heading_err + math.degrees(
-            math.atan2(-self._stanley_k * cte, max(v_mps, self._stanley_softening)))
+            math.atan2(self._stanley_k * cte, max(v_mps, self._stanley_softening)))
         stanley_ang = max(-90.0, min(90.0, stanley_ang))
         steer_frac = max(-self._max_steer, min(self._max_steer, stanley_ang / 45.0))
         steer_ppm = int(PPM_CENTER - steer_frac * 500)
