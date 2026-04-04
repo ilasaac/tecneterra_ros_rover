@@ -936,9 +936,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         if (routePoints.isNotEmpty()) {
             // Planner route — white (not yet uploaded to rover).
-            // Hide if this rover already has a mission loaded (shown in rover color).
-            val roverHasMission = roverMissionVisible[selectedRoverId] == true
-            if (!roverHasMission) {
+            // Hide only if the rover's rerouted path is actually being displayed.
+            val roverShowingPath = roverReroutedPaths[selectedRoverId]?.isNotEmpty() == true
+            if (!roverShowingPath) {
                 routeOverlays.add(map.addPolyline(
                     PolylineOptions().addAll(routePoints).width(8f).color(Color.WHITE).zIndex(2f)))
                 routePoints.forEachIndexed { _, pt ->
