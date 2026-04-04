@@ -1430,7 +1430,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             Toast.makeText(this,
                 "TURNS: $turnMarkers / ${allSpeeds.size} + $srvCount servo — uploading ${corridorList.size} corridor(s)",
                 Toast.LENGTH_LONG).show()
-            roverManager.uploadCorridorMission(selectedRoverId, corridorList, corridorWidth, servoState, servoEvents)
+            roverManager.uploadCorridorViaRosbridge(selectedRoverId, corridorList, corridorWidth, servoEvents)
             // Show corridors on map
             val allPts = corridorList.flatten().map { it.first }
             roverMissions[selectedRoverId]          = allPts

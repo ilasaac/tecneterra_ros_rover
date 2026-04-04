@@ -436,6 +436,114 @@ class RoverPositionManager(
         }
     }
 
+    // ── rosbridge WebSocket upload ─────────────────────────────────────────
+    // Publishes corridor JSON directly on the ROS2 topic via rosbridge.
+    // TCP reliable delivery — no packet loss, no retries.
+
+    /**
+     * Upload a corridor mission via rosbridge WebSocket (TCP).
+     * Builds the same JSON that mavlink_bridge would publish on /rvN/corridor_mission,
+     * then sends it directly via WebSocket → rosbridge → ROS2 topic.
+     */
+    fun uploadCorridorViaRosbridge(
+        sysId: Int,
+        corridors: List<List<Pair<LatLng, Float>>>,
+        width: Float,
+        servoEvents: Map<Int, List<MissionAction.ServoCmd>> = emptyMap(),
+    ) {
+        val ns = "/rv$sysId"
+        val port = if (sysId == 1) 9090 else 9091
+        val addr = roverAddresses[sysId]
+        if (addr == null) {
+            scope.launch(Dispatchers.Main) { onMissionAck("No rover $sysId IP — connect first") }
+            return
+        }
+        scope.launch {
+            try {
+                // Build corridor JSON (same format as mavlink_bridge publishes)
+                val sb = StringBuilder()
+                sb.append("""{"corridors":[""")
+                var wpIdx = 0
+                for ((cIdx, centerline) in corridors.withIndex()) {
+                    if (cIdx > 0) sb.append(",")
+                    val nextId = if (cIdx < corridors.size - 1) cIdx + 1 else -1
+                    sb.append("""{"corridor_id":$cIdx,"centerline":[""")
+                    val speeds = mutableListOf<String>()
+                    val ch5 = mutableListOf<String>(); val ch6 = mutableListOf<String>()
+                    val ch7 = mutableListOf<String>(); val ch8 = mutableListOf<String>()
+                    for ((pIdx, pair) in centerline.withIndex()) {
+                        val (pt, speed) = pair
+                        if (pIdx > 0) sb.append(",")
+                        sb.append("[${pt.latitude},${pt.longitude}]")
+                        speeds.add(speed.toString())
+                        // Servo state for this vertex
+                        val evts = servoEvents[wpIdx]
+                        var s5 = 1500; var s6 = 1500; var s7 = 1500; var s8 = 1500
+                        evts?.forEach { cmd ->
+                            when (cmd.servo) { 5 -> s5 = cmd.pwm; 6 -> s6 = cmd.pwm
+                                               7 -> s7 = cmd.pwm; 8 -> s8 = cmd.pwm }
+                        }
+                        ch5.add(s5.toString()); ch6.add(s6.toString())
+                        ch7.add(s7.toString()); ch8.add(s8.toString())
+                        wpIdx++
+                    }
+                    sb.append("""],"width":$width,"speed":0,"speeds":[${speeds.joinToString(",")}]""")
+                    sb.append(""","ch5":[${ch5.joinToString(",")}],"ch6":[${ch6.joinToString(",")}]""")
+                    sb.append(""","ch7":[${ch7.joinToString(",")}],"ch8":[${ch8.joinToString(",")}]""")
+                    sb.append(""","next_corridor_id":$nextId,"turn_type":"auto","headland_width":0}""")
+                }
+                sb.append("""],"min_turn_radius":3.0,"headland_width":0}""")
+                val corridorJson = sb.toString()
+
+                // Connect to rosbridge WebSocket
+                val client = okhttp3.OkHttpClient.Builder()
+                    .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                val request = okhttp3.Request.Builder()
+                    .url("ws://${addr.hostAddress}:$port")
+                    .build()
+
+                val latch = java.util.concurrent.CountDownLatch(1)
+                var connected = false
+
+                val ws = client.newWebSocket(request, object : okhttp3.WebSocketListener() {
+                    override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
+                        connected = true
+                        // Publish corridor mission on ROS2 topic
+                        val msg = """{"op":"publish","topic":"$ns/corridor_mission","type":"std_msgs/msg/String","msg":{"data":${
+                            corridorJson.replace("\\", "\\\\").replace("\"", "\\\"")
+                                .let { "\"$it\"" }
+                        }}}"""
+                        webSocket.send(msg)
+                        Log.e("ROSBRIDGE", "Published corridor mission (${corridorJson.length} bytes)")
+                        // Close after a short delay to ensure delivery
+                        scope.launch {
+                            delay(500)
+                            webSocket.close(1000, "done")
+                            latch.countDown()
+                        }
+                    }
+                    override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                        Log.e("ROSBRIDGE", "WebSocket failed: ${t.message}")
+                        latch.countDown()
+                    }
+                })
+
+                latch.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                client.dispatcher.executorService.shutdown()
+
+                val total = corridors.sumOf { it.size }
+                withContext(Dispatchers.Main) {
+                    if (connected) onMissionAck("Uploaded $total corridor vertices via rosbridge")
+                    else onMissionAck("rosbridge connection failed — is rover running?")
+                }
+            } catch (e: Exception) {
+                Log.e("ROSBRIDGE", "Upload error: ${e.message}")
+                withContext(Dispatchers.Main) { onMissionAck("rosbridge error: ${e.message}") }
+            }
+        }
+    }
+
     /**
      * Upload a mission that includes obstacle fence polygons.
      *

@@ -49,6 +49,9 @@ dependencies {
     // MAVLINK (Just this ONE line is needed)
     implementation("io.dronefleet.mavlink:mavlink:1.1.9")
 
+    // WebSocket for rosbridge (mission upload via TCP)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // COROUTINES
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
