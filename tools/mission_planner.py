@@ -1466,8 +1466,7 @@ function _wpHasServos(wp) {
 function refreshTable() {
   const tb = document.getElementById('wp-tbody');
   tb.innerHTML = '';
-  // Servo events from original_corridors (keyed by vertex index)
-  const srvMap = (originalCorridors && originalCorridors.servo_events) || {};
+  // Servo data — from optimized_path (per-point full state) or original_corridors
 
   // Show optimized path from fetched run
   if (optimizedPath && optimizedPath.length) {
@@ -1476,7 +1475,7 @@ function refreshTable() {
       const isTurn = pt.turn === true;
       const spdColor = pt.speed < 0 ? '#ffeb3b' : pt.speed <= 0.5 ? '#ff9800' : '#ccc';
       const turnLabel = isTurn ? '<span style="color:#ff5722">T</span>' : '';
-      const srv = srvMap[String(i)];
+      const srv = pt.servo;
       const srvText = srv ? Object.entries(srv).map(([ch,pw]) => `${ch}:${pw}`).join(' ') : '';
       tr.innerHTML = `
         <td style="color:#aaa">${i}</td>
@@ -1498,7 +1497,8 @@ function refreshTable() {
         const tr = document.createElement('tr');
         const isTurn = spd < 0;
         const spdColor = isTurn ? '#ffeb3b' : '#ccc';
-        const srv = srvMap[String(gi)];
+        const srvArr = c.servos || [];
+        const srv = srvArr[i];
         const srvText = srv ? Object.entries(srv).map(([ch,pw]) => `${ch}:${pw}`).join(' ') : '';
         tr.innerHTML = `
           <td style="color:#aaa">${gi}</td>

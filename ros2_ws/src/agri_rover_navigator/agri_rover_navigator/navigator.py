@@ -907,10 +907,12 @@ class NavigatorNode(Node):
 
             # Save optimized path (what the rover actually follows)
             turn_set = getattr(self, '_corridor_turn_indices', set())
+            servo_map = getattr(self, '_corridor_servo_map', {})
             opt_data = [
                 {'lat': round(wp.latitude, 7), 'lon': round(wp.longitude, 7),
                  'speed': round(wp.speed, 2),
-                 'turn': i in turn_set}
+                 'turn': i in turn_set,
+                 'servo': servo_map.get(i)}
                 for i, wp in enumerate(self._path)
             ]
             opt_path = os.path.join(self._run_dir, 'optimized_path.json')
@@ -1346,9 +1348,12 @@ class NavigatorNode(Node):
                 self.get_logger().warn('Corridor mission: empty path')
                 return
 
-            # Turn indices come directly from corridors_to_path (is_turn flag)
+            # Turn indices and servo state from corridors_to_path
             self._corridor_turn_indices = {
                 i for i, pt in enumerate(path_pts) if pt[4]
+            }
+            self._corridor_servo_map = {
+                i: pt[5] for i, pt in enumerate(path_pts) if pt[5]
             }
 
             # New run — create timestamped directory for diag + mission
@@ -1368,7 +1373,7 @@ class NavigatorNode(Node):
             self._corridor_widths.clear()
 
             # Build path from corridor polyline
-            for i, (lat, lon, speed, width, _is_turn) in enumerate(path_pts):
+            for i, (lat, lon, speed, width, _is_turn, _srv) in enumerate(path_pts):
                 wp = MissionWaypoint()
                 wp.seq               = i
                 wp.latitude          = lat
