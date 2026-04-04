@@ -679,9 +679,9 @@ tr:hover td{background:#1e1e3a}
     </div>
     <!-- Net import removed — use Analyze section Runs/Compare instead -->
   </div>
-  <div id="wp-list">
+  <div id="wp-list" style="flex:1;overflow-y:auto">
     <table>
-      <thead><tr><th>#</th><th>Lat</th><th>Lon</th><th>Spd</th><th>Srv</th><th></th></tr></thead>
+      <thead><tr><th>#</th><th>Spd</th><th>Turn</th></tr></thead>
       <tbody id="wp-tbody"></tbody>
     </table>
   </div>
@@ -1466,50 +1466,41 @@ function _wpHasServos(wp) {
 function refreshTable() {
   const tb = document.getElementById('wp-tbody');
   tb.innerHTML = '';
-  waypoints.forEach((wp, i) => {
-    if (!wp.servos) wp.servos = {};
-    const hasSrv = _wpHasServos(wp);
-    const btnStyle = hasSrv
-      ? 'background:#1a7a3a;color:#5d9;border:1px solid #2a9a4a'
-      : 'background:#1a1a3a;color:#556;border:1px solid #334';
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td style="color:#aaa">${i}</td>
-      <td><input value="${wp.lat.toFixed(7)}" onchange="waypoints[${i}].lat=+this.value;redraw()"></td>
-      <td><input value="${wp.lon.toFixed(7)}" onchange="waypoints[${i}].lon=+this.value;redraw()"></td>
-      <td><input value="${wp.speed||0}" style="width:38px"
-          onchange="waypoints[${i}].speed=+this.value||0"></td>
-      <td><button id="svo-btn-${i}" onclick="toggleWpServo(${i})"
-          style="padding:1px 5px;font-size:10px;border-radius:2px;cursor:pointer;${btnStyle}">S</button></td>
-      <td><button onclick="removeWp(${i})"
-          style="background:#7a1515;color:#fff;border:none;padding:1px 6px;border-radius:2px;cursor:pointer">&#10005;</button></td>`;
-    tb.appendChild(tr);
-
-    // Servo sub-row — visible only when toggled or when values are already set
-    const svoRow = document.createElement('tr');
-    svoRow.id = `svo-row-${i}`;
-    svoRow.style.display = hasSrv ? '' : 'none';
-    svoRow.style.background = '#0a1a0a';
-    const inputs = [5,6,7,8].map(ch => {
-      const v = wp.servos[ch] ?? wp.servos[String(ch)] ?? '';
-      return `<span style="font-size:9px;color:#5a8">CH${ch}</span>
-        <input id="wp-svo-${i}-${ch}" type="number" min="1000" max="2000" step="50"
-          value="${v}" placeholder="—"
-          style="width:40px;background:#0a1020;color:#eee;border:1px solid #334;padding:1px 2px;
-                 border-radius:2px;font-size:10px;text-align:center;margin:0 5px 0 2px"
-          onchange="wpServoSet(${i},${ch},this.value)">`;
-    }).join('');
-    svoRow.innerHTML = `
-      <td></td>
-      <td colspan="5" style="padding:3px 6px">
-        <span style="font-size:9px;color:#5a8;margin-right:4px">&#9881; at WP${i}:</span>
-        ${inputs}
-        <button onclick="wpServoClear(${i})"
-          style="padding:1px 5px;font-size:9px;background:#3a1515;color:#c88;
-                 border:1px solid #622;border-radius:2px;cursor:pointer;margin-left:2px">Clear</button>
-      </td>`;
-    tb.appendChild(svoRow);
-  });
+  // Show optimized path from fetched run (corridor points with speed + turn)
+  if (optimizedPath && optimizedPath.length) {
+    optimizedPath.forEach((pt, i) => {
+      const tr = document.createElement('tr');
+      const isTurn = pt.turn === true;
+      const spdColor = pt.speed < 0 ? '#ffeb3b' : pt.speed <= 0.5 ? '#ff9800' : '#ccc';
+      const turnLabel = isTurn ? '<span style="color:#ff5722">T</span>' : '';
+      tr.innerHTML = `
+        <td style="color:#aaa">${i}</td>
+        <td style="color:${spdColor}">${pt.speed.toFixed(1)}</td>
+        <td>${turnLabel}</td>`;
+      if (isTurn) tr.style.background = '#2a1a0a';
+      tb.appendChild(tr);
+    });
+    return;
+  }
+  // Fallback: show raw corridor speeds
+  if (originalCorridors) {
+    const corrs = originalCorridors.corridors || [];
+    let gi = 0;
+    corrs.forEach(c => {
+      (c.speeds || []).forEach((spd, i) => {
+        const tr = document.createElement('tr');
+        const isTurn = spd < 0;
+        const spdColor = isTurn ? '#ffeb3b' : '#ccc';
+        tr.innerHTML = `
+          <td style="color:#aaa">${gi}</td>
+          <td style="color:${spdColor}">${spd.toFixed(1)}</td>
+          <td>${isTurn ? '<span style="color:#ffeb3b">T</span>' : ''}</td>`;
+        if (isTurn) tr.style.background = '#2a2a0a';
+        tb.appendChild(tr);
+        gi++;
+      });
+    });
+  }
 }
 
 function toggleWpServo(i) {
@@ -2637,6 +2628,7 @@ async function fetchAndCompare() {
       if (d.mission.obstacles) obstacles = d.mission.obstacles;
     }
 
+    refreshTable();
     status('Run loaded. Running comparison...', '#f39c12');
     await runComparison();
   } catch(e) { status('Fetch error: ' + e, '#e74c3c'); }
