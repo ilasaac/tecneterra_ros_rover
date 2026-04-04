@@ -233,14 +233,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         onMissionProgress = { sysId, seq ->
             runOnUiThread {
                 roverNextWaypointIndex[sysId] = seq
-                val total = roverMissions[sysId]?.size ?: 0
+                val total = roverReroutedPaths[sysId]?.size ?: roverMissions[sysId]?.size ?: 0
                 val wpView = if (sysId == 1) txtRv1Wp else txtRv2Wp
                 wpView.text = if (total > 0) "WP: ${seq + 1}/$total" else "WP: --"
                 redrawRoverMissions()
-                if (sysId == selectedRoverId) {
-                    nextWaypointIndex = seq
-                    redrawMap()
-                }
             }
         },
 
@@ -939,13 +935,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
 
         if (routePoints.isNotEmpty()) {
-            // Planner route — white (not yet uploaded to rover)
-            routeOverlays.add(map.addPolyline(
-                PolylineOptions().addAll(routePoints).width(8f).color(Color.WHITE).zIndex(2f)))
-            routePoints.forEachIndexed { _, pt ->
-                map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
-                    .icon(createDotBitmap(Color.WHITE, 7)).flat(true).zIndex(2f))
-                    ?.also { routeOverlays.add(it) }
+            // Planner route — white (not yet uploaded to rover).
+            // Hide if this rover already has a mission loaded (shown in rover color).
+            val roverHasMission = roverMissionVisible[selectedRoverId] == true
+            if (!roverHasMission) {
+                routeOverlays.add(map.addPolyline(
+                    PolylineOptions().addAll(routePoints).width(8f).color(Color.WHITE).zIndex(2f)))
+                routePoints.forEachIndexed { _, pt ->
+                    map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
+                        .icon(createDotBitmap(Color.WHITE, 7)).flat(true).zIndex(2f))
+                        ?.also { routeOverlays.add(it) }
+                }
             }
         }
     }
