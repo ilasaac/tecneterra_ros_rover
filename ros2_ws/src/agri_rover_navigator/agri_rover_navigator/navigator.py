@@ -249,7 +249,7 @@ class NavigatorNode(Node):
         self.declare_parameter('default_acceptance_radius', 0.3)
         self.declare_parameter('max_speed',                 1.5)
         self.declare_parameter('min_speed',                 0.3)
-        self.declare_parameter('max_steering',              0.8)
+        self.declare_parameter('max_steering',              1.0)
         self.declare_parameter('control_rate',              25.0)
         self.declare_parameter('gps_timeout',               2.0)
         self.declare_parameter('heading_deadband',          3.0)
@@ -266,6 +266,7 @@ class NavigatorNode(Node):
         #                        slowing to min_speed, ensuring it arrives precisely.
         self.declare_parameter('pivot_threshold',           30.0)
         self.declare_parameter('pivot_approach_dist',        2.0)
+        self.declare_parameter('post_turn_speed',           0.5)
         # Obstacle avoidance:
         #   rover_width_m       — physical rover width; half of this is the minimum
         #                         clearance needed to keep the rover body off obstacles.
@@ -380,6 +381,7 @@ class NavigatorNode(Node):
         self._stanley_cte_alarm   = self.get_parameter('stanley_cte_alarm_m').value
         self._pivot_threshold     = self.get_parameter('pivot_threshold').value
         self._pivot_approach_dist = self.get_parameter('pivot_approach_dist').value
+        self._post_turn_speed    = self.get_parameter('post_turn_speed').value
         self._min_pivot_seg       = self.get_parameter('min_pivot_segment_m').value
         rover_width               = self.get_parameter('rover_width_m').value
         self._clearance           = (rover_width / 2.0
@@ -1337,7 +1339,8 @@ class NavigatorNode(Node):
                     f'Auto-split: {len(raw_pts)} points -> '
                     f'{len(mission.corridors)} corridors')
 
-            path_pts = corridors_to_path(mission, default_speed=self._max_speed)
+            path_pts = corridors_to_path(mission, default_speed=self._max_speed,
+                                        post_turn_speed=self._post_turn_speed)
 
             if not path_pts:
                 self.get_logger().warn('Corridor mission: empty path')

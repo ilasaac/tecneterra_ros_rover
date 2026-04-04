@@ -57,6 +57,7 @@
     min_turn_radius_m:         3.0    # minimum turn radius for corridor arc turns (metres)
     pivot_threshold:           25.0
     pivot_approach_dist:       2.0
+    post_turn_speed:           0.5    # m/s — speed at first point after a corridor turn
     min_pivot_segment_m:       0.3   # min adjacent segment length to qualify for pivot detection
     rover_width_m:             1.0
     obstacle_clearance_m:      0.5

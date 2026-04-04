@@ -210,6 +210,7 @@ def _corridor_entry_heading(corridor: Corridor) -> float:
 def corridors_to_path(
     mission: CorridorMission,
     default_speed: float = 0.0,
+    post_turn_speed: float = 0.5,
 ) -> list[tuple[float, float, float, float, bool]]:
     """Convert a corridor mission into a continuous polyline path.
 
@@ -283,6 +284,12 @@ def corridors_to_path(
         # else: 'none' — corridors connect directly (turn marked inline)
 
         current = next_c
+
+    # Set first point after each turn to post_turn_speed for alignment
+    for i, pt in enumerate(path):
+        if pt[4] and i + 1 < len(path):
+            lat, lon, _spd, w, is_t = path[i + 1]
+            path[i + 1] = (lat, lon, post_turn_speed, w, is_t)
 
     return path
 
