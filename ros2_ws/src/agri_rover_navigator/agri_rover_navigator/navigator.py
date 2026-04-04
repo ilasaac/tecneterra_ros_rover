@@ -1398,6 +1398,7 @@ class NavigatorNode(Node):
                 f'{len(self._path)} path pts, {self._corridor_total_s:.1f} m total')
 
             self._publish_full_path()
+            self._sim_validate_path()
 
         except Exception as e:
             self.get_logger().error(f'Corridor mission parse error: {e}')
@@ -1878,6 +1879,8 @@ class NavigatorNode(Node):
                 tag = 'BYPASS' if k in new_bypass_indices else 'orig'
                 self.get_logger().info(f'  path[{k}] {tag}: seq={wp.seq} {wp.latitude:.7f},{wp.longitude:.7f}')
 
+        self._sim_validate_path()
+
         # If rover was actively navigating and bypass was inserted, pause for
         # user confirmation via GQC before proceeding with the new route.
         if was_navigating and n_bypass > 0:
@@ -1887,6 +1890,251 @@ class NavigatorNode(Node):
             self._publish_halt()
             self.get_logger().info(
                 'Reroute pending — waiting for user confirmation via GQC')
+
+    # ── Fast internal simulation (preflight CTE check) ─────────────────────
+
+    def _sim_validate_path(self) -> dict:
+        """Run fast offline simulation of the current path using DiffDriveState.
+
+        Calls the navigator's own geometry methods (_cte_to_seg, _point_at_s)
+        on self._path / self._path_s — no ROS2 topics, no code duplication.
+        Runs in <1s for typical missions (tight Python loop, ~1000x real-time).
+
+        Returns dict with max_cte, avg_cte, complete, sim_path.
+        """
+        from agri_rover_simulator.diff_drive import DiffDriveState
+
+        if not self._path or len(self._path) < 2 or not self._path_s:
+            return {'ok': False, 'reason': 'no path'}
+
+        # Init position at first path point, heading toward second
+        wp0 = self._path[0]
+        wp1 = self._path[1]
+        hdg = bearing_to(wp0.latitude, wp0.longitude,
+                         wp1.latitude, wp1.longitude)
+
+        baseline = 1.0  # antenna baseline metres
+        half_bm = baseline / 2.0
+        hdg_rad = math.radians(hdg)
+        cos_lat0 = math.cos(math.radians(wp0.latitude)) or 1e-9
+        rear_lat = wp0.latitude - (half_bm * math.cos(hdg_rad)) / 111320.0
+        rear_lon = wp0.longitude - (half_bm * math.sin(hdg_rad)) / (111320.0 * cos_lat0)
+
+        rover = DiffDriveState(rear_lat, rear_lon, hdg,
+                               max_steer=self._max_steer)
+
+        dt = 1.0 / self._control_rate
+        total_s = self._path_s[-1] if self._path_s else 0.0
+        max_steps = int(600.0 * self._control_rate)  # 10 min hard cap
+
+        # Sim-local state (does NOT touch self._path_idx etc.)
+        sim_path_idx = 0
+        sim_spin_brg = None
+        sim_pivot_min = None
+        turn_indices = set(getattr(self, '_corridor_turn_indices', set()))
+        is_corridor = self._corridor_mode
+
+        max_cte = 0.0
+        cte_sum = 0.0
+        steps = 0
+        sim_trace = []
+
+        for _ in range(max_steps):
+            # Centre and front positions from rear antenna
+            cos_lat = math.cos(math.radians(rover.lat)) or 1e-9
+            rlat = rover.lat + (half_bm * math.cos(rover.heading_rad)) / 111320.0
+            rlon = rover.lon + (half_bm * math.sin(rover.heading_rad)) / (111320.0 * cos_lat)
+            flat = rover.lat + (baseline * math.cos(rover.heading_rad)) / 111320.0
+            flon = rover.lon + (baseline * math.sin(rover.heading_rad)) / (111320.0 * cos_lat)
+            heading = rover.heading_deg
+
+            # Nearest on path (local search from sim_path_idx, 3 segments)
+            best_s, best_seg, best_dist = 0.0, sim_path_idx, float('inf')
+            search_limit = min(sim_path_idx + (3 if is_corridor else 1), len(self._path))
+            if is_corridor:
+                for ti in sorted(turn_indices):
+                    if ti > sim_path_idx:
+                        search_limit = min(search_limit, ti)
+                        break
+            for seg_k in range(sim_path_idx, search_limit):
+                if seg_k == 0:
+                    a_lat = self._path_origin_lat or wp0.latitude
+                    a_lon = self._path_origin_lon or wp0.longitude
+                    s_a = 0.0
+                else:
+                    a_lat = self._path[seg_k - 1].latitude
+                    a_lon = self._path[seg_k - 1].longitude
+                    s_a = self._path_s[seg_k - 1]
+                b_lat = self._path[seg_k].latitude
+                b_lon = self._path[seg_k].longitude
+                s_b = self._path_s[seg_k]
+                mid = math.radians((a_lat + b_lat) / 2)
+                cl = math.cos(mid) or 1e-9
+                ml, mo = 111320.0, 111320.0 * cl
+                sy = (b_lat - a_lat) * ml
+                sx = (b_lon - a_lon) * mo
+                sl = math.hypot(sx, sy)
+                if sl < 0.01:
+                    d = haversine(rlat, rlon, b_lat, b_lon)
+                    if d < best_dist:
+                        best_dist, best_s, best_seg = d, s_b, seg_k
+                    continue
+                ry = (rlat - a_lat) * ml
+                rx = (rlon - a_lon) * mo
+                t = max(0.0, min(1.0, (rx * sx + ry * sy) / sl ** 2))
+                d = math.hypot(t * sx - rx, t * sy - ry)
+                if d < best_dist:
+                    best_dist = d
+                    best_s = s_a + t * (s_b - s_a)
+                    best_seg = seg_k
+            s_nearest = best_s
+            seg_idx = best_seg
+
+            # Mission complete?
+            if s_nearest >= total_s - self._accept_r:
+                break
+
+            # CTE (front antenna, same as real navigator)
+            cte = self._cte_to_seg(flat, flon, seg_idx)
+            abs_cte = abs(cte)
+            if abs_cte > max_cte:
+                max_cte = abs_cte
+            cte_sum += abs_cte
+            steps += 1
+
+            # Advance sim_path_idx
+            if seg_idx > sim_path_idx:
+                limit = len(self._path)
+                if is_corridor:
+                    for ti in sorted(turn_indices):
+                        if ti > sim_path_idx:
+                            limit = ti
+                            break
+                sim_path_idx = min(seg_idx, limit)
+
+            # Turn handling for corridors
+            turn_s = None
+            turn_idx = None
+            if is_corridor:
+                for ti in sorted(turn_indices):
+                    if ti < len(self._path_s) and self._path_s[ti] >= s_nearest - self._accept_r:
+                        turn_s = self._path_s[ti]
+                        turn_idx = ti
+                        break
+                if turn_s is not None and s_nearest > turn_s:
+                    s_nearest = turn_s
+
+            # Lookahead
+            s_limit = turn_s if turn_s is not None else total_s
+            s_look = min(s_nearest + self._lookahead, s_limit)
+            la_lat, la_lon = self._point_at_s(s_look)
+            target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
+
+            # Pivot at corridor turn
+            if turn_idx is not None:
+                tp = self._path[turn_idx]
+                direct_dist = haversine(rlat, rlon, tp.latitude, tp.longitude)
+                if sim_pivot_min is None:
+                    sim_pivot_min = direct_dist
+                if direct_dist < sim_pivot_min:
+                    sim_pivot_min = direct_dist
+                passed = (sim_pivot_min < self._accept_r
+                          and direct_dist > sim_pivot_min + 0.05)
+                if passed:
+                    # Find point 2m into next corridor for spin target
+                    nxt = turn_idx + 1
+                    best_nxt = min(nxt, len(self._path) - 1)
+                    while nxt < len(self._path):
+                        d = haversine(tp.latitude, tp.longitude,
+                                      self._path[nxt].latitude, self._path[nxt].longitude)
+                        if d > 0.1:
+                            best_nxt = nxt
+                        if d >= 2.0:
+                            best_nxt = nxt
+                            break
+                        nxt += 1
+                    next_brg = bearing_to(tp.latitude, tp.longitude,
+                                          self._path[best_nxt].latitude,
+                                          self._path[best_nxt].longitude)
+                    pivot_err = ((next_brg - heading + 180) % 360) - 180
+                    if abs(pivot_err) > self._hdb:
+                        steer_frac = max(-self._max_steer, min(self._max_steer, pivot_err / 45.0))
+                        rover.update(1500, int(1500 - steer_frac * 500),
+                                     self._max_speed, 0.6, dt)
+                        continue
+                    # Pivot done
+                    turn_indices.discard(turn_idx)
+                    sim_pivot_min = None
+                    sim_path_idx = turn_idx + 1
+                    sim_spin_brg = None
+                    continue
+
+            # Freeze bearing during spin
+            if sim_spin_brg is not None:
+                target_bearing = sim_spin_brg
+            heading_err = ((target_bearing - heading + 180) % 360) - 180
+
+            # Speed
+            wp = self._path[min(seg_idx, len(self._path) - 1)]
+            target_spd = wp.speed if wp.speed > 0 else self._max_speed
+            cte_factor = max(0.0, 1.0 - abs_cte / max(self._stanley_cte_scale, 0.01))
+            v_mps = max(self._min_speed, target_spd * cte_factor)
+
+            # Decel approaching turn
+            if turn_s is not None:
+                dist_to_turn = turn_s - s_nearest
+                approach = self._pivot_approach_dist
+                if dist_to_turn < approach:
+                    v_mps = max(self._min_speed, v_mps * (dist_to_turn / approach))
+
+            # Large heading error → spin
+            if abs(heading_err) > self._align_thresh:
+                if sim_spin_brg is None:
+                    sim_spin_brg = target_bearing
+                steer_frac = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
+                rover.update(1500, int(1500 - steer_frac * 500),
+                             self._max_speed, 0.6, dt)
+                continue
+            if sim_spin_brg is not None and abs(heading_err) < self._hdb:
+                sim_spin_brg = None
+
+            # Stanley steering
+            stanley_ang = heading_err + math.degrees(
+                math.atan2(self._stanley_k * cte, max(v_mps, self._stanley_softening)))
+            stanley_ang = max(-90.0, min(90.0, stanley_ang))
+            steer_frac = max(-self._max_steer, min(self._max_steer, stanley_ang / 45.0))
+
+            throttle = int(1500 + (v_mps / self._max_speed) * 500)
+            steer = int(1500 - steer_frac * 500)
+            rover.update(throttle, steer, self._max_speed, 0.6, dt)
+
+            if steps % 25 == 0:  # ~1 per sim-second
+                sim_trace.append((rlat, rlon))
+
+        avg_cte = cte_sum / max(steps, 1)
+        result = {
+            'ok': True,
+            'max_cte': round(max_cte, 4),
+            'avg_cte': round(avg_cte, 4),
+            'steps': steps,
+            'complete': s_nearest >= total_s - self._accept_r if steps > 0 else False,
+            'sim_path': sim_trace,
+        }
+        self.get_logger().info(
+            f'Preflight sim: {steps} steps, max_cte={max_cte:.3f}m, '
+            f'avg_cte={avg_cte:.3f}m, complete={result["complete"]}')
+
+        # Save sim trace to run directory
+        if self._run_dir:
+            try:
+                import json as _json
+                sim_path_file = os.path.join(self._run_dir, 'sim_preflight.json')
+                with open(sim_path_file, 'w') as f:
+                    _json.dump(result, f, separators=(',', ':'))
+            except Exception:
+                pass
+
+        return result
 
     def _rebuild_path_s(self, wps, origin_lat, origin_lon) -> list:
         """Rebuild cumulative arc-lengths for a waypoint list."""
