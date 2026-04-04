@@ -194,11 +194,23 @@ def _load_mission_file(name: str) -> dict:
         return json.load(f)
 
 def _list_mission_files() -> list[dict]:
-    files = sorted(_glob.glob(os.path.join(MISSIONS_DIR, '*.json')),
-                   key=os.path.getmtime, reverse=True)
+    # List both CSV and JSON mission files
+    csv_files = sorted(_glob.glob(os.path.join(MISSIONS_DIR, '*.csv')),
+                       key=os.path.getmtime, reverse=True)
+    json_files = sorted(_glob.glob(os.path.join(MISSIONS_DIR, '*.json')),
+                        key=os.path.getmtime, reverse=True)
     result = []
-    for p in files:
-        name = os.path.splitext(os.path.basename(p))[0]
+    for p in csv_files:
+        name = os.path.basename(p)
+        try:
+            with open(p) as f:
+                wp_count = sum(1 for line in f) - 1  # minus header
+        except Exception:
+            wp_count = 0
+        result.append({'name': name, 'wp_count': wp_count, 'obs_count': 0,
+                       'mtime': int(os.path.getmtime(p))})
+    for p in json_files:
+        name = os.path.basename(p)
         try:
             d = json.loads(open(p).read())
             wp_count  = len(d.get('waypoints', []))
@@ -207,6 +219,7 @@ def _list_mission_files() -> list[dict]:
             wp_count = obs_count = 0
         result.append({'name': name, 'wp_count': wp_count, 'obs_count': obs_count,
                        'mtime': int(os.path.getmtime(p))})
+    result.sort(key=lambda x: x['mtime'], reverse=True)
     return result
 
 # ── Mission analyzer ──────────────────────────────────────────────────────────
@@ -700,9 +713,6 @@ tr:hover td{background:#1e1e3a}
       <label style="color:#7ab">&#128190;</label>
       <input id="m-name" size="13" placeholder="mission name" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;flex:1">
       <button class="btn-blue" style="padding:3px 7px;font-size:11px" onclick="saveMission()">Save</button>
-      <button class="btn-orange" style="padding:3px 5px;font-size:10px" onclick="exportCsv()" title="Export mission as CSV for Excel editing">CSV&#8595;</button>
-      <button class="btn-orange" style="padding:3px 5px;font-size:10px" onclick="document.getElementById('csv-import').click()" title="Import edited CSV back">CSV&#8593;</button>
-      <input type="file" id="csv-import" accept=".csv" style="display:none" onchange="importCsv(event)">
     </div>
     <div style="display:flex;gap:3px;align-items:center">
       <select id="m-select" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px;border-radius:2px;font-size:11px">
@@ -711,18 +721,18 @@ tr:hover td{background:#1e1e3a}
       <button class="btn-blue" style="padding:3px 7px;font-size:11px" onclick="loadMission()">Load</button>
     </div>
   </div>
-  <!-- Servo CH5-CH8: removed standalone panel — per-waypoint servo in WP table -->
-  <!-- Test Sensors moved to bottom of sidebar -->
   <div class="section" style="background:#1a0d2e">
     <div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
       <label style="color:#b7a">&#128225;</label>
       <input id="r-ip-rv1" size="13" value="192.168.100.19" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;flex:1">
       <button class="btn-green" style="padding:3px 9px;font-size:11px" onclick="uploadRover(1)">&#9650; RV1</button>
+      <button class="btn-orange" style="padding:3px 9px;font-size:11px" onclick="downloadRover(1)">&#9660; RV1</button>
     </div>
     <div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
       <label style="color:#b7a">&#128225;</label>
       <input id="r-ip-rv2" size="13" value="192.168.100.20" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px;flex:1">
       <button class="btn-blue" style="padding:3px 9px;font-size:11px" onclick="uploadRover(2)">&#9650; RV2</button>
+      <button class="btn-orange" style="padding:3px 9px;font-size:11px" onclick="downloadRover(2)">&#9660; RV2</button>
     </div>
     <!-- Net import removed — use Analyze section Runs/Compare instead -->
   </div>
@@ -2036,7 +2046,7 @@ function clearAll() {
   status('Cleared.');
 }
 
-// ── Mission file save / load ──────────────────────────────────────
+// ── Mission file save / load (CSV format) ────────────────────────
 async function saveMission() {
   const name = document.getElementById('m-name').value.trim();
   if (!name) { status('Enter a mission name first.', '#e74c3c'); return; }
@@ -2053,99 +2063,72 @@ async function saveMission() {
   loadAnalyzeMissionList();
 }
 
-function exportCsv() {
-  // Export optimized path (if available) or raw waypoints as CSV
-  let rows = [['idx','lat','lon','speed','turn','hold_secs','ch5','ch6','ch7','ch8']];
-  if (optimizedPath && optimizedPath.length) {
-    optimizedPath.forEach((pt, i) => {
-      const s = pt.servo || {};
-      rows.push([i, pt.lat, pt.lon, pt.speed, pt.turn ? 1 : 0, 0,
-                 s[5]||s['5']||1500, s[6]||s['6']||1500, s[7]||s['7']||1500, s[8]||s['8']||1500]);
-    });
-  } else if (waypoints.length) {
-    waypoints.forEach((wp, i) => {
-      const s = wp.servos || {};
-      rows.push([i, wp.lat, wp.lon, wp.speed || 0, 0, wp.hold_secs || 0,
-                 s[5]||s['5']||1500, s[6]||s['6']||1500, s[7]||s['7']||1500, s[8]||s['8']||1500]);
-    });
-  } else { status('No waypoints to export.', '#e74c3c'); return; }
-  const csv = rows.map(r => r.join(',')).join('\n');
-  const blob = new Blob([csv], {type: 'text/csv'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (document.getElementById('m-name').value.trim() || 'mission') + '.csv';
-  a.click();
-  status(`Exported ${rows.length - 1} points as CSV.`);
-}
-
-function importCsv(event) {
-  const f = event.target.files[0];
-  if (!f) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    const lines = e.target.result.trim().split('\n');
-    const hdr = lines[0].split(',').map(h => h.trim());
-    const ci = {};
-    hdr.forEach((h, i) => ci[h] = i);
-    if (!('lat' in ci) || !('lon' in ci)) { status('CSV must have lat,lon columns.', '#e74c3c'); return; }
-    waypoints = [];
-    for (let i = 1; i < lines.length; i++) {
-      const c = lines[i].split(',');
-      if (c.length < 2) continue;
-      const wp = {
-        lat: parseFloat(c[ci.lat]),
-        lon: parseFloat(c[ci.lon]),
-        speed: 'speed' in ci ? parseFloat(c[ci.speed]) || 0 : 0,
-        hold_secs: 'hold_secs' in ci ? parseFloat(c[ci.hold_secs]) || 0 : 0,
-        servos: {},
-      };
-      if ('ch5' in ci) wp.servos['5'] = parseInt(c[ci.ch5]) || 1500;
-      if ('ch6' in ci) wp.servos['6'] = parseInt(c[ci.ch6]) || 1500;
-      if ('ch7' in ci) wp.servos['7'] = parseInt(c[ci.ch7]) || 1500;
-      if ('ch8' in ci) wp.servos['8'] = parseInt(c[ci.ch8]) || 1500;
-      if ('turn' in ci && parseInt(c[ci.turn])) wp.speed = -1;
-      waypoints.push(wp);
-    }
-    // Clear corridor layers — imported CSV replaces everything
-    optimizedPath = null;
-    originalCorridors = null;
-    refreshTable();
-    renderAll();
-    status(`Imported ${waypoints.length} waypoints from ${f.name}.`);
-  };
-  reader.readAsText(f);
-  event.target.value = '';
-}
-
 async function loadMission() {
   const sel = document.getElementById('m-select');
   const name = sel.value;
   if (!name) { status('Select a mission first.', '#e74c3c'); return; }
-  const resp = await fetch(`/load_mission?name=${encodeURIComponent(name)}`);
+  const cleanName = name.replace(/\.json$/, '');
+  const resp = await fetch(`/load_mission?name=${encodeURIComponent(cleanName)}`);
   const d = await resp.json();
+  clearAll();
   waypoints = (d.waypoints || []).map(wp => ({servos: {}, ...wp}));
-  obstacles = []; obsCurPts = [];
-  (d.obstacles || []).forEach(poly => obstacles.push(poly));
+  if (d.obstacles) d.obstacles.forEach(poly => obstacles.push(poly));
   originalCorridors = d.original_corridors || null;
   optimizedPath = d.optimized_path || null;
   if (d.real_track) analyzeResult = {track: d.real_track};
-  setServos(d.servos);
-  refresh();
-  // Center view on corridor data if available, else waypoints
-  const viewPts = originalCorridors
-    ? (originalCorridors.corridors || []).flatMap(c => c.centerline || [])
-    : waypoints.map(w => [w.lat, w.lon]);
-  if (viewPts.length) {
-    viewLat = viewPts[0][0] ?? viewPts[0].lat; viewLon = viewPts[0][1] ?? viewPts[0].lon;
-    fitAll();
-  } else if (waypoints.length) {
-    syncStartToWp0();
-    viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll();
-  }
+  if (d.servos) setServos(d.servos);
+  refreshTable(); renderAll();
+  if (waypoints.length) { viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll(); }
+  document.getElementById('m-name').value = cleanName;
   const parts = [`${waypoints.length} wps`, `${obstacles.length} obs`];
-  if (originalCorridors) parts.push('corridor data');
   if (optimizedPath) parts.push(`${optimizedPath.length} opt pts`);
-  status(`Loaded "${name}" — ${parts.join(', ')}.`);
+  status(`Loaded "${cleanName}" — ${parts.join(', ')}.`);
+}
+
+async function downloadRover(roverId) {
+  const ip = document.getElementById(`r-ip-rv${roverId}`).value.trim();
+  const user = document.getElementById('az-ssh-user').value.trim() || 'ilasa1';
+  const key  = document.getElementById('az-ssh-key').value.trim();
+  if (!ip) { status(`Enter RV${roverId} IP.`, '#e74c3c'); return; }
+  status(`Downloading mission from RV${roverId}...`, '#f39c12');
+  try {
+    // Get latest run from rover
+    const listResp = await fetch('/list_rover_runs', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip, user, key}),
+    });
+    const listData = await listResp.json();
+    if (!listData.runs || !listData.runs.length) { status('No runs on rover.', '#e74c3c'); return; }
+    const runDir = listData.runs[0].dir;
+    // Fetch run data
+    const fetchResp = await fetch('/fetch_rover_run', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip, user, key, run_dir: runDir}),
+    });
+    const d = await fetchResp.json();
+    if (d.error) { status('Fetch error: ' + d.error, '#e74c3c'); return; }
+    // Clear and load
+    clearAll();
+    optimizedPath = d.optimized_path || null;
+    originalCorridors = d.original_corridors || null;
+    simPreflight = d.sim_preflight || null;
+    simDiagCsv = d.sim_diag_csv || null;
+    logFileData = d.log_csv || null;
+    fetchedMission = d.mission || null;
+    if (d.mission && d.mission.waypoints && d.mission.waypoints.length) {
+      waypoints = d.mission.waypoints.map((w, i) => ({servos: {}, ...w, idx: i}));
+      if (d.mission.obstacles) obstacles = d.mission.obstacles;
+    }
+    refreshTable(); renderAll();
+    if (waypoints.length) { viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll(); }
+    else if (optimizedPath && optimizedPath.length) { viewLat = optimizedPath[0].lat; viewLon = optimizedPath[0].lon; fitAll(); }
+    const parts = [];
+    if (waypoints.length) parts.push(`${waypoints.length} wps`);
+    if (optimizedPath) parts.push(`${optimizedPath.length} opt pts`);
+    if (simPreflight) parts.push(`sim CTE ${simPreflight.max_cte.toFixed(3)}m`);
+    if (logFileData) parts.push('real log');
+    status(`Downloaded RV${roverId} ${runDir} — ${parts.join(', ')}.`, '#27ae60');
+  } catch(e) { status('Download error: ' + e, '#e74c3c'); }
 }
 
 async function refreshMissionList() {
@@ -3123,6 +3106,16 @@ class _Handler(BaseHTTPRequestHandler):
             except FileNotFoundError:
                 self.send_error(404, f'Mission not found: {name}')
 
+        elif self.path.startswith('/load_mission_csv?name='):
+            name = _unquote(self.path.split('=', 1)[1])
+            missions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions')
+            path = os.path.join(missions_dir, name)
+            if not os.path.isfile(path):
+                self._json({'error': f'Not found: {name}'}); return
+            with open(path, encoding='utf-8', errors='replace') as f:
+                csv_text = f.read()
+            self._json({'csv': csv_text})
+
         elif self.path == '/snooped_mission':
             with _snooped_lock:
                 data = dict(_snooped)
@@ -3219,6 +3212,22 @@ class _Handler(BaseHTTPRequestHandler):
                                       data.get('optimized_path'),
                                       data.get('real_track'))
             print(f'[save] {path}', flush=True)
+            self._json({'ok': True, 'name': name})
+
+        elif self.path == '/save_mission_csv':
+            data = json.loads(raw)
+            name = data.get('name', '').strip().replace('/', '_').replace('\\', '_')
+            csv_text = data.get('csv', '')
+            if not name or not csv_text:
+                self._json({'error': 'name and csv required'}); return
+            if not name.endswith('.csv'):
+                name += '.csv'
+            missions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions')
+            os.makedirs(missions_dir, exist_ok=True)
+            path = os.path.join(missions_dir, name)
+            with open(path, 'w') as f:
+                f.write(csv_text)
+            print(f'[save_csv] {path}', flush=True)
             self._json({'ok': True, 'name': name})
 
         elif self.path == '/upload_rover_ssh':
