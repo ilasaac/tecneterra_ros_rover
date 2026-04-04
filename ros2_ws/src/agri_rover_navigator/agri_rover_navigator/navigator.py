@@ -582,6 +582,7 @@ class NavigatorNode(Node):
         self._reroute_pending    = False
         self.nav_status_pub     = self.create_publisher(String,   'nav_status',      10)
         self.center_pos_pub     = self.create_publisher(NavSatFix, 'center_pos',     10)
+        self.armed_pub          = self.create_publisher(Bool,     'armed',           10)
         self._last_nav_status   = ''
         self.create_timer(1.0, self._publish_nav_status)
         self.nav_params_pub     = self.create_publisher(String,   'nav_params',      10)
@@ -1482,6 +1483,13 @@ class NavigatorNode(Node):
             m = Int32(); m.data = -1
             self.wp_pub.publish(m)
             self._publish_halt()
+            # Auto-disarm (navigator owns lifecycle — no mavlink_bridge dependency)
+            # Mode is NOT published here — it comes from rp2040_bridge (CH9 switch)
+            self._armed = False
+            a = Bool(); a.data = False
+            self.armed_pub.publish(a)
+            self._path.clear()
+            self._path_s.clear()
             return
 
         # CTE to current segment — skip zero-length segments (spin-in-place
@@ -2479,6 +2487,9 @@ class NavigatorNode(Node):
                 m = Int32(); m.data = -1
                 self.wp_pub.publish(m)
                 self._publish_halt()
+                self._armed = False
+                a = Bool(); a.data = False
+                self.armed_pub.publish(a)
         else:
             nxt = self._path[self._path_idx]
             if self._path_idx - 1 not in self._bypass_indices:
