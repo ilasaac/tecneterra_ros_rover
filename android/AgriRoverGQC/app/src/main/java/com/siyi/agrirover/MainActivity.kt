@@ -180,11 +180,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     routePoints.add(pos)
                     redrawMap()
                 } else if (dist >= MIN_RECORD_DIST) {
+                    // Compute speed from GPS movement since last recorded point
+                    val now = SystemClock.elapsedRealtime()
+                    val lastTs = if (waypointTimestamps.isNotEmpty()) waypointTimestamps.last() else now
+                    val dtSec = (now - lastTs) / 1000.0
+                    val speed = if (dtSec > 0.01 && dist < Double.MAX_VALUE)
+                        (dist / dtSec).toFloat().coerceIn(0f, MAX_SPEED_MPS)
+                    else 0f
                     lastRecordedPos = pos
-                    // Store waypoint with speed=0; actual speed computed post-hoc
-                    // in smoothRecordedSpeeds() using sliding-window averaging.
-                    recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, 0f))
-                    waypointTimestamps.add(SystemClock.elapsedRealtime())
+                    recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, speed))
+                    waypointTimestamps.add(now)
                     routePoints.add(pos)
                     redrawMap()
                 }
