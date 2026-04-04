@@ -958,6 +958,7 @@ let fetchedMission = null;  // mission metadata from rover run (corridor_mode, a
 let originalCorridors = null;  // raw corridor vertices from rover (with speed markers)
 let optimizedPath = null;      // optimized path from rover (what it actually follows)
 let simPreflight = null;       // preflight sim result from navigator (sim_preflight.json)
+let simDiagCsv = null;         // sim_diag.csv — same format as navigator_diag.csv
 
 // Drag / pan tracking
 let _drag    = null;   // {type:'wp',idx} | {type:'pan',sx,sy,sLat,sLon}
@@ -1007,8 +1008,8 @@ function redraw() {
   const showReal = document.getElementById('layer-real')?.checked ?? true;
   const showSim  = document.getElementById('layer-sim')?.checked ?? true;
   if (showRaw)  drawRawCorridors();
-  if (showOpt)  { drawOptimizedPath(); drawSimPreflight(); }
-  if (showSim)  { drawRoute(); drawSimPath(); drawPivotMarkers(); drawWaypoints(); drawStartMarker(); }
+  if (showOpt)  drawOptimizedPath();
+  if (showSim)  { drawSimDiagTrack(); drawRoute(); drawSimPath(); drawPivotMarkers(); drawWaypoints(); drawStartMarker(); }
   drawRover();
   if (showReal) drawAnalyzeTrack();
   drawLiveRovers();
@@ -2637,6 +2638,7 @@ async function fetchAndCompare() {
     originalCorridors = d.original_corridors || null;
     optimizedPath = d.optimized_path || null;
     simPreflight = d.sim_preflight || null;
+    simDiagCsv = d.sim_diag_csv || null;
     if (d.mission && d.mission.waypoints && d.mission.waypoints.length) {
       waypoints = d.mission.waypoints.map((w, i) => ({...w, idx: i}));
       if (d.mission.obstacles) obstacles = d.mission.obstacles;
@@ -2861,20 +2863,49 @@ function drawOptimizedPath() {
   ctx.fillText(`Opt: ${optimizedPath.length} pts, ${turnCount} turns`, 8, 22);
 }
 
-// ── Layer: Sim Preflight — fast offline sim trace ──
-function drawSimPreflight() {
-  if (!simPreflight || !simPreflight.sim_path || !simPreflight.sim_path.length) return;
-  const pts = simPreflight.sim_path;
-  ctx.save(); ctx.strokeStyle = 'rgba(156,39,176,0.7)'; ctx.lineWidth = 2;
-  ctx.setLineDash([6, 4]); ctx.beginPath();
-  pts.forEach((pt, i) => { const p = project(pt[0], pt[1]); i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y); });
-  ctx.stroke(); ctx.setLineDash([]); ctx.restore();
-  // Label
-  const sp = simPreflight;
-  const col = sp.max_cte < 0.5 ? '#27ae60' : sp.max_cte < 1.0 ? '#f39c12' : '#e74c3c';
-  ctx.fillStyle = col; ctx.font = '11px monospace';
-  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-  ctx.fillText(`Sim: max CTE ${sp.max_cte.toFixed(3)}m, avg ${sp.avg_cte.toFixed(3)}m`, 8, 34);
+// ── Layer: Sim Diag — CTE-colored track from preflight sim ──
+function drawSimDiagTrack() {
+  if (!simDiagCsv) return;
+  // Parse CSV into track points (same format as navigator_diag.csv)
+  if (!drawSimDiagTrack._parsed || drawSimDiagTrack._src !== simDiagCsv) {
+    const lines = simDiagCsv.trim().split('\n');
+    const hdr = lines[0].split(',');
+    const ci = {lat: hdr.indexOf('lat'), lon: hdr.indexOf('lon'), cte: hdr.indexOf('cte'),
+                heading: hdr.indexOf('heading'), target_brg: hdr.indexOf('target_brg'),
+                hdg_err: hdr.indexOf('hdg_err'), steer_ppm: hdr.indexOf('steer_ppm'),
+                throttle_ppm: hdr.indexOf('throttle_ppm'), wp_idx: hdr.indexOf('wp_idx'),
+                algo: hdr.indexOf('algo')};
+    drawSimDiagTrack._track = [];
+    for (let i = 1; i < lines.length; i++) {
+      const c = lines[i].split(',');
+      if (c.length < 4) continue;
+      drawSimDiagTrack._track.push({
+        lat: parseFloat(c[ci.lat]), lon: parseFloat(c[ci.lon]),
+        cte: Math.abs(parseFloat(c[ci.cte])),
+        algo: ci.algo >= 0 ? c[ci.algo] : '',
+      });
+    }
+    drawSimDiagTrack._src = simDiagCsv;
+    drawSimDiagTrack._parsed = true;
+  }
+  const track = drawSimDiagTrack._track;
+  if (!track.length) return;
+  // Draw CTE-colored segments
+  for (let i = 1; i < track.length; i++) {
+    const a = project(track[i-1].lat, track[i-1].lon);
+    const b = project(track[i].lat, track[i].lon);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = cteColor(track[i].cte);
+    ctx.lineWidth = 3; ctx.stroke();
+  }
+  // Label with CTE stats
+  if (simPreflight) {
+    const sp = simPreflight;
+    const col = sp.max_cte < 0.5 ? '#27ae60' : sp.max_cte < 1.0 ? '#f39c12' : '#e74c3c';
+    ctx.fillStyle = col; ctx.font = '11px monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(`Sim: max CTE ${sp.max_cte.toFixed(3)}m, avg ${sp.avg_cte.toFixed(3)}m`, 8, 34);
+  }
 }
 
 function drawAnalyzeTrack() {
@@ -3309,12 +3340,14 @@ class _Handler(BaseHTTPRequestHandler):
                 if sim_preflight_raw:
                     try: sim_preflight = json.loads(sim_preflight_raw)
                     except: pass
-                if not log_csv and not sim_preflight:
+                sim_diag_csv = _scp_file(f'{base_path}/sim_diag.csv')
+                if not log_csv and not sim_preflight and not sim_diag_csv:
                     self._json({'error': f'No data in {run_dir}'}); return
                 self._json({'ok': True, 'log_csv': log_csv, 'mission': mission,
                              'original_corridors': original_corridors,
                              'optimized_path': optimized_path,
                              'sim_preflight': sim_preflight,
+                             'sim_diag_csv': sim_diag_csv,
                              'run_dir': run_dir})
             except FileNotFoundError:
                 self._json({'error': 'scp not found — install OpenSSH client'})

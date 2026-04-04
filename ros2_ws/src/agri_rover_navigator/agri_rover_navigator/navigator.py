@@ -1900,6 +1900,9 @@ class NavigatorNode(Node):
         on self._path / self._path_s — no ROS2 topics, no code duplication.
         Runs in <1s for typical missions (tight Python loop, ~1000x real-time).
 
+        Outputs sim_diag.csv in the same format as navigator_diag.csv so the
+        two can be compared directly in mission_planner.
+
         Returns dict with max_cte, avg_cte, complete, sim_path.
         """
         from agri_rover_simulator.diff_drive import DiffDriveState
@@ -1939,6 +1942,35 @@ class NavigatorNode(Node):
         cte_sum = 0.0
         steps = 0
         sim_trace = []
+        sim_time = 0.0
+
+        # Open diag CSV (same columns as real navigator_diag.csv)
+        sim_diag_file = None
+        sim_diag_writer = None
+        if self._run_dir:
+            try:
+                sim_diag_path = os.path.join(self._run_dir, 'sim_diag.csv')
+                sim_diag_file = open(sim_diag_path, 'w', newline='')
+                sim_diag_writer = csv.writer(sim_diag_file)
+                sim_diag_writer.writerow([
+                    't', 'lat', 'lon', 'heading',
+                    'target_brg', 'hdg_err', 'cte',
+                    'steer_frac', 'steer_ppm', 'throttle_ppm',
+                    'speed_tgt', 'dist_to_wp', 'wp_idx', 'algo', 'fix_quality', 'hacc_mm',
+                ])
+            except Exception:
+                sim_diag_writer = None
+
+        def _log(lat, lon, heading, tgt_brg, herr, cte_v, sf, sppm, tppm, spd, dist, idx, algo):
+            if sim_diag_writer is not None:
+                sim_diag_writer.writerow([
+                    round(sim_time, 4),
+                    round(lat, 8), round(lon, 8),
+                    round(heading, 2), round(tgt_brg, 2), round(herr, 2),
+                    round(cte_v, 4), round(sf, 4),
+                    sppm, tppm, round(spd, 3), round(dist, 3),
+                    idx, algo, 4, 0,  # fix_quality=RTK, hacc=0
+                ])
 
         for _ in range(max_steps):
             # Centre and front positions from rear antenna
@@ -2060,14 +2092,20 @@ class NavigatorNode(Node):
                     pivot_err = ((next_brg - heading + 180) % 360) - 180
                     if abs(pivot_err) > self._hdb:
                         steer_frac = max(-self._max_steer, min(self._max_steer, pivot_err / 45.0))
-                        rover.update(1500, int(1500 - steer_frac * 500),
-                                     self._max_speed, 0.6, dt)
+                        steer_ppm = int(1500 - steer_frac * 500)
+                        _log(rlat, rlon, heading, next_brg, pivot_err, cte,
+                             steer_frac, steer_ppm, 1500, 0, direct_dist, seg_idx, 'sim-pivot')
+                        rover.update(1500, steer_ppm, self._max_speed, 0.6, dt)
+                        sim_time += dt
                         continue
                     # Pivot done
+                    _log(rlat, rlon, heading, next_brg, pivot_err, cte,
+                         0, 1500, 1500, 0, direct_dist, seg_idx, 'sim-pivot-done')
                     turn_indices.discard(turn_idx)
                     sim_pivot_min = None
                     sim_path_idx = turn_idx + 1
                     sim_spin_brg = None
+                    sim_time += dt
                     continue
 
             # Freeze bearing during spin
@@ -2093,8 +2131,12 @@ class NavigatorNode(Node):
                 if sim_spin_brg is None:
                     sim_spin_brg = target_bearing
                 steer_frac = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
-                rover.update(1500, int(1500 - steer_frac * 500),
-                             self._max_speed, 0.6, dt)
+                steer_ppm = int(1500 - steer_frac * 500)
+                _log(rlat, rlon, heading, target_bearing, heading_err, cte,
+                     steer_frac, steer_ppm, 1500, 0,
+                     total_s - s_nearest, seg_idx, 'sim-spin')
+                rover.update(1500, steer_ppm, self._max_speed, 0.6, dt)
+                sim_time += dt
                 continue
             if sim_spin_brg is not None and abs(heading_err) < self._hdb:
                 sim_spin_brg = None
@@ -2105,12 +2147,21 @@ class NavigatorNode(Node):
             stanley_ang = max(-90.0, min(90.0, stanley_ang))
             steer_frac = max(-self._max_steer, min(self._max_steer, stanley_ang / 45.0))
 
-            throttle = int(1500 + (v_mps / self._max_speed) * 500)
-            steer = int(1500 - steer_frac * 500)
-            rover.update(throttle, steer, self._max_speed, 0.6, dt)
+            throttle_ppm = int(1500 + (v_mps / self._max_speed) * 500)
+            steer_ppm = int(1500 - steer_frac * 500)
+
+            _log(rlat, rlon, heading, target_bearing, heading_err, cte,
+                 steer_frac, steer_ppm, throttle_ppm, target_spd,
+                 total_s - s_nearest, seg_idx, 'sim-corridor')
+
+            rover.update(throttle_ppm, steer_ppm, self._max_speed, 0.6, dt)
+            sim_time += dt
 
             if steps % 25 == 0:  # ~1 per sim-second
                 sim_trace.append((rlat, rlon))
+
+        if sim_diag_file is not None:
+            sim_diag_file.close()
 
         avg_cte = cte_sum / max(steps, 1)
         result = {
