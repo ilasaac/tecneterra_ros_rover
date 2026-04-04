@@ -192,22 +192,21 @@ class SimHarnessNode(Node):
                 raise SystemExit(0)
             return
 
-        # Wait for mission, then init position from wp[0]
-        if not self._started and self._mission_wps and not self._armed:
-            if 0 in self._mission_wps:
+        # Wait for mission, then init position
+        if not self._started and not self._armed:
+            # Waypoint mission: init from wp[0]
+            if self._mission_wps and 0 in self._mission_wps and self._start_heading is None:
                 wp0 = self._mission_wps[0]
-                if self._start_heading is None:
-                    # Compute heading from wp[0] → wp[1]
-                    hdg = 0.0
-                    if 1 in self._mission_wps:
-                        wp1 = self._mission_wps[1]
-                        dlat = wp1.latitude - wp0.latitude
-                        dlon = wp1.longitude - wp0.longitude
-                        cos_lat = math.cos(math.radians(wp0.latitude)) or 1e-9
-                        hdg = math.degrees(math.atan2(dlon * cos_lat, dlat)) % 360
-                    self._init_position(wp0.latitude, wp0.longitude, hdg)
+                hdg = 0.0
+                if 1 in self._mission_wps:
+                    wp1 = self._mission_wps[1]
+                    dlat = wp1.latitude - wp0.latitude
+                    dlon = wp1.longitude - wp0.longitude
+                    cos_lat = math.cos(math.radians(wp0.latitude)) or 1e-9
+                    hdg = math.degrees(math.atan2(dlon * cos_lat, dlat)) % 360
+                self._init_position(wp0.latitude, wp0.longitude, hdg)
 
-            # Arm after delay since last mission item
+            # Arm after delay since last mission item (works for both waypoint and corridor)
             if (self._last_mission_time > 0
                     and (now - self._last_mission_time) >= self._arm_delay
                     and self._start_heading is not None):
@@ -218,8 +217,7 @@ class SimHarnessNode(Node):
                 b = Bool(); b.data = True
                 self.pub_armed.publish(b)
                 self.get_logger().info(
-                    f'Armed + AUTONOMOUS — sim started '
-                    f'({len(self._mission_wps)} wps received)')
+                    f'Armed + AUTONOMOUS — sim started')
 
         # Publish GPS even before armed (navigator needs fix for path_origin)
         if self._start_heading is not None:
