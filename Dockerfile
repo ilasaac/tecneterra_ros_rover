@@ -44,10 +44,16 @@ RUN apt-get update && \
         ros-${ROS_DISTRO}-isaac-ros-argus-camera \
         ros-${ROS_DISTRO}-isaac-ros-h264-encoder \
      || echo "Isaac ROS apt packages not found — assuming pre-installed in base image") && \
-    (apt-get install -y --no-install-recommends \
-        ros-${ROS_DISTRO}-rosbridge-server \
-     || echo "rosbridge-server not in apt — will install via pip") \
     && rm -rf /var/lib/apt/lists/*
+
+# ── rosbridge WebSocket server ───────────────────────────────────────────────
+# Try apt first (standard ROS2 repos), fall back to pip if not available.
+RUN ROS_DISTRO=$(ls /opt/ros/ | head -1) && \
+    (apt-get update && apt-get install -y --no-install-recommends \
+        ros-${ROS_DISTRO}-rosbridge-server \
+     && rm -rf /var/lib/apt/lists/*) \
+    || pip3 install --no-cache-dir --break-system-packages \
+        rosbridge-suite twisted autobahn tornado
 
 # ── Workspace ─────────────────────────────────────────────────────────────────
 ENV ISAAC_ROS_WS=/workspaces/isaac_ros-dev
