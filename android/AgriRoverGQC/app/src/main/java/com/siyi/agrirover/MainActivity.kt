@@ -176,6 +176,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 if (isTurning) {
                     // Always record turn points (no distance check) — speed=-1 = turn marker
                     recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, -1f))
+                    // Record actual servo state with every waypoint (no inference)
+                    for (i in 0..3) recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = lastAuxPwm[i]))
                     waypointTimestamps.add(SystemClock.elapsedRealtime())
                     routePoints.add(pos)
                     redrawMap()
@@ -189,6 +191,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     else 0f
                     lastRecordedPos = pos
                     recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, speed))
+                    // Record actual servo state with every waypoint (no inference)
+                    for (i in 0..3) recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = lastAuxPwm[i]))
                     waypointTimestamps.add(now)
                     routePoints.add(pos)
                     redrawMap()
@@ -503,11 +507,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         nextWaypointIndex = 0
         lastRecordedPos = null
         // Snapshot current servo state (PPM CH5-CH8) — logical indices [4..7]
+        // Each waypoint records full servo state, so no initial ServoCmd needed.
         val ch = roverPpmChannels[selectedRoverId]
         for (i in 0..3) {
-            val pwm = if (ch != null && (i + 4) < ch.size) ch[i + 4] else 1500
-            lastAuxPwm[i] = pwm
-            recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = pwm))
+            lastAuxPwm[i] = if (ch != null && (i + 4) < ch.size) ch[i + 4] else 1500
         }
         btnRec.iconTint = ColorStateList.valueOf(Color.parseColor("#FFD600"))
         btnRec.strokeWidth = (3 * resources.displayMetrics.density + 0.5f).toInt()
