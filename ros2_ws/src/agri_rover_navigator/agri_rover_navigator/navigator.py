@@ -1945,9 +1945,100 @@ class NavigatorNode(Node):
         origin_lon = self._path_origin_lon or new_path[0].longitude
         self._path_s = self._rebuild_path_s(new_path, origin_lat, origin_lon)
 
+        # Validate obstacle clearance — push violating points outward and re-smooth
+        MAX_PUSH_ITERS = 3
+        for push_iter in range(MAX_PUSH_ITERS):
+            violations = 0
+            for wp in smooth_wps:
+                for poly in self._expanded_polygons:
+                    if self._point_in_polygon(wp.latitude, wp.longitude, poly):
+                        # Push point away from polygon centroid
+                        clat = sum(p[0] for p in poly) / len(poly)
+                        clon = sum(p[1] for p in poly) / len(poly)
+                        brg = bearing_to(clat, clon, wp.latitude, wp.longitude)
+                        push_m = self._clearance * 0.5  # push by half clearance
+                        cos_lat = math.cos(math.radians(wp.latitude)) or 1e-9
+                        wp.latitude += (push_m * math.cos(math.radians(brg))) / 111320.0
+                        wp.longitude += (push_m * math.sin(math.radians(brg))) / (111320.0 * cos_lat)
+                        violations += 1
+                        break
+            if violations == 0:
+                break
+            self.get_logger().info(
+                f'Smoother: pushed {violations} pts outside obstacles (iter {push_iter})')
+
+            # Re-smooth pushed path through the bypass zone
+            pushed_wps = list(smooth_wps)
+            self._path = pushed_wps
+            self._path_origin_lat = pushed_wps[0].latitude
+            self._path_origin_lon = pushed_wps[0].longitude
+            self._path_s = self._rebuild_path_s(pushed_wps,
+                                                 pushed_wps[0].latitude, pushed_wps[0].longitude)
+            self._corridor_turn_indices = set()
+            self._bypass_indices = set()
+            result = self._sim_validate_path()
+            re_trace = result.get('sim_path', [])
+            if len(re_trace) >= 2:
+                smooth_wps = []
+                for lat, lon in re_trace:
+                    base_spd = self._max_speed
+                    best_d = float('inf')
+                    for olat, olon, ospd in orig_speeds:
+                        d = haversine(lat, lon, olat, olon)
+                        if d < best_d:
+                            best_d = d
+                            base_spd = ospd
+                    wp = MissionWaypoint()
+                    wp.seq = 0
+                    wp.latitude = lat
+                    wp.longitude = lon
+                    wp.speed = base_spd
+                    wp.hold_secs = 0.0
+                    wp.acceptance_radius = self._accept_r
+                    smooth_wps.append(wp)
+
+        # Restore full path and splice smoothed zone
+        self._path = saved_path
+        self._path_s = saved_path_s
+        self._bypass_indices = saved_bypass
+        self._corridor_turn_indices = saved_turns
+        self._path_origin_lat = saved_origin_lat
+        self._path_origin_lon = saved_origin_lon
+
+        new_path = list(self._path[:zone_start]) + smooth_wps + list(self._path[zone_end + 1:])
+        shift = len(smooth_wps) - (zone_end + 1 - zone_start)
+        new_turns = set()
+        for ti in self._corridor_turn_indices:
+            if ti < zone_start:
+                new_turns.add(ti)
+            elif ti > zone_end:
+                new_turns.add(ti + shift)
+        new_turns.add(0)
+
+        self._path = new_path
+        self._bypass_indices = set()
+        self._corridor_turn_indices = new_turns
+        origin_lat = self._path_origin_lat or new_path[0].latitude
+        origin_lon = self._path_origin_lon or new_path[0].longitude
+        self._path_s = self._rebuild_path_s(new_path, origin_lat, origin_lon)
+
         self.get_logger().info(
             f'Bypass zone smoothed: [{zone_start}..{zone_end}] → {len(smooth_wps)} pts, '
             f'total path {len(new_path)} pts, best_cte={best_cte:.3f}m')
+
+    @staticmethod
+    def _point_in_polygon(lat: float, lon: float, poly: list) -> bool:
+        """Ray-casting point-in-polygon test."""
+        inside = False
+        n = len(poly)
+        j = n - 1
+        for i in range(n):
+            yi, xi = poly[i]
+            yj, xj = poly[j]
+            if ((yi > lat) != (yj > lat)) and (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi):
+                inside = not inside
+            j = i
+        return inside
 
     def _clone_wp(self, wp: MissionWaypoint) -> MissionWaypoint:
         c = MissionWaypoint()
