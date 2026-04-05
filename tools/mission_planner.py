@@ -638,7 +638,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{display:flex;height:100vh;font-family:Arial,sans-serif;font-size:13px;background:#111}
-#sidebar{width:310px;background:#1a1a2e;color:#ddd;display:flex;flex-direction:column;overflow-y:auto;flex-shrink:0}
+#sidebar{width:310px;background:#1a1a2e;color:#ddd;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
 #cv-wrap{flex:1;position:relative;overflow:hidden;background:#0a0a14}
 #canvas{display:block}
 .toolbar{padding:6px;background:#0d0d1a;display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid #333}
@@ -741,14 +741,14 @@ tr:hover td{background:#1e1e3a}
            style="width:38px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 1px;border-radius:2px;font-size:10px">
     <button onclick="applyBulkServo()" style="padding:2px 5px;font-size:10px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer" title="Set CH5-CH8 for all points">Srv&#10003;</button>
   </div>
-  <div id="wp-list" style="flex:1;overflow-y:auto">
+  <div id="wp-list" style="flex:1;overflow-y:auto;min-height:60px;max-height:35vh">
     <table>
       <thead><tr><th style="width:18px">#</th><th style="width:28px">Spd</th><th style="width:12px">T</th><th style="width:30px">5</th><th style="width:30px">6</th><th style="width:30px">7</th><th style="width:30px">8</th></tr></thead>
       <tbody id="wp-tbody"></tbody>
     </table>
   </div>
   <!-- ── Analyze section (permanent) ── -->
-  <div id="analyze-panel" style="display:flex;flex-direction:column">
+  <div id="analyze-panel" style="display:flex;flex-direction:column;max-height:30vh;overflow-y:auto">
     <div style="padding:4px 8px;background:#0a1a3a;border-top:2px solid #1a5aaa;border-bottom:1px solid #333">
       <b style="color:#8cf;font-size:12px">ANALYSIS</b>
     </div>
