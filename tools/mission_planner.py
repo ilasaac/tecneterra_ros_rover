@@ -638,7 +638,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{display:flex;height:100vh;font-family:Arial,sans-serif;font-size:13px;background:#111}
-#sidebar{width:310px;background:#1a1a2e;color:#ddd;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
+#sidebar{width:310px;background:#1a1a2e;color:#ddd;display:flex;flex-direction:column;overflow-y:auto;flex-shrink:0}
 #cv-wrap{flex:1;position:relative;overflow:hidden;background:#0a0a14}
 #canvas{display:block}
 .toolbar{padding:6px;background:#0d0d1a;display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid #333}
@@ -833,8 +833,8 @@ tr:hover td{background:#1e1e3a}
     <div id="pb-time" style="font-size:10px;color:#888;margin-bottom:3px">t=0.00s  frame 0/0</div>
     <div id="pb-info" style="font-size:11px;color:#ccc;line-height:1.5;font-family:monospace"></div>
   </div>
-  <!-- ── GPS Survey (bottom of sidebar) ── -->
-  <div style="margin-top:auto">
+  <!-- ── GPS Survey ── -->
+  <div>
     <div style="padding:4px 8px;background:#0a2a1a;border-top:2px solid #2a8a4a;border-bottom:1px solid #333">
       <b style="color:#6f8;font-size:12px">GPS SURVEY</b>
     </div>
