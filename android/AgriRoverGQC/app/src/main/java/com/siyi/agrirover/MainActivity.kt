@@ -367,7 +367,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             runOnUiThread {
                 obstaclePolygons.clear()
                 for (poly in obstacles) {
-                    obstaclePolygons.add(poly.map { LatLng(it.first, it.second) })
+                    obstaclePolygons.add(poly.map { LatLng(it.first, it.second) }.toMutableList())
                 }
                 redrawObstacleOverlays()
             }
