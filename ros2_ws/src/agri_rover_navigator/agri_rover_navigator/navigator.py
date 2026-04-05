@@ -615,7 +615,8 @@ class NavigatorNode(Node):
     # ── Live parameter tuning ─────────────────────────────────────────────────
 
     def _publish_nav_status(self):
-        """Publish navigator status: NA (no mission), MSL (mission loaded), ARM (armed+autonomous)."""
+        """Publish navigator status: NA (no mission), MSL (mission loaded), ARM (armed+autonomous).
+        Also re-publishes rerouted_path every 5s so late rosbridge subscribers get it."""
         if self._armed and self._mode == 'AUTONOMOUS':
             status = 'ARM'
         elif self._path:
@@ -628,6 +629,10 @@ class NavigatorNode(Node):
         if status != self._last_nav_status:
             self.get_logger().info(f'nav_status: {self._last_nav_status} → {status}')
             self._last_nav_status = status
+        # Re-publish path every 5s for late-joining rosbridge clients
+        self._status_tick = getattr(self, '_status_tick', 0) + 1
+        if self._path and self._status_tick % 5 == 0:
+            self._publish_full_path()
 
     def _publish_nav_params(self):
         """Publish all exposed parameters as a JSON dict so mavlink_bridge can respond
