@@ -967,6 +967,7 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-blue" style="flex:1;padding:4px" onclick="applyGenerate(true)">&#43; Append</button>
   </div>
 </div>
+<div id="sidebar-resize" style="width:5px;cursor:ew-resize;background:#333;flex-shrink:0"></div>
 <div id="cv-wrap">
   <canvas id="canvas"></canvas>
   <div id="map-ctrl">
@@ -1448,14 +1449,30 @@ canvas.addEventListener('mouseleave', () => {
   if (measureMode) redraw();
 });
 
-// ── WP table resize handle ────────────────────────────────────────
+// ── WP table resize handle (vertical) ─────────────────────────────
 {
   const handle = document.getElementById('wp-resize');
   const wpList = document.getElementById('wp-list');
-  let startY = 0, startH = 0;
   handle.addEventListener('mousedown', e => {
-    startY = e.clientY; startH = wpList.offsetHeight;
+    const startY = e.clientY, startH = wpList.offsetHeight;
     const onMove = ev => { wpList.style.height = Math.max(40, startH + ev.clientY - startY) + 'px'; };
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    e.preventDefault();
+  });
+}
+// ── Sidebar width resize handle (horizontal) ─────────────────────
+{
+  const handle = document.getElementById('sidebar-resize');
+  const sidebar = document.getElementById('sidebar');
+  handle.addEventListener('mousedown', e => {
+    const startX = e.clientX, startW = sidebar.offsetWidth;
+    const onMove = ev => {
+      const w = Math.max(200, Math.min(800, startW + ev.clientX - startX));
+      sidebar.style.width = w + 'px';
+      resizeCanvas();
+    };
     const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
