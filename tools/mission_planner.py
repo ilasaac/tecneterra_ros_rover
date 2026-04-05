@@ -688,27 +688,6 @@ tr:hover td{background:#1e1e3a}
     <!-- analyze is now a permanent section, no toggle button -->
     <input type="file" id="file-import" accept=".csv" style="display:none" onchange="importCSV(event)">
   </div>
-  <div style="padding:3px 6px;background:#0d0d1a;border-bottom:1px solid #333;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-    <span style="color:#888;font-size:10px">All spd:</span>
-    <input id="bulk-speed" type="number" value="1.0" min="0" max="1.5" step="0.1"
-           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px">
-    <span style="color:#888;font-size:10px">m/s</span>
-    <button onclick="applyBulkSpeed()" style="padding:2px 7px;font-size:11px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer">&#10003;</button>
-    <span style="color:#888;font-size:10px;margin-left:4px">CH5:</span>
-    <input id="bulk-ch5" type="number" value="1500" min="1000" max="2000" step="50"
-           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 2px;border-radius:2px;font-size:10px">
-    <span style="color:#888;font-size:10px">CH6:</span>
-    <input id="bulk-ch6" type="number" value="1500" min="1000" max="2000" step="50"
-           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 2px;border-radius:2px;font-size:10px">
-    <button onclick="applyBulkServo()" style="padding:2px 5px;font-size:10px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer" title="Set CH5-CH8 for all points">Srv&#10003;</button>
-    <span style="color:#888;font-size:10px;margin-left:4px">Algo:</span>
-    <select id="algo-select" style="background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px">
-      <option value="">YAML default</option>
-      <option value="stanley">Stanley</option>
-      <option value="mpc">MPC</option>
-      <option value="ttr">TTR</option>
-    </select>
-  </div>
   <div id="status-bar">Click "+ Add WP" then click the canvas to place waypoints.</div>
   <div class="section">
     <label>Start lat</label><input id="s-lat" size="11" value="START_LAT" onchange="redraw()">
@@ -743,9 +722,22 @@ tr:hover td{background:#1e1e3a}
     </div>
     <!-- Net import removed — use Analyze section Runs/Compare instead -->
   </div>
+  <div style="padding:3px 6px;background:#0d0d1a;border-bottom:1px solid #333;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+    <span style="color:#888;font-size:10px">All spd:</span>
+    <input id="bulk-speed" type="number" value="1.0" min="0" max="1.5" step="0.1"
+           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px">
+    <button onclick="applyBulkSpeed()" style="padding:2px 5px;font-size:10px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer">&#10003;</button>
+    <span style="color:#888;font-size:10px;margin-left:4px">CH5:</span>
+    <input id="bulk-ch5" type="number" value="1500" min="1000" max="2000" step="50"
+           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 2px;border-radius:2px;font-size:10px">
+    <span style="color:#888;font-size:10px">CH6:</span>
+    <input id="bulk-ch6" type="number" value="1500" min="1000" max="2000" step="50"
+           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 2px;border-radius:2px;font-size:10px">
+    <button onclick="applyBulkServo()" style="padding:2px 5px;font-size:10px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer" title="Set CH5-CH6 for all points">Srv&#10003;</button>
+  </div>
   <div id="wp-list" style="flex:1;overflow-y:auto">
     <table>
-      <thead><tr><th>#</th><th>Spd</th><th>Turn</th><th>Servo</th></tr></thead>
+      <thead><tr><th>#</th><th>Spd</th><th>Turn</th><th>CH6</th></tr></thead>
       <tbody id="wp-tbody"></tbody>
     </table>
   </div>
@@ -1535,7 +1527,7 @@ function refreshTable() {
   tb.innerHTML = '';
   // Servo data — from optimized_path (per-point full state) or original_corridors
 
-  // Show optimized path from fetched run
+  // Show optimized path from fetched run — cells are editable
   if (optimizedPath && optimizedPath.length) {
     optimizedPath.forEach((pt, i) => {
       const tr = document.createElement('tr');
@@ -1544,15 +1536,14 @@ function refreshTable() {
       const turnLabel = isTurn
         ? `<span style="color:#ff5722;cursor:pointer" onclick="toggleTurn(${i})" title="Click to remove turn">T</span>`
         : `<span style="color:#333;cursor:pointer" onclick="toggleTurn(${i})" title="Click to add turn">·</span>`;
-      const srv = pt.servo;
-      const srvText = srv ? Object.entries(srv).map(([ch,pw]) => `${ch}:${pw}`).join(' ') : '';
+      const srv = pt.servo || {};
+      const c6 = srv[6]||srv['6']||1500;
       tr.innerHTML = `
         <td style="color:#aaa">${i}</td>
-        <td style="color:${spdColor}">${pt.speed.toFixed(1)}</td>
+        <td style="color:${spdColor};cursor:pointer" onclick="editCell(this,${i},'speed')" title="Click to edit">${pt.speed.toFixed(1)}</td>
         <td>${turnLabel}</td>
-        <td style="color:#5a8;font-size:9px">${srvText}</td>`;
+        <td style="color:#5a8;font-size:9px;cursor:pointer" onclick="editCell(this,${i},'ch6')" title="Click to edit CH6">${c6}</td>`;
       if (isTurn) tr.style.background = '#2a1a0a';
-      if (srvText) tr.style.background = '#0a1a2a';
       tb.appendChild(tr);
     });
     return;
@@ -2390,6 +2381,30 @@ function applyBulkServo() {
   });
   refreshTable();
   status(`CH5=${ch5} CH6=${ch6} set on all points.`);
+}
+
+function editCell(td, idx, field) {
+  const old = td.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'number'; input.value = old;
+  input.step = field === 'speed' ? '0.1' : '50';
+  input.style.cssText = 'width:50px;background:#0a1020;color:#fff;border:1px solid #5af;padding:1px 3px;font-size:11px';
+  td.textContent = ''; td.appendChild(input);
+  input.focus(); input.select();
+  function commit() {
+    const val = parseFloat(input.value);
+    if (isNaN(val)) { td.textContent = old; return; }
+    if (optimizedPath && idx < optimizedPath.length) {
+      if (field === 'speed') optimizedPath[idx].speed = val;
+      else if (field.startsWith('ch')) {
+        if (!optimizedPath[idx].servo) optimizedPath[idx].servo = {};
+        optimizedPath[idx].servo[parseInt(field.slice(2))] = Math.round(val);
+      }
+    }
+    refreshTable(); renderAll();
+  }
+  input.onblur = commit;
+  input.onkeydown = e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { td.textContent = old; } };
 }
 
 function toggleTurn(idx) {
