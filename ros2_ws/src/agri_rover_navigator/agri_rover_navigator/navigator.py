@@ -2406,8 +2406,11 @@ class NavigatorNode(Node):
                 passed = (sim_pivot_min < self._accept_r
                           and direct_dist > sim_pivot_min + 0.05)
                 if passed:
-                    # Advance FIRST so search sees next corridor during spin
+                    # Advance and reset for next corridor
+                    turn_indices.discard(turn_idx)
+                    sim_pivot_min = None
                     sim_path_idx = turn_idx + 1
+                    sim_spin_brg = None
                     # Find point 2m into next corridor for spin target
                     nxt = turn_idx + 1
                     best_nxt = min(nxt, len(self._path) - 1)
