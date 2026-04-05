@@ -1842,24 +1842,28 @@ function refreshTable() {
     });
     return;
   }
-  // Fallback: show raw waypoints with speed + servo
+  // Fallback: show raw waypoints with speed + servo (editable)
   if (waypoints.length) {
     waypoints.forEach((wp, i) => {
       const tr = document.createElement('tr');
       const spd = wp.speed || 0;
       const spdColor = spd < 0 ? '#ffeb3b' : spd <= 0.5 ? '#ff9800' : '#ccc';
+      const isTurn = spd < 0;
+      const tl = isTurn
+        ? `<span style="color:#f52;cursor:pointer" onclick="toggleTurnWp(${i})">T</span>`
+        : `<span style="color:#333;cursor:pointer" onclick="toggleTurnWp(${i})">.</span>`;
       const s = wp.servos || {};
       const c5 = s[5]||s['5']||''; const c6 = s[6]||s['6']||'';
       const c7 = s[7]||s['7']||''; const c8 = s[8]||s['8']||'';
       const ss = 'font-size:8px;cursor:pointer;color:#5a8;padding:0 1px';
       tr.innerHTML = `
         <td style="color:#666;font-size:9px;padding:0 2px">${i}</td>
-        <td style="color:${spdColor};padding:0 2px">${spd.toFixed(1)}</td>
-        <td style="padding:0 1px">${spd < 0 ? '<span style="color:#ffeb3b">T</span>' : ''}</td>
-        <td style="${ss}">${c5||'-'}</td>
-        <td style="${ss}">${c6||'-'}</td>
-        <td style="${ss}">${c7||'-'}</td>
-        <td style="${ss}">${c8||'-'}</td>`;
+        <td style="color:${spdColor};cursor:pointer;padding:0 2px" onclick="editCellWp(this,${i},'speed')">${spd.toFixed(1)}</td>
+        <td style="padding:0 1px">${tl}</td>
+        <td style="${ss}" onclick="editCellWp(this,${i},'ch5')">${c5||'-'}</td>
+        <td style="${ss}" onclick="editCellWp(this,${i},'ch6')">${c6||'-'}</td>
+        <td style="${ss}" onclick="editCellWp(this,${i},'ch7')">${c7||'-'}</td>
+        <td style="${ss}" onclick="editCellWp(this,${i},'ch8')">${c8||'-'}</td>`;
       tb.appendChild(tr);
     });
   }
@@ -2734,6 +2738,36 @@ function toggleTurn(idx) {
     if (waypoints[idx].speed < 0) waypoints[idx].speed = 0.5;
     else waypoints[idx].speed = -1;
   }
+  refreshTable(); renderAll();
+}
+
+function editCellWp(td, idx, field) {
+  if (idx >= waypoints.length) return;
+  const old = td.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'number'; input.value = old === '-' ? '1500' : old;
+  input.step = field === 'speed' ? '0.1' : '50';
+  input.style.cssText = 'width:50px;background:#0a1020;color:#fff;border:1px solid #5af;padding:1px 3px;font-size:11px';
+  td.textContent = ''; td.appendChild(input);
+  input.focus(); input.select();
+  function commit() {
+    const val = parseFloat(input.value);
+    if (isNaN(val)) { td.textContent = old; return; }
+    if (field === 'speed') waypoints[idx].speed = val;
+    else if (field.startsWith('ch')) {
+      if (!waypoints[idx].servos) waypoints[idx].servos = {};
+      waypoints[idx].servos[field.slice(2)] = Math.round(val);
+    }
+    refreshTable(); renderAll();
+  }
+  input.onblur = commit;
+  input.onkeydown = e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { td.textContent = old; } };
+}
+
+function toggleTurnWp(idx) {
+  if (idx >= waypoints.length) return;
+  if (waypoints[idx].speed < 0) waypoints[idx].speed = 0.5;
+  else waypoints[idx].speed = -1;
   refreshTable(); renderAll();
 }
 
