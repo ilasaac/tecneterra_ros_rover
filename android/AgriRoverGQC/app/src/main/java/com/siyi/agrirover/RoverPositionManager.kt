@@ -183,7 +183,7 @@ class RoverPositionManager(
                 // Subscribe to topics — no type field (rosbridge auto-detects)
                 val topics = listOf("center_pos", "heading", "nav_status",
                     "wp_active", "xte", "armed", "rerouted_path",
-                    "rc_input", "rtk_status", "sensors", "reroute_pending")
+                    "rc_input", "cmd_override", "rtk_status", "sensors", "reroute_pending")
                 for (t in topics) {
                     webSocket.send("""{"op":"subscribe","topic":"$ns/$t"}""")
                 }
@@ -268,6 +268,16 @@ class RoverPositionManager(
                         topic.endsWith("/reroute_pending") -> {
                             val pending = msg.optBoolean("data", false)
                             scope.launch(Dispatchers.Main) { onReroutePending(sysId, pending) }
+                        }
+                        topic.endsWith("/cmd_override") -> {
+                            // Autonomous servo output — show in GQC when armed
+                            val chArr = msg.optJSONArray("channels")
+                            if (chArr != null && chArr.length() >= 8) {
+                                val channels = IntArray(chArr.length()) { chArr.optInt(it, 1500) }
+                                // In AUTO mode, override PPM display with navigator output
+                                roverPpmChannels[sysId] = channels
+                                scope.launch(Dispatchers.Main) { onRcChannels(sysId, channels) }
+                            }
                         }
                         topic.endsWith("/rerouted_path") -> {
                             // Parse [[lat, lon, bypass, speed, hold_secs], ...]
