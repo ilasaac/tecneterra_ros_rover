@@ -1826,11 +1826,8 @@ class NavigatorNode(Node):
         self.get_logger().info(
             f'Smoother pass 0: {len(best_trace)} pts, max_cte={best_cte:.3f}m')
 
-        # Iterative re-smoothing on sharp spots only
-        for pass_n in range(1, MAX_PASSES + 1):
-            if len(best_trace) < 3:
-                break
-            # Find sharp angles in current trace
+        # Log sharp angles in trace for debugging
+        if len(best_trace) >= 3:
             sharp = []
             for i in range(1, len(best_trace) - 1):
                 h1 = bearing_to(best_trace[i-1][0], best_trace[i-1][1],
@@ -1839,43 +1836,11 @@ class NavigatorNode(Node):
                                 best_trace[i+1][0], best_trace[i+1][1])
                 ang = abs(((h2 - h1 + 180) % 360) - 180)
                 if ang > ANGLE_THRESH:
-                    sharp.append(i)
-            if not sharp:
-                self.get_logger().info(f'Smoother pass {pass_n}: no sharp angles — done')
-                break
-            # Expand sharp indices into zones with 2-point margin
-            zone_start = max(0, min(sharp) - 4)
-            zone_end = min(len(best_trace) - 1, max(sharp) + 4)
-            # Build sub-path from the trace zone
-            zone_wps = []
-            for lat, lon in best_trace[zone_start:zone_end + 1]:
-                wp = MissionWaypoint()
-                wp.seq = 0
-                wp.latitude = lat
-                wp.longitude = lon
-                wp.speed = max(self._min_speed,
-                               self._max_speed * (1.0 - speed_k * 0.5))
-                wp.hold_secs = 0.0
-                wp.acceptance_radius = self._accept_r
-                zone_wps.append(wp)
-            if len(zone_wps) < 2:
-                break
-            # Sim just this zone
-            self._path = zone_wps
-            self._path_origin_lat = zone_wps[0].latitude
-            self._path_origin_lon = zone_wps[0].longitude
-            self._path_s = self._rebuild_path_s(zone_wps,
-                                                 zone_wps[0].latitude, zone_wps[0].longitude)
-            self._corridor_turn_indices = set()
-            self._bypass_indices = set()
-            zr = self._sim_validate_path()
-            zt = zr.get('sim_path', [])
-            self.get_logger().info(
-                f'Smoother pass {pass_n}: sharp at {sharp}, zone [{zone_start}..{zone_end}], '
-                f're-sim → {len(zt)} pts, cte={zr.get("max_cte", 99):.3f}m')
-            if len(zt) >= 2:
-                # Splice re-smoothed zone back into trace
-                best_trace = best_trace[:zone_start] + zt + best_trace[zone_end + 1:]
+                    sharp.append((i, round(ang, 1)))
+            if sharp:
+                self.get_logger().info(f'Smoother: remaining sharp angles: {sharp}')
+            else:
+                self.get_logger().info(f'Smoother: no sharp angles in trace')
 
         # Restore full path state
         self._path = saved_path
