@@ -2463,8 +2463,8 @@ class NavigatorNode(Node):
                 if dist_to_turn < approach:
                     v_mps = max(self._min_speed, v_mps * (dist_to_turn / approach))
 
-            # Large heading error → spin
-            if abs(heading_err) > self._align_thresh:
+            # Large heading error → spin ONLY at turn points (not mid-corridor)
+            if abs(heading_err) > self._align_thresh and turn_idx is not None and sim_path_idx in turn_indices:
                 if sim_spin_brg is None:
                     sim_spin_brg = target_bearing
                 steer_frac = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
