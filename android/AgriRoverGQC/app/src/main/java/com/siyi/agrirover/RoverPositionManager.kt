@@ -387,10 +387,39 @@ class RoverPositionManager(
             }
         }
 
+        // Discovery beacon listener — rovers broadcast JSON on UDP 5555
+        scope.launch {
+            try {
+                val beaconSocket = DatagramSocket(5555).also { it.broadcast = true }
+                Log.i("RoverMgr", "Listening for discovery beacons on UDP 5555")
+                val buf = ByteArray(256)
+                while (isRunning) {
+                    val pkt = DatagramPacket(buf, buf.size)
+                    beaconSocket.receive(pkt)
+                    try {
+                        val json = String(pkt.data, 0, pkt.length)
+                        val obj = org.json.JSONObject(json)
+                        val sysId = obj.optInt("sysid", 0)
+                        val rbPort = obj.optInt("rosbridge", 9090)
+                        if (sysId > 0 && !roverAddresses.containsKey(sysId)) {
+                            roverAddresses[sysId] = pkt.address
+                            Log.i("RoverMgr", "Discovered RV$sysId at ${pkt.address.hostAddress} (beacon)")
+                            connectRosbridge(sysId, pkt.address)
+                            scope.launch(Dispatchers.Main) { onConnectionChange(sysId, true) }
+                        }
+                    } catch (_: Exception) {}
+                }
+                beaconSocket.close()
+            } catch (e: Exception) {
+                Log.e("RoverMgr", "Beacon listener error: ${e.message}")
+            }
+        }
+
+        // MAVLink UDP — kept for legacy/fallback discovery
         scope.launch {
             try {
                 socket = DatagramSocket(PORT).also { it.broadcast = true }
-                Log.i("RoverMgr", "Listening on UDP $PORT — broadcasting heartbeats")
+                Log.i("RoverMgr", "Listening on UDP $PORT — MAVLink fallback")
 
                 // GCS heartbeat — 1 Hz, broadcast so all rovers learn our address
                 launch { heartbeatLoop() }
