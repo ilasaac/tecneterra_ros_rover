@@ -274,6 +274,12 @@ class NavigatorNode(Node):
         #   effective clearance  = rover_width_m/2 + obstacle_clearance_m
         self.declare_parameter('rover_width_m',              1.4)
         self.declare_parameter('obstacle_clearance_m',       0.5)
+        # Bypass arc smoothing: replace sharp bypass corners with arc interpolation.
+        # bypass_arc_radius_m  — minimum arc radius at corners (larger = smoother, wider turns)
+        # bypass_arc_speed_k   — speed scaling factor: speed = max_speed * (1 - k * angle/180)
+        #                        k=0 → no slowdown, k=1 → full slowdown on 180° turns
+        self.declare_parameter('bypass_arc_radius_m',        1.5)
+        self.declare_parameter('bypass_arc_speed_k',         0.7)
         # Minimum segment length (metres) for pivot-turn detection.  Bearing
         # between two points closer than this is considered unreliable (GPS noise).
         # RTK precision is < 0.02 m so any segment > 0.3 m has a reliable bearing.
@@ -386,6 +392,8 @@ class NavigatorNode(Node):
         rover_width               = self.get_parameter('rover_width_m').value
         self._clearance           = (rover_width / 2.0
                                      + self.get_parameter('obstacle_clearance_m').value)
+        self._bypass_arc_radius   = self.get_parameter('bypass_arc_radius_m').value
+        self._bypass_arc_speed_k  = self.get_parameter('bypass_arc_speed_k').value
         self._algo             = self.get_parameter('control_algorithm').value
         self._afs_cte_scale       = self.get_parameter('afs_cte_scale_m').value
         self._afs_cte_alarm       = self.get_parameter('afs_cte_alarm_m').value
@@ -1749,6 +1757,114 @@ class NavigatorNode(Node):
         self.rerouted_pub.publish(rp_msg)
         self._save_run_mission()
 
+    def _smooth_bypass_corners(self):
+        """Replace sharp bypass corners with arc-interpolated curves.
+
+        For each bypass waypoint where the turn angle exceeds the pivot threshold,
+        inserts arc points to create a smooth curve.  Speed on the arc scales with
+        turn severity: speed = max_speed * (1 - bypass_arc_speed_k * angle/180).
+
+        Prefers smooth arcs over stop-and-turn.  Only falls back to pivot when
+        the arc radius would be smaller than bypass_arc_radius_m (too tight for
+        the rover's turning capability).
+        """
+        if not self._bypass_indices or not self._path:
+            return
+        radius = self._bypass_arc_radius
+        speed_k = self._bypass_arc_speed_k
+        if radius <= 0:
+            return
+
+        new_path = []
+        new_bypass = set()
+        ARC_SPACING = 0.3  # metres between interpolated arc points
+
+        for i, wp in enumerate(self._path):
+            if i not in self._bypass_indices:
+                new_path.append(wp)
+                continue
+
+            # Compute turn angle at this bypass point
+            if i == 0 or i >= len(self._path) - 1:
+                new_path.append(wp)
+                new_bypass.add(len(new_path) - 1)
+                continue
+
+            prev = self._path[i - 1]
+            nxt = self._path[i + 1]
+            hdg_in = bearing_to(prev.latitude, prev.longitude, wp.latitude, wp.longitude)
+            hdg_out = bearing_to(wp.latitude, wp.longitude, nxt.latitude, nxt.longitude)
+            angle = abs(((hdg_out - hdg_in + 180) % 360) - 180)
+
+            if angle < 10:
+                # Nearly straight — keep as-is
+                new_path.append(wp)
+                new_bypass.add(len(new_path) - 1)
+                continue
+
+            # Compute arc: shorten incoming and outgoing segments by radius,
+            # then interpolate a circular arc between the two tangent points.
+            dist_in = haversine(prev.latitude, prev.longitude, wp.latitude, wp.longitude)
+            dist_out = haversine(wp.latitude, wp.longitude, nxt.latitude, nxt.longitude)
+            # Tangent length = radius * tan(angle/2)
+            half_rad = math.radians(angle / 2)
+            tan_len = radius * math.tan(half_rad) if half_rad < math.radians(85) else radius * 10
+
+            if tan_len > dist_in * 0.4 or tan_len > dist_out * 0.4:
+                # Not enough room for arc — keep sharp corner (pivot will handle it)
+                new_path.append(wp)
+                new_bypass.add(len(new_path) - 1)
+                continue
+
+            # Tangent point on incoming segment (before the corner)
+            frac_in = 1.0 - tan_len / dist_in
+            t1_lat = prev.latitude + frac_in * (wp.latitude - prev.latitude)
+            t1_lon = prev.longitude + frac_in * (wp.longitude - prev.longitude)
+
+            # Tangent point on outgoing segment (after the corner)
+            frac_out = tan_len / dist_out
+            t2_lat = wp.latitude + frac_out * (nxt.latitude - wp.latitude)
+            t2_lon = wp.longitude + frac_out * (nxt.longitude - wp.longitude)
+
+            # Arc center: offset perpendicular from the corner bisector
+            # Use simple interpolation: generate n points along the arc
+            arc_len = radius * math.radians(angle)
+            n_pts = max(2, int(arc_len / ARC_SPACING))
+
+            # Speed on arc: scale by turn severity
+            arc_speed = max(self._min_speed,
+                            self._max_speed * (1.0 - speed_k * angle / 180.0))
+
+            for k in range(n_pts + 1):
+                t = k / n_pts
+                # Spherical-lerp approximation via corner point
+                # Bezier-like: P = (1-t)^2 * T1 + 2t(1-t) * Corner + t^2 * T2
+                w1 = (1 - t) ** 2
+                wc = 2 * t * (1 - t)
+                w2 = t ** 2
+                lat = w1 * t1_lat + wc * wp.latitude + w2 * t2_lat
+                lon = w1 * t1_lon + wc * wp.longitude + w2 * t2_lon
+                bp = MissionWaypoint()
+                bp.seq = 0
+                bp.latitude = lat
+                bp.longitude = lon
+                bp.speed = arc_speed
+                bp.hold_secs = 0.0
+                bp.acceptance_radius = self._accept_r
+                new_path.append(bp)
+                new_bypass.add(len(new_path) - 1)
+
+        # Rebuild path and arc-lengths
+        self._path = new_path
+        self._bypass_indices = new_bypass
+        origin_lat = self._path_origin_lat or self._path[0].latitude
+        origin_lon = self._path_origin_lon or self._path[0].longitude
+        self._path_s = self._rebuild_path_s(self._path, origin_lat, origin_lon)
+
+        self.get_logger().info(
+            f'Bypass smoothed: {len(new_path)} pts, {len(new_bypass)} bypass '
+            f'(radius={radius}m, speed_k={speed_k})')
+
     def _reroute_path(self):
         """
         Rebuild _path and _path_s from _path_original, inserting bypass waypoints
@@ -1904,12 +2020,16 @@ class NavigatorNode(Node):
         self._holding       = False
         self._pivoting      = False
 
+        # Smooth sharp bypass corners into arcs
+        if new_bypass_indices:
+            self._smooth_bypass_corners()
+
         self._publish_full_path()
         self._path_version += 1
         pv = Int32(); pv.data = self._path_version
         self.path_version_pub.publish(pv)
 
-        n_bypass = len(new_bypass_indices)
+        n_bypass = len(self._bypass_indices)
         if n_bypass > 0:
             self.get_logger().info(
                 f'Path rerouted: {len(self._path_original)} → {len(self._path)} wps '

@@ -61,6 +61,8 @@
     min_pivot_segment_m:       0.3   # min adjacent segment length to qualify for pivot detection
     rover_width_m:             1.0
     obstacle_clearance_m:      0.5
+    bypass_arc_radius_m:       1.5    # min arc radius for bypass corners (larger = smoother)
+    bypass_arc_speed_k:        0.7    # speed scaling: speed = max_speed * (1 - k * angle/180)
     control_algorithm:         stanley   # stanley | mpc | ttr | afs
     # AFS (Always Forward Strategy) parameters — only used when control_algorithm: afs
     # afs_cte_scale_m:    CTE (m) at which throttle reaches min_speed (linear decay)
