@@ -2310,8 +2310,8 @@ class NavigatorNode(Node):
             search_limit = min(sim_path_idx + (3 if is_corridor else 1), len(self._path))
             if is_corridor:
                 for ti in sorted(turn_indices):
-                    if ti >= sim_path_idx:
-                        search_limit = min(search_limit, ti + 1)
+                    if ti > sim_path_idx:
+                        search_limit = min(search_limit, ti)
                         break
             for seg_k in range(sim_path_idx, search_limit):
                 if seg_k == 0:
@@ -2366,7 +2366,7 @@ class NavigatorNode(Node):
                 limit = len(self._path)
                 if is_corridor:
                     for ti in sorted(turn_indices):
-                        if ti >= sim_path_idx:  # clamp at current turn too
+                        if ti > sim_path_idx:
                             limit = ti
                             break
                 sim_path_idx = min(seg_idx, limit)
