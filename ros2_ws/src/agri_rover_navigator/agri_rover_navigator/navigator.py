@@ -1844,8 +1844,8 @@ class NavigatorNode(Node):
                 self.get_logger().info(f'Smoother pass {pass_n}: no sharp angles — done')
                 break
             # Expand sharp indices into zones with 2-point margin
-            zone_start = max(0, min(sharp) - 2)
-            zone_end = min(len(best_trace) - 1, max(sharp) + 2)
+            zone_start = max(0, min(sharp) - 4)
+            zone_end = min(len(best_trace) - 1, max(sharp) + 4)
             # Build sub-path from the trace zone
             zone_wps = []
             for lat, lon in best_trace[zone_start:zone_end + 1]:
