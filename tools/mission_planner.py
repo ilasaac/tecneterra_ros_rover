@@ -2733,7 +2733,11 @@ function toggleTurn(idx) {
   // Works on optimizedPath if available, otherwise waypoints
   if (optimizedPath && idx < optimizedPath.length) {
     optimizedPath[idx].turn = !optimizedPath[idx].turn;
-    if (!optimizedPath[idx].turn && optimizedPath[idx].speed <= 0) optimizedPath[idx].speed = 0.5;
+    if (optimizedPath[idx].turn) {
+      optimizedPath[idx].speed = 0;  // turn = stop (decel on approach)
+    } else if (optimizedPath[idx].speed <= 0) {
+      optimizedPath[idx].speed = 0.5;  // un-turn = restore speed
+    }
   } else if (idx < waypoints.length) {
     if (waypoints[idx].speed < 0) waypoints[idx].speed = 0.5;
     else waypoints[idx].speed = -1;
