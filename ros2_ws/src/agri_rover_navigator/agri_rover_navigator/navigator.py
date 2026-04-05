@@ -805,6 +805,18 @@ class NavigatorNode(Node):
     def _cb_armed(self, msg: Bool):
         was_armed = self._armed
         self._armed = msg.data
+        # Approach path: if arming far from WP[0], plan route and disarm
+        if (msg.data and not was_armed and self._path
+                and self._path_idx == 0 and self._fix is not None
+                and not getattr(self, '_approach_planned', False)):
+            rlat, rlon = self._center_pos()
+            wp0 = self._path[0]
+            dist = haversine(rlat, rlon, wp0.latitude, wp0.longitude)
+            if dist > 1.5:
+                self.get_logger().info(
+                    f'Rover {dist:.1f}m from WP[0] — planning approach path')
+                self._plan_approach_path(rlat, rlon)
+                return
         # Resume from waiting point on re-arm
         if msg.data and not was_armed and self._path_idx < len(self._path):
             wp = self._path[self._path_idx]
@@ -816,6 +828,49 @@ class NavigatorNode(Node):
         if msg.data and not was_armed and self._resource_state == 'at_base':
             self._resource_state = 'normal'
             self.get_logger().info('[RESOURCE] Re-armed at base — resuming mission')
+
+    def _plan_approach_path(self, rover_lat: float, rover_lon: float):
+        """Plan A-star path from rover to WP[0], prepend to mission, disarm for review."""
+        from agri_rover_navigator.grid_planner import plan_around_obstacles
+        wp0 = self._path[0]
+        planned = plan_around_obstacles(
+            start=(rover_lat, rover_lon),
+            goal=(wp0.latitude, wp0.longitude),
+            obstacles=self._obstacle_polygons,
+            clearance_m=self._clearance,
+            resolution_m=0.10,
+            padding_m=self._clearance + 2.0,
+        )
+        if not planned or len(planned) < 2:
+            self.get_logger().warn('Approach planning failed — proceeding without')
+            self._approach_planned = True
+            return
+        # Build approach waypoints at min speed
+        approach_wps = []
+        for lat, lon in planned[:-1]:
+            wp = MissionWaypoint()
+            wp.seq = -99
+            wp.latitude = lat
+            wp.longitude = lon
+            wp.speed = self._min_speed
+            wp.hold_secs = 0.0
+            wp.acceptance_radius = self._accept_r
+            approach_wps.append(wp)
+        # Prepend to mission
+        self._path = approach_wps + list(self._path)
+        self._path_origin_lat = rover_lat
+        self._path_origin_lon = rover_lon
+        self._path_s = self._rebuild_path_s(self._path, rover_lat, rover_lon)
+        self._bypass_indices = set(range(len(approach_wps)))
+        self._approach_planned = True
+        # Show on map
+        self._publish_full_path()
+        # Disarm — user reviews approach then arms again
+        self._armed = False
+        a = Bool(); a.data = False
+        self.armed_pub.publish(a)
+        self.get_logger().info(
+            f'Approach: {len(approach_wps)} pts to WP[0] — arm again to start')
 
     def _cb_servo_state(self, msg: RCInput):
         changed = False
