@@ -1384,7 +1384,8 @@ class NavigatorNode(Node):
                 return
 
             # Turn indices and servo state from corridors_to_path
-            self._corridor_turn_indices = {
+            # Always include index 0 — rover aligns heading before driving
+            self._corridor_turn_indices = {0} | {
                 i for i, pt in enumerate(path_pts) if pt[4]
             }
             self._corridor_servo = [pt[5] for pt in path_pts]
