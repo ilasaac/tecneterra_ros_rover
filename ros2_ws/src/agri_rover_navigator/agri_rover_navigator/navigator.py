@@ -2195,8 +2195,8 @@ class NavigatorNode(Node):
                         for k in range(2, 6):
                             if i + k >= len(self._path):
                                 break
-                            if (i + k) not in bp_set and (i + k) > last_bp:
-                                break
+                            if (i + k) not in bp_set:
+                                break  # don't skip over non-bypass points
                             d_k = haversine(self._path[i + k].latitude, self._path[i + k].longitude,
                                             exit_wp.latitude, exit_wp.longitude)
                             if d_k < d_next:
@@ -2272,7 +2272,7 @@ class NavigatorNode(Node):
                             d_next = haversine(self._path[ri + 1].latitude, self._path[ri + 1].longitude,
                                                exit_wp.latitude, exit_wp.longitude)
                             for k in range(2, 6):
-                                if ri + k >= len(self._path) or ((ri + k) not in bp_set and (ri + k) > bp_sorted[-1]):
+                                if ri + k >= len(self._path) or (ri + k) not in bp_set:
                                     break
                                 d_k = haversine(self._path[ri + k].latitude, self._path[ri + k].longitude,
                                                 exit_wp.latitude, exit_wp.longitude)
