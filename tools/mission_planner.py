@@ -95,19 +95,42 @@ def _ntrip_thread(ser, stop_event):
                    f'User-Agent: NTRIP AgriRover/1.0\r\n'
                    f'Authorization: Basic {creds}\r\n\r\n')
             sock.sendall(req.encode())
-            # Read response header
+            # Read response header — Emlid uses ICY 200 OK\r\n (single CRLF, not double)
             hdr = b''
-            while b'\r\n\r\n' not in hdr and not stop_event.is_set():
-                hdr += sock.recv(1024)
-            if b'200' not in hdr.split(b'\r\n')[0]:
-                print(f'[ntrip] Rejected: {hdr[:100]}', flush=True)
+            sock.settimeout(10.0)
+            while not stop_event.is_set():
+                chunk = sock.recv(1024)
+                if not chunk:
+                    break
+                hdr += chunk
+                # Accept both "ICY 200" (NTRIP v1) and "HTTP/1.x 200" (v2)
+                if b'200' in hdr[:40]:
+                    break
+                if len(hdr) > 4096:
+                    break
+            first_line = hdr.split(b'\r\n')[0].decode(errors='replace')
+            if b'200' not in hdr[:40]:
+                print(f'[ntrip] Rejected: {first_line}', flush=True)
                 sock.close()
                 _time.sleep(5)
                 continue
-            print(f'[ntrip] Connected — forwarding RTCM3 to GPS', flush=True)
+            print(f'[ntrip] Connected ({first_line}) — forwarding RTCM3 to GPS', flush=True)
+            # Any data after the header line is already RTCM3
+            # Find end of header (single or double CRLF)
+            rtcm_start = hdr.find(b'\r\n\r\n')
+            if rtcm_start >= 0:
+                leftover = hdr[rtcm_start + 4:]
+            else:
+                rtcm_start = hdr.find(b'\r\n')
+                leftover = hdr[rtcm_start + 2:] if rtcm_start >= 0 else b''
+            if leftover:
+                try:
+                    ser.write(leftover)
+                except Exception:
+                    pass
             # Stream RTCM3 to serial
             sock.settimeout(30.0)
-            total = 0
+            total = len(leftover)
             while not stop_event.is_set():
                 try:
                     data = sock.recv(4096)
