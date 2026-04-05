@@ -1797,7 +1797,7 @@ class NavigatorNode(Node):
             hdg_out = bearing_to(wp.latitude, wp.longitude, nxt.latitude, nxt.longitude)
             angle = abs(((hdg_out - hdg_in + 180) % 360) - 180)
 
-            if angle < 30:
+            if angle < 20:
                 new_path.append(wp)
                 new_bypass.add(len(new_path) - 1)
                 continue
@@ -1809,11 +1809,16 @@ class NavigatorNode(Node):
             # Adaptive radius: shrink to fit available segment lengths
             max_tan = min(dist_in, dist_out) * 0.4
             actual_r = min(radius, max_tan / tan_half) if tan_half > 0.01 else radius
-            if actual_r < 0.15:
-                # Too tight — keep sharp corner
+            if actual_r < 0.1:
+                self.get_logger().info(
+                    f'  bypass[{i}] SKIP: angle={angle:.0f}° dist_in={dist_in:.2f}m '
+                    f'dist_out={dist_out:.2f}m actual_r={actual_r:.3f}m (too tight)')
                 new_path.append(wp)
                 new_bypass.add(len(new_path) - 1)
                 continue
+            self.get_logger().info(
+                f'  bypass[{i}] SMOOTH: angle={angle:.0f}° r={actual_r:.2f}m '
+                f'dist_in={dist_in:.2f}m dist_out={dist_out:.2f}m')
             tan_len = actual_r * tan_half
 
             # Tangent points
