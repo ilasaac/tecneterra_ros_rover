@@ -60,7 +60,7 @@
     min_pivot_segment_m:       0.3   # min adjacent segment length to qualify for pivot detection
     rover_width_m:             1.0
     obstacle_clearance_m:      0.5
-    bypass_arc_radius_m:       1.0    # fillet radius for bypass corners (0 = disabled)
+    bypass_arc_radius_m:       0.5    # smoother sample distance in metres (0 = disabled)
     bypass_arc_speed_k:        0.7    # speed scaling: speed = max_speed * (1 - k * angle/180)
     control_algorithm:         stanley
     min_steer_ppm_delta:    300   # min |steer_ppm - 1500| during ALL turns/curves
