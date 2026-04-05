@@ -2230,48 +2230,19 @@ class NavigatorNode(Node):
             for smooth_cycle in range(4):
                 self._smooth_bypass_corners()
                 # Check obstacle clearance on smoothed path
-                # Validate: every point must be >= 0.7m from original obstacle edges
-                MIN_DIST = 0.7
                 violations = 0
                 for wp in self._path:
-                    for poly in self._obstacle_polygons:
-                        n = len(poly)
-                        if n < 3:
-                            continue
-                        c_lat = math.radians(wp.latitude)
-                        m_lat = 111320.0
-                        m_lon = 111320.0 * (math.cos(c_lat) or 1e-9)
-                        px = wp.longitude * m_lon
-                        py = wp.latitude * m_lat
-                        # Distance to nearest edge of original polygon
-                        min_d = float('inf')
-                        best_nx, best_ny = 0.0, 0.0
-                        for ei in range(n):
-                            ej = (ei + 1) % n
-                            ax = poly[ei][1] * m_lon; ay = poly[ei][0] * m_lat
-                            bx = poly[ej][1] * m_lon; by = poly[ej][0] * m_lat
-                            dx, dy = bx - ax, by - ay
-                            sl = math.hypot(dx, dy)
-                            if sl < 0.01:
-                                continue
-                            t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (sl * sl)))
-                            d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
-                            if d < min_d:
-                                min_d = d
-                                best_nx = -dy / sl
-                                best_ny = dx / sl
-                        if min_d < MIN_DIST:
-                            # Push along outward normal of nearest edge
-                            clat_c = sum(p[0] for p in poly) / n
-                            clon_c = sum(p[1] for p in poly) / n
-                            to_cent_x = clon_c * m_lon - px
-                            to_cent_y = clat_c * m_lat - py
-                            if best_nx * to_cent_x + best_ny * to_cent_y > 0:
-                                best_nx, best_ny = -best_nx, -best_ny
-                            push_m = MIN_DIST - min_d + 0.1
-                            wp.longitude += (push_m * best_nx) / m_lon
-                            wp.latitude += (push_m * best_ny) / m_lat
+                    for poly in self._expanded_polygons:
+                        if self._point_in_polygon(wp.latitude, wp.longitude, poly):
+                            clat = sum(p[0] for p in poly) / len(poly)
+                            clon = sum(p[1] for p in poly) / len(poly)
+                            brg = bearing_to(clat, clon, wp.latitude, wp.longitude)
+                            push_m = self._clearance * 0.5
+                            cos_lat = math.cos(math.radians(wp.latitude)) or 1e-9
+                            wp.latitude += (push_m * math.cos(math.radians(brg))) / 111320.0
+                            wp.longitude += (push_m * math.sin(math.radians(brg))) / (111320.0 * cos_lat)
                             violations += 1
+                            break
                 if violations == 0:
                     self.get_logger().info(
                         f'Smooth cycle {smooth_cycle}: obstacle clearance OK')
