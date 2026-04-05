@@ -1173,7 +1173,8 @@ function redraw() {
   const showSim  = document.getElementById('layer-sim')?.checked ?? true;
   if (showRaw)  drawRawCorridors();
   if (showOpt)  drawOptimizedPath();
-  if (showSim)  { drawSimDiagTrack(); drawRoute(); drawSimPath(); drawPivotMarkers(); drawWaypoints(); drawStartMarker(); }
+  if (showSim)  { drawSimDiagTrack(); drawRoute(); drawSimPath(); drawPivotMarkers(); drawWaypoints(); }
+  drawStartMarker();
   drawRover();
   if (showReal) drawAnalyzeTrack();
   drawLiveRovers();
@@ -1368,15 +1369,28 @@ function syncStartToWp0() {
 }
 
 function drawStartMarker() {
-  const lat = parseFloat(document.getElementById('s-lat').value);
-  const lon = parseFloat(document.getElementById('s-lon').value);
+  // Use first point of optimized path, then waypoints, then s-lat/s-lon
+  let lat, lon;
+  if (optimizedPath && optimizedPath.length) {
+    lat = optimizedPath[0].lat; lon = optimizedPath[0].lon;
+  } else if (waypoints.length) {
+    lat = waypoints[0].lat; lon = waypoints[0].lon;
+  } else {
+    lat = parseFloat(document.getElementById('s-lat').value);
+    lon = parseFloat(document.getElementById('s-lon').value);
+  }
   if (isNaN(lat) || isNaN(lon)) return;
   const p = project(lat, lon);
-  const r = 9;
-  ctx.strokeStyle = '#FFD600';
-  ctx.lineWidth   = 2.5;
-  ctx.beginPath(); ctx.moveTo(p.x - r, p.y); ctx.lineTo(p.x + r, p.y); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x, p.y + r); ctx.stroke();
+  // Green circle with white border + crosshair
+  ctx.beginPath(); ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,230,0,0.5)'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.strokeStyle = '#FFD600'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(p.x - 14, p.y); ctx.lineTo(p.x + 14, p.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(p.x, p.y - 14); ctx.lineTo(p.x, p.y + 14); ctx.stroke();
+  ctx.fillStyle = '#FFD600'; ctx.font = 'bold 10px monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+  ctx.fillText('START', p.x + 12, p.y - 8);
 }
 
 // ── Hit testing ───────────────────────────────────────────────────
