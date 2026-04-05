@@ -287,12 +287,11 @@ def _parse_sysid(data: bytes) -> int:
 
 
 class AddrBook:
-    """Auto-discovers rover IPs from MAVLink broadcasts (passive listener only).
+    """Auto-discovers rover IPs from UDP discovery beacons on port 5555.
 
-    Both rovers broadcast MAVLink telemetry to 192.168.100.255:14550 at ~18 Hz.
-    Binding to that port lets the simulator capture each rover's source IP without
-    manual configuration.  The listener generates zero additional network traffic
-    and keeps addresses current if a rover reboots with a new DHCP IP mid-session.
+    Each rover broadcasts {"sysid":N,"rosbridge":9090} every 2 seconds.
+    The simulator listens on port 5555 to discover rover IPs automatically.
+    Also supports legacy MAVLink discovery on port 14550 as fallback.
     """
 
     def __init__(self):
@@ -315,25 +314,53 @@ class AddrBook:
         with self._lock:
             return all(s in self._ips for s in sysids)
 
-    def start_listener(self, port: int):
-        """Passive background thread: update rover IPs from incoming MAVLink broadcasts."""
-        def _run():
+    def start_listener(self, port: int = 5555):
+        """Background thread: discover rover IPs from UDP beacons (port 5555)."""
+        import json as _json
+        def _beacon_listener():
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.settimeout(2.0)
-            sock.bind(('', port))
+            try:
+                sock.bind(('', 5555))
+            except OSError:
+                print('  [WARN] Cannot bind beacon port 5555 — using manual IPs only')
+                return
+            while True:
+                try:
+                    data, (src_ip, _) = sock.recvfrom(256)
+                    obj = _json.loads(data.decode())
+                    sysid = obj.get('sysid', 0)
+                    if sysid in (1, 2):
+                        self.set_ip(sysid, src_ip)
+                except socket.timeout:
+                    continue
+                except Exception:
+                    continue
+        threading.Thread(target=_beacon_listener, daemon=True).start()
+
+        # Also listen on MAVLink port as fallback
+        def _mavlink_listener():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.settimeout(2.0)
+            try:
+                sock.bind(('', port))
+            except OSError:
+                return
             while True:
                 try:
                     data, (src_ip, _) = sock.recvfrom(512)
-                except OSError:
-                    break
                 except socket.timeout:
                     continue
+                except OSError:
+                    break
                 sysid = _parse_sysid(data)
                 if sysid in (1, 2):
                     self.set_ip(sysid, src_ip)
-        threading.Thread(target=_run, daemon=True).start()
+        threading.Thread(target=_mavlink_listener, daemon=True).start()
 
 
 # ── Status display ────────────────────────────────────────────────────────────
@@ -501,15 +528,15 @@ def main():
 
         if not addrs.ready(required_sysids):
             missing = [f'RV{i}' for i in required_sysids if not addrs.get_ip(i)]
-            print(f'  Waiting for {", ".join(missing)} via MAVLink broadcast'
-                  f' on :{args.mavlink_port} (timeout {args.discovery_timeout:.0f}s)...')
+            print(f'  Waiting for {", ".join(missing)} via beacon on :5555'
+                  f' (timeout {args.discovery_timeout:.0f}s)...')
             deadline = time.monotonic() + args.discovery_timeout
             while not addrs.ready(required_sysids) and time.monotonic() < deadline:
                 time.sleep(0.2)
             if not addrs.ready(required_sysids):
                 missing = [f'RV{i}' for i in required_sysids if not addrs.get_ip(i)]
                 sys.exit(f'[ERR] Not discovered: {", ".join(missing)}'
-                         f' — is mavlink_bridge running?')
+                         f' — is the rover Docker running?')
 
     print(f'  RV1={addrs.get_ip(1) or args.rv1_ip or "?"}  '
           f'RV2={addrs.get_ip(2) or args.rv2_ip or "?"}  '
