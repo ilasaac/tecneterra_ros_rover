@@ -1805,13 +1805,16 @@ class NavigatorNode(Node):
             dist_in = haversine(prev.latitude, prev.longitude, wp.latitude, wp.longitude)
             dist_out = haversine(wp.latitude, wp.longitude, nxt.latitude, nxt.longitude)
             half_rad = math.radians(angle / 2)
-            tan_len = radius * math.tan(half_rad) if half_rad < 1.48 else radius * 10
-
-            if tan_len > dist_in * 0.4 or tan_len > dist_out * 0.4:
-                # Not enough room — keep sharp corner
+            tan_half = math.tan(half_rad) if half_rad < 1.48 else 10.0
+            # Adaptive radius: shrink to fit available segment lengths
+            max_tan = min(dist_in, dist_out) * 0.4
+            actual_r = min(radius, max_tan / tan_half) if tan_half > 0.01 else radius
+            if actual_r < 0.15:
+                # Too tight — keep sharp corner
                 new_path.append(wp)
                 new_bypass.add(len(new_path) - 1)
                 continue
+            tan_len = actual_r * tan_half
 
             # Tangent points
             f_in = 1.0 - tan_len / dist_in
