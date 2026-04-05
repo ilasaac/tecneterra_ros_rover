@@ -226,6 +226,9 @@ static void apply_mode(Mode m) {
             break;
         case MODE_AUTONOMOUS:
             for (int i = 0; i < CHANNELS; i++) out_ch[i] = auto_ch[i];
+            // CH7/CH8 hardware expects inverted values (valves/aux)
+            out_ch[6] = PPM_INV(auto_ch[6]);  // CH7
+            out_ch[7] = PPM_INV(auto_ch[7]);  // CH8
             break;
         case MODE_AUTO_TIMEOUT:
         case MODE_IDLE:
