@@ -1,0 +1,294 @@
+"""
+grid_planner.py — A-star path planner on a GPS obstacle grid.
+
+Pure Python, no ROS2 or Nav2 dependency. Called by navigator._reroute_path()
+to generate smooth obstacle-aware paths.
+
+Usage:
+    from agri_rover_navigator.grid_planner import plan_around_obstacles
+    path = plan_around_obstacles(
+        start=(lat, lon), goal=(lat, lon),
+        obstacles=[[(lat,lon), ...], ...],  # raw polygons
+        clearance_m=1.0,
+        resolution_m=0.10,
+    )
+    # path = [(lat, lon), ...] smooth GPS path
+"""
+
+from __future__ import annotations
+import heapq
+import math
+
+
+def plan_around_obstacles(
+    start: tuple[float, float],
+    goal: tuple[float, float],
+    obstacles: list[list[tuple[float, float]]],
+    clearance_m: float = 1.0,
+    resolution_m: float = 0.10,
+    padding_m: float = 3.0,
+    simplify_tolerance_m: float = 0.15,
+) -> list[tuple[float, float]] | None:
+    """Plan a smooth GPS path from start to goal avoiding obstacle polygons.
+
+    Parameters
+    ----------
+    start, goal     : (lat, lon) in degrees
+    obstacles       : list of polygons, each [(lat, lon), ...]
+    clearance_m     : minimum distance from obstacle edges (already includes rover width)
+    resolution_m    : grid cell size in metres
+    padding_m       : extra margin around bounding box
+    simplify_tolerance_m : Ramer-Douglas-Peucker tolerance for path simplification
+
+    Returns
+    -------
+    List of (lat, lon) waypoints, or None if no path found.
+    """
+    if not obstacles:
+        return [start, goal]
+
+    # Flat-earth projection centred at midpoint of start/goal
+    c_lat = (start[0] + goal[0]) / 2.0
+    c_lon = (start[1] + goal[1]) / 2.0
+    cos_lat = math.cos(math.radians(c_lat)) or 1e-9
+    m_lat = 111_320.0
+    m_lon = 111_320.0 * cos_lat
+
+    def to_m(lat, lon):
+        return (lon - c_lon) * m_lon, (lat - c_lat) * m_lat
+
+    def to_gps(x, y):
+        return c_lat + y / m_lat, c_lon + x / m_lon
+
+    # Convert all points to metres
+    start_m = to_m(*start)
+    goal_m = to_m(*goal)
+    obs_m = [[to_m(lat, lon) for lat, lon in poly] for poly in obstacles]
+
+    # Compute bounding box
+    all_x = [start_m[0], goal_m[0]]
+    all_y = [start_m[1], goal_m[1]]
+    for poly in obs_m:
+        for x, y in poly:
+            all_x.append(x)
+            all_y.append(y)
+    min_x = min(all_x) - padding_m
+    min_y = min(all_y) - padding_m
+    max_x = max(all_x) + padding_m
+    max_y = max(all_y) + padding_m
+
+    # Grid dimensions
+    w = int((max_x - min_x) / resolution_m) + 1
+    h = int((max_y - min_y) / resolution_m) + 1
+
+    if w * h > 4_000_000:  # safety cap
+        return None
+
+    def to_grid(x, y):
+        return int((x - min_x) / resolution_m), int((y - min_y) / resolution_m)
+
+    def to_world(gx, gy):
+        return min_x + gx * resolution_m, min_y + gy * resolution_m
+
+    # Build obstacle grid with inflation
+    grid = bytearray(w * h)  # 0 = free, 1 = blocked
+
+    inflate_cells = int(math.ceil(clearance_m / resolution_m))
+
+    for poly in obs_m:
+        # Rasterize filled polygon + inflation
+        _rasterize_polygon(grid, w, h, poly, min_x, min_y, resolution_m, inflate_cells)
+
+    # A-star
+    sg = to_grid(*start_m)
+    gg = to_grid(*goal_m)
+
+    # Clamp to grid bounds
+    sg = (max(0, min(w - 1, sg[0])), max(0, min(h - 1, sg[1])))
+    gg = (max(0, min(w - 1, gg[0])), max(0, min(h - 1, gg[1])))
+
+    if grid[sg[1] * w + sg[0]] or grid[gg[1] * w + gg[0]]:
+        # Start or goal is blocked — try to find nearest free cell
+        sg = _nearest_free(grid, w, h, sg)
+        gg = _nearest_free(grid, w, h, gg)
+        if sg is None or gg is None:
+            return None
+
+    path_grid = _astar(grid, w, h, sg, gg)
+    if path_grid is None:
+        return None
+
+    # Convert grid path to GPS
+    path_m = [to_world(gx, gy) for gx, gy in path_grid]
+
+    # Simplify (Ramer-Douglas-Peucker)
+    if simplify_tolerance_m > 0:
+        path_m = _rdp(path_m, simplify_tolerance_m)
+
+    # Ensure start and goal are exact
+    path_gps = [start] + [to_gps(x, y) for x, y in path_m[1:-1]] + [goal]
+
+    return path_gps
+
+
+def _rasterize_polygon(grid, w, h, poly, min_x, min_y, res, inflate):
+    """Fill polygon cells + inflation ring in the grid."""
+    n = len(poly)
+    if n < 3:
+        return
+
+    # Convert polygon to grid coords
+    gpoly = [(int((x - min_x) / res), int((y - min_y) / res)) for x, y in poly]
+
+    # Scanline fill
+    all_gy = [p[1] for p in gpoly]
+    y_lo = max(0, min(all_gy) - inflate)
+    y_hi = min(h - 1, max(all_gy) + inflate)
+
+    for gy in range(y_lo, y_hi + 1):
+        # Find intersections of scanline with polygon edges
+        nodes = []
+        j = n - 1
+        for i in range(n):
+            yi, xi = gpoly[i][1], gpoly[i][0]
+            yj, xj = gpoly[j][1], gpoly[j][0]
+            if (yi < gy <= yj) or (yj < gy <= yi):
+                if yj != yi:
+                    nodes.append(int(xi + (gy - yi) / (yj - yi) * (xj - xi)))
+            j = i
+        nodes.sort()
+
+        # Fill between pairs
+        for k in range(0, len(nodes) - 1, 2):
+            x_start = max(0, nodes[k] - inflate)
+            x_end = min(w - 1, nodes[k + 1] + inflate)
+            for gx in range(x_start, x_end + 1):
+                grid[gy * w + gx] = 1
+
+    # Inflate edges (not just fill interior)
+    for i in range(n):
+        j = (i + 1) % n
+        _rasterize_thick_line(grid, w, h, gpoly[i], gpoly[j], inflate)
+
+
+def _rasterize_thick_line(grid, w, h, p1, p2, thickness):
+    """Draw a thick line on the grid (Bresenham + dilation)."""
+    x0, y0 = p1
+    x1, y1 = p2
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx - dy
+    while True:
+        # Fill circle of radius=thickness at (x0, y0)
+        for dy2 in range(-thickness, thickness + 1):
+            for dx2 in range(-thickness, thickness + 1):
+                if dx2 * dx2 + dy2 * dy2 <= thickness * thickness:
+                    gx, gy = x0 + dx2, y0 + dy2
+                    if 0 <= gx < w and 0 <= gy < h:
+                        grid[gy * w + gx] = 1
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x0 += sx
+        if e2 < dx:
+            err += dx
+            y0 += sy
+
+
+def _nearest_free(grid, w, h, pos):
+    """Find nearest free cell to pos using BFS."""
+    gx, gy = pos
+    if 0 <= gx < w and 0 <= gy < h and not grid[gy * w + gx]:
+        return pos
+    from collections import deque
+    visited = set()
+    q = deque([(gx, gy)])
+    visited.add((gx, gy))
+    while q:
+        cx, cy = q.popleft()
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = cx + dx, cy + dy
+            if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
+                visited.add((nx, ny))
+                if not grid[ny * w + nx]:
+                    return (nx, ny)
+                q.append((nx, ny))
+                if len(visited) > 10000:
+                    return None
+    return None
+
+
+def _astar(grid, w, h, start, goal):
+    """A-star on 8-connected grid. Returns list of (gx, gy) or None."""
+    SQRT2 = 1.414
+
+    open_set = [(0.0, start)]
+    came_from = {}
+    g_score = {start: 0.0}
+    gx_goal, gy_goal = goal
+
+    # 8-connected neighbors
+    dirs = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
+            (-1, -1, SQRT2), (-1, 1, SQRT2), (1, -1, SQRT2), (1, 1, SQRT2)]
+
+    while open_set:
+        _, current = heapq.heappop(open_set)
+
+        if current == goal:
+            # Reconstruct path
+            path = [current]
+            while current in came_from:
+                current = came_from[current]
+                path.append(current)
+            path.reverse()
+            return path
+
+        cx, cy = current
+        for dx, dy, cost in dirs:
+            nx, ny = cx + dx, cy + dy
+            if 0 <= nx < w and 0 <= ny < h and not grid[ny * w + nx]:
+                ng = g_score[current] + cost
+                if ng < g_score.get((nx, ny), float('inf')):
+                    g_score[(nx, ny)] = ng
+                    # Octile distance heuristic
+                    ddx = abs(nx - gx_goal)
+                    ddy = abs(ny - gy_goal)
+                    heur = max(ddx, ddy) + (SQRT2 - 1) * min(ddx, ddy)
+                    heapq.heappush(open_set, (ng + heur, (nx, ny)))
+                    came_from[(nx, ny)] = current
+
+    return None  # no path found
+
+
+def _rdp(points, epsilon):
+    """Ramer-Douglas-Peucker simplification."""
+    if len(points) <= 2:
+        return points
+
+    # Find point with max distance from line start→end
+    start, end = points[0], points[-1]
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    line_len = math.hypot(dx, dy)
+
+    max_dist = 0.0
+    max_idx = 0
+    for i in range(1, len(points) - 1):
+        px, py = points[i][0] - start[0], points[i][1] - start[1]
+        if line_len > 0:
+            dist = abs(dx * py - dy * px) / line_len
+        else:
+            dist = math.hypot(px, py)
+        if dist > max_dist:
+            max_dist = dist
+            max_idx = i
+
+    if max_dist > epsilon:
+        left = _rdp(points[:max_idx + 1], epsilon)
+        right = _rdp(points[max_idx:], epsilon)
+        return left[:-1] + right
+    else:
+        return [start, end]

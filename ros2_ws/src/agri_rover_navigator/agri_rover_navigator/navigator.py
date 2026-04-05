@@ -1758,10 +1758,12 @@ class NavigatorNode(Node):
         self._save_run_mission()
 
     def _smooth_bypass_corners(self):
-        """Smooth the FULL mission using the preflight sim.
+        """Replace bypass zones with A-star planned smooth paths.
 
-        When obstacles are present, the sim trace naturally curves around them.
-        The entire path is replaced with the sim output — no zone splicing.
+        For each contiguous group of bypass indices, plans a smooth path
+        from the entry point to the exit point using A-star on a grid
+        with inflated obstacle polygons. The planned path naturally
+        curves around all obstacles simultaneously.
 
         bypass_arc_radius_m > 0 enables smoothing (0 = disabled).
         """
@@ -1770,52 +1772,91 @@ class NavigatorNode(Node):
         if self._bypass_arc_radius <= 0:
             return
 
-        # Save original speeds for mapping
-        orig_speeds = [(wp.latitude, wp.longitude,
-                        wp.speed if wp.speed > 0 else self._max_speed)
-                       for wp in self._path]
+        from agri_rover_navigator.grid_planner import plan_around_obstacles
 
-        # Run preflight sim on the full rerouted path
-        result = self._sim_validate_path()
-        sim_trace = result.get('sim_path', [])
-        best_cte = result.get('max_cte', 99)
-
-        if not sim_trace or len(sim_trace) < 2:
-            self.get_logger().warn('Smoother: sim trace too short — keeping original')
-            return
+        # Find contiguous bypass groups
+        bp_sorted = sorted(self._bypass_indices)
+        groups = []
+        g_start = bp_sorted[0]
+        g_end = bp_sorted[0]
+        for bp in bp_sorted[1:]:
+            if bp <= g_end + 2:  # within 2 indices = same group
+                g_end = bp
+            else:
+                groups.append((g_start, g_end))
+                g_start = g_end = bp
+        groups.append((g_start, g_end))
 
         self.get_logger().info(
-            f'Smoother: full mission sim → {len(sim_trace)} pts, '
-            f'max_cte={best_cte:.3f}m')
+            f'A-star smoother: {len(groups)} bypass group(s) to plan')
 
-        # Replace entire path with sim trace
-        new_path = []
-        for lat, lon in sim_trace:
-            base_spd = self._max_speed
-            best_d = float('inf')
-            for olat, olon, ospd in orig_speeds:
-                d = haversine(lat, lon, olat, olon)
-                if d < best_d:
-                    best_d = d
-                    base_spd = ospd
-            wp = MissionWaypoint()
-            wp.seq = len(new_path)
-            wp.latitude = lat
-            wp.longitude = lon
-            wp.speed = base_spd
-            wp.hold_secs = 0.0
-            wp.acceptance_radius = self._accept_r
-            new_path.append(wp)
+        # Process groups in reverse order so index shifts don't affect earlier groups
+        new_bypass = set()
+        for g_start, g_end in reversed(groups):
+            # Entry = point before bypass, exit = point after bypass
+            entry_idx = max(0, g_start - 1)
+            exit_idx = min(len(self._path) - 1, g_end + 1)
+            entry_wp = self._path[entry_idx]
+            exit_wp = self._path[exit_idx]
 
-        self._path = new_path
-        self._bypass_indices = set()
+            start_gps = (entry_wp.latitude, entry_wp.longitude)
+            goal_gps = (exit_wp.latitude, exit_wp.longitude)
+
+            planned = plan_around_obstacles(
+                start=start_gps,
+                goal=goal_gps,
+                obstacles=self._obstacle_polygons,
+                clearance_m=self._clearance,
+                resolution_m=0.10,
+                padding_m=self._clearance + 2.0,
+            )
+
+            if not planned or len(planned) < 2:
+                self.get_logger().warn(
+                    f'A-star: no path for group [{g_start}..{g_end}] — keeping bypass')
+                continue
+
+            # Map speeds from nearest original waypoint
+            smooth_wps = []
+            orig_zone = self._path[entry_idx:exit_idx + 1]
+            for lat, lon in planned[1:-1]:  # skip first/last (they're entry/exit)
+                base_spd = self._max_speed
+                best_d = float('inf')
+                for wp in orig_zone:
+                    d = haversine(lat, lon, wp.latitude, wp.longitude)
+                    if d < best_d:
+                        best_d = d
+                        base_spd = wp.speed if wp.speed > 0 else self._max_speed
+                bwp = MissionWaypoint()
+                bwp.seq = -99  # bypass marker
+                bwp.latitude = lat
+                bwp.longitude = lon
+                bwp.speed = base_spd
+                bwp.hold_secs = 0.0
+                bwp.acceptance_radius = self._accept_r
+                smooth_wps.append(bwp)
+
+            # Splice: keep entry + smooth path + exit, remove old bypass
+            before = list(self._path[:entry_idx + 1])
+            after = list(self._path[exit_idx:])
+            self._path = before + smooth_wps + after
+
+            # Track new bypass indices
+            for k in range(len(before), len(before) + len(smooth_wps)):
+                new_bypass.add(k)
+
+            self.get_logger().info(
+                f'A-star: group [{g_start}..{g_end}] → {len(smooth_wps)} smooth pts '
+                f'(was {g_end - g_start + 1} bypass)')
+
+        self._bypass_indices = new_bypass
+        origin_lat = self._path_origin_lat or self._path[0].latitude
+        origin_lon = self._path_origin_lon or self._path[0].longitude
+        self._path_s = self._rebuild_path_s(self._path, origin_lat, origin_lon)
         self._corridor_turn_indices = {0}
-        origin_lat = self._path_origin_lat or new_path[0].latitude
-        origin_lon = self._path_origin_lon or new_path[0].longitude
-        self._path_s = self._rebuild_path_s(new_path, origin_lat, origin_lon)
 
         self.get_logger().info(
-            f'Path smoothed: {len(new_path)} pts, best_cte={best_cte:.3f}m')
+            f'A-star smoothed: {len(self._path)} total pts')
 
     @staticmethod
     def _point_in_polygon(lat: float, lon: float, poly: list) -> bool:
