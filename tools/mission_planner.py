@@ -1226,6 +1226,15 @@ function drawRoute() {
   });
   ctx.stroke();
   ctx.restore();
+  // Turn point dots (orange)
+  waypoints.forEach((wp, i) => {
+    if ((wp.speed || 0) < 0) {
+      const p = project(wp.lat, wp.lon);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#FF9800'; ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+  });
 }
 
 function drawObstacles() {
@@ -1332,16 +1341,17 @@ function drawWaypoints() {
   waypoints.forEach((wp, i) => {
     if (i === 0) return;
     const p = project(wp.lat, wp.lon);
-    ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
-    ctx.fillStyle   = 'rgba(26,122,58,0.6)';
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    ctx.lineWidth   = 1;
+    const isTurn = (wp.speed || 0) < 0;
+    ctx.beginPath(); ctx.arc(p.x, p.y, isTurn ? 10 : 8, 0, Math.PI * 2);
+    ctx.fillStyle   = isTurn ? 'rgba(255,152,0,0.7)' : 'rgba(26,122,58,0.6)';
+    ctx.strokeStyle = isTurn ? '#fff' : 'rgba(255,255,255,0.7)';
+    ctx.lineWidth   = isTurn ? 2 : 1;
     ctx.fill(); ctx.stroke();
     ctx.fillStyle    = '#fff';
     ctx.font         = 'bold 9px sans-serif';
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(i), p.x, p.y);
+    ctx.fillText(isTurn ? 'T' : String(i), p.x, p.y);
   });
   // Draw waypoint 0 last — larger, yellow, always on top
   if (waypoints.length > 0) {
