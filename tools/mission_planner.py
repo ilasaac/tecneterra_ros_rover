@@ -2308,7 +2308,7 @@ async function uploadRover(roverId) {
   }
   const rover_ip = document.getElementById(`r-ip-rv${roverId}`).value.trim();
   if (!rover_ip) { status(`Enter RV${roverId} IP.`, '#e74c3c'); return; }
-  const wsPort = roverId === 1 ? 9090 : 9091;
+  const wsPort = 9090;
   const ns = `/rv${roverId}`;
   status(`Uploading to RV${roverId} via rosbridge...`, '#f39c12');
   if (obsMode) obsFinish();
