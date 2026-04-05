@@ -2248,11 +2248,51 @@ class NavigatorNode(Node):
                         f'Smooth cycle {smooth_cycle}: obstacle clearance OK')
                     break
                 self.get_logger().info(
-                    f'Smooth cycle {smooth_cycle}: pushed {violations} pts — re-smoothing')
-                # Rebuild arc-lengths after push, then loop re-smooths
+                    f'Smooth cycle {smooth_cycle}: pushed {violations} pts — reducing + re-smoothing')
+                # Rebuild arc-lengths after push
                 origin_lat = self._path_origin_lat or self._path[0].latitude
                 origin_lon = self._path_origin_lon or self._path[0].longitude
                 self._path_s = self._rebuild_path_s(self._path, origin_lat, origin_lon)
+                # Re-run reducer on pushed points before re-smoothing
+                bp_set = set(self._bypass_indices)
+                if bp_set:
+                    bp_sorted = sorted(bp_set)
+                    exit_wp = self._path[min(bp_sorted[-1] + 1, len(self._path) - 1)]
+                    reduced = []
+                    ri = 0
+                    red_count = 0
+                    while ri < len(self._path):
+                        if ri not in bp_set:
+                            reduced.append(self._path[ri])
+                            ri += 1
+                            continue
+                        reduced.append(self._path[ri])
+                        best_next = ri + 1
+                        if ri + 1 < len(self._path):
+                            d_next = haversine(self._path[ri + 1].latitude, self._path[ri + 1].longitude,
+                                               exit_wp.latitude, exit_wp.longitude)
+                            for k in range(2, 6):
+                                if ri + k >= len(self._path) or ((ri + k) not in bp_set and (ri + k) > bp_sorted[-1]):
+                                    break
+                                d_k = haversine(self._path[ri + k].latitude, self._path[ri + k].longitude,
+                                                exit_wp.latitude, exit_wp.longitude)
+                                if d_k < d_next:
+                                    best_next = ri + k
+                                    d_next = d_k
+                        if best_next > ri + 1:
+                            red_count += best_next - (ri + 1)
+                        ri = best_next
+                    if red_count > 0:
+                        self._path = reduced
+                        new_bp = set()
+                        for k, wp in enumerate(reduced):
+                            if wp.seq == 0 and k > 0 and k < len(reduced) - 1:
+                                new_bp.add(k)
+                        self._bypass_indices = new_bp
+                        self._path_s = self._rebuild_path_s(reduced,
+                            self._path_origin_lat or reduced[0].latitude,
+                            self._path_origin_lon or reduced[0].longitude)
+                        self.get_logger().info(f'  Post-push reducer: removed {red_count} pts')
 
         # Final validation: entry/exit GPS anchors must still exist in path
         if _entry_ll and _exit_ll:
