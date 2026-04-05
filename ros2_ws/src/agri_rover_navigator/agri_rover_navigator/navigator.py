@@ -2307,11 +2307,11 @@ class NavigatorNode(Node):
 
             # Nearest on path (local search from sim_path_idx, 3 segments)
             best_s, best_seg, best_dist = 0.0, sim_path_idx, float('inf')
-            search_limit = min(sim_path_idx + (3 if is_corridor else 1), len(self._path))
+            search_limit = min(sim_path_idx + 5, len(self._path))
             if is_corridor:
                 for ti in sorted(turn_indices):
                     if ti > sim_path_idx:
-                        search_limit = min(search_limit, ti)
+                        search_limit = min(search_limit, ti + 1)  # include segment TO turn
                         break
             for seg_k in range(sim_path_idx, search_limit):
                 if seg_k == 0:
