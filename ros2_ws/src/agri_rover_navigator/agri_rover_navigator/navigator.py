@@ -1896,7 +1896,7 @@ class NavigatorNode(Node):
             wp.seq = 0
             wp.latitude = lat
             wp.longitude = lon
-            wp.speed = self._max_speed * speed_scale
+            wp.speed = self._max_speed
             wp.hold_secs = 0.0
             wp.acceptance_radius = self._accept_r
             smooth_wps.append(wp)
