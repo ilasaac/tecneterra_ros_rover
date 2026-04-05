@@ -176,5 +176,6 @@ class DiffDriveState(RoverState):
             return last + accel_cap
         elif last > target + accel_cap:
             decel_per_tick = abs(target - last) / self._decel_div
-            return last - decel_per_tick * ticks
+            result = last - decel_per_tick * ticks
+            return max(result, target)  # never overshoot past target
         return target
