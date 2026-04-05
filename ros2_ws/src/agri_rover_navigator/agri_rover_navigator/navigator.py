@@ -278,7 +278,7 @@ class NavigatorNode(Node):
         # bypass_arc_radius_m  — minimum arc radius at corners (larger = smoother, wider turns)
         # bypass_arc_speed_k   — speed scaling factor: speed = max_speed * (1 - k * angle/180)
         #                        k=0 → no slowdown, k=1 → full slowdown on 180° turns
-        self.declare_parameter('bypass_arc_radius_m',        1.5)
+        self.declare_parameter('bypass_arc_radius_m',        0.0)
         self.declare_parameter('bypass_arc_speed_k',         0.7)
         # Minimum segment length (metres) for pivot-turn detection.  Bearing
         # between two points closer than this is considered unreliable (GPS noise).
