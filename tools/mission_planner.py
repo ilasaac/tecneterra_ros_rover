@@ -2167,39 +2167,55 @@ async function uploadRover(roverId) {
       ws.onerror = () => reject(new Error('WebSocket connection failed'));
       setTimeout(() => reject(new Error('WebSocket timeout')), 5000);
     });
-    // Build and publish mission
-    if (window._lastCorridorJson) {
-      // Corridor mission — publish JSON string on corridor_mission topic
-      ws.send(JSON.stringify({
-        op: 'publish', topic: `${ns}/corridor_mission`,
-        type: 'std_msgs/msg/String',
-        msg: {data: window._lastCorridorJson},
-      }));
-      ws.close();
-      status(`Corridor mission uploaded to RV${roverId} via rosbridge`, '#27ae60');
+    // Build corridor JSON from optimizedPath (edited table) or waypoints
+    let corridorJson;
+    let pointCount;
+    if (optimizedPath && optimizedPath.length) {
+      // Build single-corridor from edited optimized path (what the table shows)
+      const cl = optimizedPath.map(pt => [pt.lat, pt.lon]);
+      const speeds = optimizedPath.map(pt => pt.speed);
+      const ch5 = optimizedPath.map(pt => (pt.servo||{})[5]||(pt.servo||{})['5']||1500);
+      const ch6 = optimizedPath.map(pt => (pt.servo||{})[6]||(pt.servo||{})['6']||1500);
+      const ch7 = optimizedPath.map(pt => (pt.servo||{})[7]||(pt.servo||{})['7']||1500);
+      const ch8 = optimizedPath.map(pt => (pt.servo||{})[8]||(pt.servo||{})['8']||1500);
+      corridorJson = JSON.stringify({corridors:[{
+        corridor_id:0, centerline:cl, width:1.5, speed:0,
+        speeds, ch5, ch6, ch7, ch8,
+        next_corridor_id:-1, turn_type:'auto', headland_width:0
+      }], min_turn_radius:3.0, headland_width:0});
+      pointCount = optimizedPath.length;
+    } else if (waypoints.length) {
+      const cl = waypoints.map(w => [w.lat, w.lon]);
+      const speeds = waypoints.map(w => w.speed || 0);
+      const ch5 = waypoints.map(w => (w.servos||{})['5']||1500);
+      const ch6 = waypoints.map(w => (w.servos||{})['6']||1500);
+      const ch7 = waypoints.map(w => (w.servos||{})['7']||1500);
+      const ch8 = waypoints.map(w => (w.servos||{})['8']||1500);
+      corridorJson = JSON.stringify({corridors:[{
+        corridor_id:0, centerline:cl, width:1.5, speed:0,
+        speeds, ch5, ch6, ch7, ch8,
+        next_corridor_id:-1, turn_type:'auto', headland_width:0
+      }], min_turn_radius:3.0, headland_width:0});
+      pointCount = waypoints.length;
     } else {
-      // Waypoint mission — publish each waypoint + fence
-      for (let i = 0; i < waypoints.length; i++) {
-        const wp = waypoints[i];
-        ws.send(JSON.stringify({
-          op: 'publish', topic: `${ns}/mission`,
-          type: 'agri_rover_interfaces/msg/MissionWaypoint',
-          msg: {seq: i, latitude: wp.lat, longitude: wp.lon,
-                speed: wp.speed || 0, hold_secs: wp.hold_secs || 0,
-                acceptance_radius: wp.acceptance_radius || 0},
-        }));
-      }
-      // Publish obstacles as fence
-      if (obstacles.length) {
-        ws.send(JSON.stringify({
-          op: 'publish', topic: `${ns}/mission_fence`,
-          type: 'std_msgs/msg/String',
-          msg: {data: JSON.stringify({polygons: obstacles})},
-        }));
-      }
-      ws.close();
-      status(`Uploaded ${waypoints.length} waypoints to RV${roverId} via rosbridge`, '#27ae60');
+      ws.close(); status('No data to upload.', '#e74c3c'); return;
     }
+    // Publish as corridor mission (navigator auto-splits at turn markers)
+    ws.send(JSON.stringify({
+      op: 'publish', topic: `${ns}/corridor_mission`,
+      type: 'std_msgs/msg/String',
+      msg: {data: corridorJson},
+    }));
+    // Publish obstacles as fence if present
+    if (obstacles.length) {
+      ws.send(JSON.stringify({
+        op: 'publish', topic: `${ns}/mission_fence`,
+        type: 'std_msgs/msg/String',
+        msg: {data: JSON.stringify({polygons: obstacles})},
+      }));
+    }
+    ws.close();
+    status(`Uploaded ${pointCount} points to RV${roverId} via rosbridge`, '#27ae60');
   } catch(e) {
     status(`Upload failed: ${e.message}`, '#e74c3c');
   }
