@@ -1758,15 +1758,16 @@ class NavigatorNode(Node):
         self._save_run_mission()
 
     def _smooth_bypass_corners(self):
-        """Replace sharp bypass corners with arc-interpolated curves.
+        """Fillet sharp bypass corners with a few arc points.
 
-        For each bypass waypoint where the turn angle exceeds the pivot threshold,
-        inserts arc points to create a smooth curve.  Speed on the arc scales with
-        turn severity: speed = max_speed * (1 - bypass_arc_speed_k * angle/180).
+        For each bypass corner with turn angle > 30°:
+        1. Trim incoming/outgoing segments by bypass_arc_radius_m
+        2. Insert 5 Bezier arc points connecting the trimmed ends
+        3. Remove the original sharp corner
+        4. Arc points are NOT bypass — Stanley tracks them normally
+        5. Speed = max_speed * (1 - speed_k * angle/180)
 
-        Prefers smooth arcs over stop-and-turn.  Only falls back to pivot when
-        the arc radius would be smaller than bypass_arc_radius_m (too tight for
-        the rover's turning capability).
+        Falls back to sharp corner when segments are too short for the arc.
         """
         if not self._bypass_indices or not self._path:
             return
@@ -1777,14 +1778,14 @@ class NavigatorNode(Node):
 
         new_path = []
         new_bypass = set()
-        ARC_SPACING = 0.3  # metres between interpolated arc points
+        n_smoothed = 0
 
         for i, wp in enumerate(self._path):
             if i not in self._bypass_indices:
                 new_path.append(wp)
                 continue
 
-            # Compute turn angle at this bypass point
+            # Need prev and next to compute turn angle
             if i == 0 or i >= len(self._path) - 1:
                 new_path.append(wp)
                 new_bypass.add(len(new_path) - 1)
@@ -1796,65 +1797,50 @@ class NavigatorNode(Node):
             hdg_out = bearing_to(wp.latitude, wp.longitude, nxt.latitude, nxt.longitude)
             angle = abs(((hdg_out - hdg_in + 180) % 360) - 180)
 
-            if angle < 10:
-                # Nearly straight — keep as-is
+            if angle < 30:
                 new_path.append(wp)
                 new_bypass.add(len(new_path) - 1)
                 continue
 
-            # Compute arc: shorten incoming and outgoing segments by radius,
-            # then interpolate a circular arc between the two tangent points.
             dist_in = haversine(prev.latitude, prev.longitude, wp.latitude, wp.longitude)
             dist_out = haversine(wp.latitude, wp.longitude, nxt.latitude, nxt.longitude)
-            # Tangent length = radius * tan(angle/2)
             half_rad = math.radians(angle / 2)
-            tan_len = radius * math.tan(half_rad) if half_rad < math.radians(85) else radius * 10
+            tan_len = radius * math.tan(half_rad) if half_rad < 1.48 else radius * 10
 
             if tan_len > dist_in * 0.4 or tan_len > dist_out * 0.4:
-                # Not enough room for arc — keep sharp corner (pivot will handle it)
+                # Not enough room — keep sharp corner
                 new_path.append(wp)
                 new_bypass.add(len(new_path) - 1)
                 continue
 
-            # Tangent point on incoming segment (before the corner)
-            frac_in = 1.0 - tan_len / dist_in
-            t1_lat = prev.latitude + frac_in * (wp.latitude - prev.latitude)
-            t1_lon = prev.longitude + frac_in * (wp.longitude - prev.longitude)
+            # Tangent points
+            f_in = 1.0 - tan_len / dist_in
+            t1_lat = prev.latitude + f_in * (wp.latitude - prev.latitude)
+            t1_lon = prev.longitude + f_in * (wp.longitude - prev.longitude)
+            f_out = tan_len / dist_out
+            t2_lat = wp.latitude + f_out * (nxt.latitude - wp.latitude)
+            t2_lon = wp.longitude + f_out * (nxt.longitude - wp.longitude)
 
-            # Tangent point on outgoing segment (after the corner)
-            frac_out = tan_len / dist_out
-            t2_lat = wp.latitude + frac_out * (nxt.latitude - wp.latitude)
-            t2_lon = wp.longitude + frac_out * (nxt.longitude - wp.longitude)
-
-            # Arc center: offset perpendicular from the corner bisector
-            # Use simple interpolation: generate n points along the arc
-            arc_len = radius * math.radians(angle)
-            n_pts = max(2, int(arc_len / ARC_SPACING))
-
-            # Speed on arc: scale by turn severity
             arc_speed = max(self._min_speed,
                             self._max_speed * (1.0 - speed_k * angle / 180.0))
 
-            for k in range(n_pts + 1):
-                t = k / n_pts
-                # Spherical-lerp approximation via corner point
-                # Bezier-like: P = (1-t)^2 * T1 + 2t(1-t) * Corner + t^2 * T2
+            # 5 Bezier points (not bypass — Stanley tracks them as normal path)
+            for k in range(5):
+                t = k / 4.0
                 w1 = (1 - t) ** 2
                 wc = 2 * t * (1 - t)
                 w2 = t ** 2
-                lat = w1 * t1_lat + wc * wp.latitude + w2 * t2_lat
-                lon = w1 * t1_lon + wc * wp.longitude + w2 * t2_lon
                 bp = MissionWaypoint()
                 bp.seq = 0
-                bp.latitude = lat
-                bp.longitude = lon
+                bp.latitude = w1 * t1_lat + wc * wp.latitude + w2 * t2_lat
+                bp.longitude = w1 * t1_lon + wc * wp.longitude + w2 * t2_lon
                 bp.speed = arc_speed
                 bp.hold_secs = 0.0
                 bp.acceptance_radius = self._accept_r
                 new_path.append(bp)
-                new_bypass.add(len(new_path) - 1)
+                # NOT added to new_bypass — arc points are normal path points
+            n_smoothed += 1
 
-        # Rebuild path and arc-lengths
         self._path = new_path
         self._bypass_indices = new_bypass
         origin_lat = self._path_origin_lat or self._path[0].latitude
@@ -1862,8 +1848,8 @@ class NavigatorNode(Node):
         self._path_s = self._rebuild_path_s(self._path, origin_lat, origin_lon)
 
         self.get_logger().info(
-            f'Bypass smoothed: {len(new_path)} pts, {len(new_bypass)} bypass '
-            f'(radius={radius}m, speed_k={speed_k})')
+            f'Bypass smoothed: {n_smoothed} corners filleted, '
+            f'{len(new_path)} total pts (radius={radius}m)')
 
     def _reroute_path(self):
         """
