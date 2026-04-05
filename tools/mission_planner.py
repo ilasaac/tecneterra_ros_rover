@@ -210,7 +210,7 @@ def _gps_list_ports() -> list[dict]:
         return []
 
 
-def _gps_connect(port: str, baud: int = 9600) -> dict:
+def _gps_connect(port: str, baud: int = 38400) -> dict:
     global _gps_thread
     _gps_disconnect()
     _gps_stop.clear()
@@ -1912,7 +1912,7 @@ async function gpsToggleConnect() {
   if (!port) { status('Select a serial port first.', '#e74c3c'); return; }
   const resp = await fetch('/gps_connect', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({port, baud: 9600}),
+    body: JSON.stringify({port, baud: 38400}),
   });
   const r = await resp.json();
   if (r.error) { status(`GPS: ${r.error}`, '#e74c3c'); return; }
