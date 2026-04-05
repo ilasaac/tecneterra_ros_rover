@@ -1815,32 +1815,38 @@ class NavigatorNode(Node):
         self._corridor_turn_indices = set()
         self._bypass_indices = set()
 
-        ANGLE_THRESH = 25.0  # degrees — re-smooth above this
-        MAX_PASSES = 3
-        speed_k = self._bypass_arc_speed_k
+        CTE_TARGET = 0.20
+        MAX_ITERS = 5
+        speed_scale = 1.0
+        best_trace = []
+        best_cte = 99.0
 
-        # First pass: sim the full bypass zone
-        result = self._sim_validate_path()
-        best_trace = result.get('sim_path', [])
-        best_cte = result.get('max_cte', 99)
-        self.get_logger().info(
-            f'Smoother pass 0: {len(best_trace)} pts, max_cte={best_cte:.3f}m')
+        for iteration in range(MAX_ITERS):
+            if speed_scale < 1.0:
+                for wp in self._path:
+                    if wp.speed > 0:
+                        wp.speed = max(self._min_speed, wp.speed * speed_scale)
 
-        # Log sharp angles in trace for debugging
-        if len(best_trace) >= 3:
-            sharp = []
-            for i in range(1, len(best_trace) - 1):
-                h1 = bearing_to(best_trace[i-1][0], best_trace[i-1][1],
-                                best_trace[i][0], best_trace[i][1])
-                h2 = bearing_to(best_trace[i][0], best_trace[i][1],
-                                best_trace[i+1][0], best_trace[i+1][1])
-                ang = abs(((h2 - h1 + 180) % 360) - 180)
-                if ang > ANGLE_THRESH:
-                    sharp.append((i, round(ang, 1)))
-            if sharp:
-                self.get_logger().info(f'Smoother: remaining sharp angles: {sharp}')
-            else:
-                self.get_logger().info(f'Smoother: no sharp angles in trace')
+            result = self._sim_validate_path()
+            max_cte = result.get('max_cte', 99)
+            sim_trace = result.get('sim_path', [])
+
+            self.get_logger().info(
+                f'Smoother iter {iteration}: max_cte={max_cte:.3f}m '
+                f'speed_scale={speed_scale:.2f} trace={len(sim_trace)} pts')
+
+            if sim_trace and (max_cte < best_cte or not best_trace):
+                best_trace = sim_trace
+                best_cte = max_cte
+
+            if max_cte <= CTE_TARGET or speed_scale <= 0.3:
+                break
+
+            # Restore sub-path with lower speed
+            self._path = [self._clone_wp(wp) for wp in sub_path]
+            self._path_s = self._rebuild_path_s(self._path,
+                                                 sub_path[0].latitude, sub_path[0].longitude)
+            speed_scale *= 0.7
 
         # Restore full path state
         self._path = saved_path
@@ -1861,7 +1867,7 @@ class NavigatorNode(Node):
             wp.seq = 0
             wp.latitude = lat
             wp.longitude = lon
-            wp.speed = self._max_speed
+            wp.speed = self._max_speed * speed_scale
             wp.hold_secs = 0.0
             wp.acceptance_radius = self._accept_r
             smooth_wps.append(wp)
