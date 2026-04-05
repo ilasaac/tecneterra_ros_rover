@@ -2595,10 +2595,11 @@ function applyGenerate(append) {
       }
       newWps.push(...pts);
       // Headland crossing: intermediate points from end of this row to start of next
+      // Last of corridor = -1 (already set above), middle = normal speed, first of next = -1
       if (r < rows - 1) {
         const lastPt = pts[pts.length - 1];
         const nextP = (r + 1) * rowSp - tP / 2;
-        const nextStartA = (r % 2 === 0) ? endA : startA;  // next row starts at opposite end
+        const nextStartA = (r % 2 === 0) ? endA : startA;
         const [nextLat, nextLon] = offsetLatLon(cLat, cLon,
           nextStartA * Math.cos(hdg) - nextP * Math.sin(hdg),
           nextStartA * Math.sin(hdg) + nextP * Math.cos(hdg));
@@ -2606,11 +2607,13 @@ function applyGenerate(append) {
           Math.pow((nextLat - lastPt.lat) * 111320, 2) +
           Math.pow((nextLon - lastPt.lon) * 111320 * Math.cos(cLat * Math.PI / 180), 2));
         const nCross = Math.max(2, Math.ceil(crossDist / ptSpacing));
-        for (let k = 1; k < nCross; k++) {
+        for (let k = 1; k <= nCross; k++) {
           const t = k / nCross;
           const lat = lastPt.lat + t * (nextLat - lastPt.lat);
           const lon = lastPt.lon + t * (nextLon - lastPt.lon);
-          newWps.push({lat, lon, speed: -1, hold_secs: 0, servos: {...genServos}});
+          // Last crossing point (= first of next corridor) is a turn marker
+          const isEntry = (k === nCross);
+          newWps.push({lat, lon, speed: isEntry ? -1 : spd, hold_secs: 0, servos: {...genServos}});
         }
       }
     }
@@ -2647,11 +2650,12 @@ function applyGenerate(append) {
           Math.pow((nextLat - lastWp.lat) * 111320, 2) +
           Math.pow((nextLon - lastWp.lon) * 111320 * Math.cos(cLat * Math.PI / 180), 2));
         const nCross = Math.max(2, Math.ceil(crossDist / ptSpacing));
-        for (let k = 1; k < nCross; k++) {
+        for (let k = 1; k <= nCross; k++) {
           const t = k / nCross;
           const lat = lastWp.lat + t * (nextLat - lastWp.lat);
           const lon = lastWp.lon + t * (nextLon - lastWp.lon);
-          newWps.push({lat, lon, speed: -1, hold_secs: 0, servos: {...genServos}});
+          const isEntry = (k === nCross);
+          newWps.push({lat, lon, speed: isEntry ? -1 : spd, hold_secs: 0, servos: {...genServos}});
         }
       }
     }
