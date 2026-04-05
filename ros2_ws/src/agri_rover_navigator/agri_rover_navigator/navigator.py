@@ -2402,10 +2402,9 @@ class NavigatorNode(Node):
                     sim_pivot_min = direct_dist
                 if direct_dist < sim_pivot_min:
                     sim_pivot_min = direct_dist
-                # Trigger: classic overshoot OR direct proximity
-                passed = ((sim_pivot_min < self._accept_r
-                           and direct_dist > sim_pivot_min + 0.05)
-                          or direct_dist < self._accept_r)
+                # Trigger: overshoot only (same as real navigator L1600)
+                passed = (sim_pivot_min < self._accept_r
+                          and direct_dist > sim_pivot_min + 0.05)
                 if passed:
                     # Find point 2m into next corridor for spin target
                     nxt = turn_idx + 1
