@@ -2629,45 +2629,36 @@ function applyGenerate(append) {
     }
 
   } else if (pat === 'zigzag') {
+    // True zigzag: alternates between left and right edges, creating V pattern
     const legs   = parseInt(document.getElementById('gen-legs').value)      || 6;
     const legLen = parseFloat(document.getElementById('gen-leg-len').value) || 10;
     const legOff = parseFloat(document.getElementById('gen-leg-off').value) || 5;
     const hdg    = (parseFloat(document.getElementById('gen-zhdg').value) || 0) * Math.PI / 180;
     const ptSpacing = 0.5;
-    const tP     = legOff * (legs - 1);
     for (let i = 0; i < legs; i++) {
-      const perp = i * legOff - tP / 2;
-      const startAlong = (i % 2 === 0) ? -legLen / 2 : legLen / 2;
-      const endAlong = (i % 2 === 0) ? legLen / 2 : -legLen / 2;
-      const nPts = Math.max(2, Math.ceil(legLen / ptSpacing) + 1);
-      for (let k = 0; k < nPts; k++) {
-        const along = startAlong + (endAlong - startAlong) * k / (nPts - 1);
-        const [lat, lon] = offsetLatLon(cLat, cLon,
-          along * Math.cos(hdg) - perp * Math.sin(hdg),
-          along * Math.sin(hdg) + perp * Math.cos(hdg));
-        const isTurn = (k === nPts - 1 && i < legs - 1);
-        newWps.push({lat, lon, speed: isTurn ? -1 : spd, hold_secs: 0, servos: {...genServos}});
-      }
-      // Headland crossing: points from end of this leg to start of next
-      if (i < legs - 1) {
-        const lastWp = newWps[newWps.length - 1];
-        const nextPerp = (i + 1) * legOff - tP / 2;
-        const nextStart = ((i + 1) % 2 === 0) ? -legLen / 2 : legLen / 2;
-        const [nextLat, nextLon] = offsetLatLon(cLat, cLon,
-          nextStart * Math.cos(hdg) - nextPerp * Math.sin(hdg),
-          nextStart * Math.sin(hdg) + nextPerp * Math.cos(hdg));
-        const crossDist = Math.sqrt(
-          Math.pow((nextLat - lastWp.lat) * 111320, 2) +
-          Math.pow((nextLon - lastWp.lon) * 111320 * Math.cos(cLat * Math.PI / 180), 2));
-        const nCross = Math.max(2, Math.ceil(crossDist / ptSpacing));
-        for (let k = 1; k <= nCross; k++) {
-          const t = k / nCross;
-          const lat = lastWp.lat + t * (nextLat - lastWp.lat);
-          const lon = lastWp.lon + t * (nextLon - lastWp.lon);
-          const isEntry = (k === nCross);
-          newWps.push({lat, lon, speed: isEntry ? -1 : spd, hold_secs: 0, servos: {...genServos}});
+      // Zigzag vertices: alternate between +legLen/2 and -legLen/2 perpendicular
+      const along = i * legOff;  // progress along heading
+      const perp = (i % 2 === 0) ? -legLen / 2 : legLen / 2;
+      const [lat, lon] = offsetLatLon(cLat, cLon,
+        along * Math.cos(hdg) - perp * Math.sin(hdg),
+        along * Math.sin(hdg) + perp * Math.cos(hdg));
+      // Add intermediate points along each diagonal leg
+      if (i > 0) {
+        const prevWp = newWps[newWps.length - 1];
+        const dist = Math.sqrt(
+          Math.pow((lat - prevWp.lat) * 111320, 2) +
+          Math.pow((lon - prevWp.lon) * 111320 * Math.cos(cLat * Math.PI / 180), 2));
+        const nPts = Math.max(2, Math.ceil(dist / ptSpacing));
+        for (let k = 1; k < nPts; k++) {
+          const t = k / nPts;
+          const iLat = prevWp.lat + t * (lat - prevWp.lat);
+          const iLon = prevWp.lon + t * (lon - prevWp.lon);
+          newWps.push({lat: iLat, lon: iLon, speed: spd, hold_secs: 0, servos: {...genServos}});
         }
       }
+      // Turn marker at each zigzag vertex (except last)
+      const isTurn = (i < legs - 1);
+      newWps.push({lat, lon, speed: isTurn ? -1 : spd, hold_secs: 0, servos: {...genServos}});
     }
 
   } else if (pat === 'scatter') {
