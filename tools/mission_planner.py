@@ -1273,6 +1273,14 @@ function drawStartMarker() {
 
 // ── Hit testing ───────────────────────────────────────────────────
 function hitWaypoint(x, y) {
+  // Check optimizedPath first (what's shown in table and on map)
+  if (optimizedPath && optimizedPath.length) {
+    for (let i = optimizedPath.length - 1; i >= 0; i--) {
+      const p = project(optimizedPath[i].lat, optimizedPath[i].lon);
+      if (Math.hypot(p.x - x, p.y - y) <= 13) return i;
+    }
+    return -1;
+  }
   for (let i = waypoints.length - 1; i >= 0; i--) {
     const p = project(waypoints[i].lat, waypoints[i].lon);
     if (Math.hypot(p.x - x, p.y - y) <= 13) return i;
@@ -1409,8 +1417,13 @@ canvas.addEventListener('mousemove', e => {
     redraw();
   } else if (_drag.type === 'wp') {
     const ll = unproject(x, y);
-    waypoints[_drag.idx].lat = ll.lat;
-    waypoints[_drag.idx].lon = ll.lon;
+    if (optimizedPath && optimizedPath.length) {
+      optimizedPath[_drag.idx].lat = ll.lat;
+      optimizedPath[_drag.idx].lon = ll.lon;
+    } else {
+      waypoints[_drag.idx].lat = ll.lat;
+      waypoints[_drag.idx].lon = ll.lon;
+    }
     refreshTable();
     redraw();
   }
