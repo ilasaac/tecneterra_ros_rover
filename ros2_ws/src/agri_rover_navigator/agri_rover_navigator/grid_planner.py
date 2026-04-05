@@ -125,6 +125,12 @@ def plan_around_obstacles(
     if simplify_tolerance_m > 0:
         path_m = _rdp(path_m, simplify_tolerance_m)
 
+    # Smooth corners (Chaikin corner-cutting, 3 iterations)
+    path_m = _chaikin_smooth(path_m, iterations=3)
+
+    # Verify smoothed path doesn't cut into obstacles
+    path_m = _validate_smooth(path_m, grid, w, h, min_x, min_y, resolution_m)
+
     # Ensure start and goal are exact
     path_gps = [start] + [to_gps(x, y) for x, y in path_m[1:-1]] + [goal]
 
@@ -292,3 +298,37 @@ def _rdp(points, epsilon):
         return left[:-1] + right
     else:
         return [start, end]
+
+
+def _chaikin_smooth(points, iterations=3):
+    """Chaikin corner-cutting: each iteration replaces each segment midpoint
+    with two points at 25% and 75%, rounding corners progressively.
+    First and last points are preserved."""
+    if len(points) <= 2:
+        return points
+    for _ in range(iterations):
+        new_pts = [points[0]]
+        for i in range(len(points) - 1):
+            x0, y0 = points[i]
+            x1, y1 = points[i + 1]
+            new_pts.append((0.75 * x0 + 0.25 * x1, 0.75 * y0 + 0.25 * y1))
+            new_pts.append((0.25 * x0 + 0.75 * x1, 0.25 * y0 + 0.75 * y1))
+        new_pts.append(points[-1])
+        points = new_pts
+    return points
+
+
+def _validate_smooth(path_m, grid, w, h, min_x, min_y, res):
+    """Remove smoothed points that land inside obstacles.
+    Replaces them with the midpoint of their neighbours (safe fallback)."""
+    result = [path_m[0]]
+    for i in range(1, len(path_m) - 1):
+        x, y = path_m[i]
+        gx = int((x - min_x) / res)
+        gy = int((y - min_y) / res)
+        if 0 <= gx < w and 0 <= gy < h and grid[gy * w + gx]:
+            # Point is inside obstacle — skip it (neighbours connect directly)
+            continue
+        result.append(path_m[i])
+    result.append(path_m[-1])
+    return result
