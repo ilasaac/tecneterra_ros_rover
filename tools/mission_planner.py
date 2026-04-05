@@ -806,6 +806,13 @@ tr:hover td{background:#1e1e3a}
       </select>
       <button class="btn-blue" style="padding:3px 7px;font-size:11px" onclick="loadMission()">Load</button>
     </div>
+    <div style="display:flex;gap:3px;align-items:center;margin-top:3px">
+      <button class="btn-red" style="padding:2px 6px;font-size:10px" onclick="saveObstacles()">Save Obs</button>
+      <select id="obs-select" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px;border-radius:2px;font-size:10px">
+        <option value="">— saved obstacles —</option>
+      </select>
+      <button class="btn-red" style="padding:2px 6px;font-size:10px" onclick="loadObstacles()">Load Obs</button>
+    </div>
   </div>
   <div class="section" style="background:#1a0d2e">
     <div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
@@ -2368,6 +2375,38 @@ async function saveMission() {
   loadAnalyzeMissionList();
 }
 
+async function saveObstacles() {
+  if (!obstacles.length) { status('No obstacles to save.', '#e74c3c'); return; }
+  const name = prompt('Obstacle set name:', 'field_obstacles');
+  if (!name) return;
+  await fetch('/save_obstacles', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, obstacles}),
+  });
+  status(`Saved ${obstacles.length} obstacle(s) as "${name}".`);
+  refreshObstacleList();
+}
+
+async function loadObstacles() {
+  const sel = document.getElementById('obs-select');
+  const name = sel.value;
+  if (!name) { status('Select an obstacle set first.', '#e74c3c'); return; }
+  const resp = await fetch(`/load_obstacles?name=${encodeURIComponent(name)}`);
+  const d = await resp.json();
+  if (d.error) { status(d.error, '#e74c3c'); return; }
+  obstacles = d.obstacles || [];
+  refreshTable(); renderAll();
+  status(`Loaded ${obstacles.length} obstacle(s) from "${name}".`);
+}
+
+async function refreshObstacleList() {
+  const resp = await fetch('/list_obstacles');
+  const list = await resp.json();
+  const sel = document.getElementById('obs-select');
+  sel.innerHTML = '<option value="">— saved obstacles —</option>' +
+    list.map(f => `<option value="${f.name}">${f.name} (${f.count})</option>`).join('');
+}
+
 async function loadMission() {
   const sel = document.getElementById('m-select');
   const name = sel.value;
@@ -2445,6 +2484,7 @@ async function refreshMissionList() {
     list.map(m => `<option value="${m.name}"${m.name === cur ? ' selected' : ''}>${m.name} (${m.wp_count}wp${m.obs_count ? ' ' + m.obs_count + 'obs' : ''})</option>`).join('');
 }
 refreshMissionList();
+refreshObstacleList();
 
 // ── Rover upload / network import ─────────────────────────────────
 async function uploadRover(roverId) {
@@ -3564,6 +3604,31 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
+        elif self.path == '/list_obstacles':
+            import glob as _g2
+            files = sorted(_g2.glob(os.path.join(MISSIONS_DIR, '*.obstacles.json')),
+                           key=os.path.getmtime, reverse=True)
+            result = []
+            for p in files:
+                name = os.path.basename(p).replace('.obstacles.json', '')
+                try:
+                    d = json.loads(open(p).read())
+                    count = len(d.get('obstacles', []))
+                except Exception:
+                    count = 0
+                result.append({'name': name, 'count': count})
+            self._json(result)
+
+        elif self.path.startswith('/load_obstacles?name='):
+            name = self.path.split('=', 1)[1]
+            from urllib.parse import unquote as _uq2
+            name = _uq2(name)
+            path = os.path.join(MISSIONS_DIR, f'{name}.obstacles.json')
+            if not os.path.isfile(path):
+                self._json({'error': f'Not found: {name}'}); return
+            d = json.loads(open(path).read())
+            self._json(d)
+
         elif self.path == '/missions':
             self._json(_list_mission_files())
 
@@ -3658,6 +3723,16 @@ class _Handler(BaseHTTPRequestHandler):
                 'algorithm':         nav_p.get('control_algorithm', 'stanley'),
                 'debug_trace':       result.debug_trace,
             })
+
+        elif self.path == '/save_obstacles':
+            data = json.loads(raw)
+            name = data.get('name', '').strip().replace('/', '_').replace('\\', '_')
+            if not name:
+                self._json({'error': 'name required'}); return
+            path = os.path.join(MISSIONS_DIR, f'{name}.obstacles.json')
+            with open(path, 'w') as f:
+                json.dump({'obstacles': data.get('obstacles', [])}, f, indent=2)
+            self._json({'ok': True})
 
         elif self.path == '/save_mission':
             data = json.loads(raw)
