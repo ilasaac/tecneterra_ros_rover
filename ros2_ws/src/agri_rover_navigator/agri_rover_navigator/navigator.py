@@ -2359,7 +2359,7 @@ class NavigatorNode(Node):
             cte_sum += abs_cte
             steps += 1
 
-            # Advance sim_path_idx
+            # Advance sim_path_idx — arc-length OR proximity
             if seg_idx > sim_path_idx:
                 limit = len(self._path)
                 if is_corridor:
@@ -2368,6 +2368,14 @@ class NavigatorNode(Node):
                             limit = ti
                             break
                 sim_path_idx = min(seg_idx, limit)
+            # Proximity advance: if close to current waypoint, advance past it
+            if sim_path_idx < len(self._path):
+                wp_target = self._path[sim_path_idx]
+                d_to_wp = haversine(rlat, rlon, wp_target.latitude, wp_target.longitude)
+                if d_to_wp < self._accept_r * 2.0:
+                    if sim_path_idx not in turn_indices:
+                        sim_path_idx += 1
+                        sim_pivot_min = None
 
             # Turn handling for corridors
             turn_s = None
@@ -2395,8 +2403,10 @@ class NavigatorNode(Node):
                     sim_pivot_min = direct_dist
                 if direct_dist < sim_pivot_min:
                     sim_pivot_min = direct_dist
-                passed = (sim_pivot_min < self._accept_r
-                          and direct_dist > sim_pivot_min + 0.05)
+                # Trigger: classic overshoot OR direct proximity
+                passed = ((sim_pivot_min < self._accept_r
+                           and direct_dist > sim_pivot_min + 0.05)
+                          or direct_dist < self._accept_r)
                 if passed:
                     # Find point 2m into next corridor for spin target
                     nxt = turn_idx + 1
