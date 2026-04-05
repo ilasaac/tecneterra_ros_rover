@@ -222,19 +222,26 @@ class RoverPositionManager(
                         }
                         topic.endsWith("/armed") -> {
                             val armed = msg.optBoolean("data", false)
+                            roverArmed[sysId] = armed
                             scope.launch(Dispatchers.Main) { onArmState(sysId, armed) }
                         }
                         topic.endsWith("/xte") -> {
                             // XTE available via rosbridge
                         }
                         topic.endsWith("/rc_input") -> {
-                            // RCInput: channels[], mode, sbus_ok, rf_link_ok
                             val chArr = msg.optJSONArray("channels")
                             if (chArr != null) {
                                 val channels = IntArray(chArr.length()) { chArr.optInt(it, 1500) }
                                 val remapped = remapSbusToLogical(channels)
-                                roverPpmChannels[sysId] = remapped
-                                scope.launch(Dispatchers.Main) { onRcChannels(sysId, remapped) }
+                                // Store CH9 for autonomous detection
+                                val ch9 = if (remapped.size > 8) remapped[8] else 1500
+                                roverCh9[sysId] = ch9
+                                // Show RC channels only when not in autonomous
+                                val isAuto = msg.optString("mode", "").contains("AUTO", true)
+                                if (!isAuto) {
+                                    roverPpmChannels[sysId] = remapped
+                                    scope.launch(Dispatchers.Main) { onRcChannels(sysId, remapped) }
+                                }
                             }
                             val sbusOk = msg.optBoolean("sbus_ok", true)
                             val rfOk = msg.optBoolean("rf_link_ok", true)
@@ -270,13 +277,17 @@ class RoverPositionManager(
                             scope.launch(Dispatchers.Main) { onReroutePending(sysId, pending) }
                         }
                         topic.endsWith("/cmd_override") -> {
-                            // Autonomous servo output — show in GQC when armed
-                            val chArr = msg.optJSONArray("channels")
-                            if (chArr != null && chArr.length() >= 8) {
-                                val channels = IntArray(chArr.length()) { chArr.optInt(it, 1500) }
-                                // In AUTO mode, override PPM display with navigator output
-                                roverPpmChannels[sysId] = channels
-                                scope.launch(Dispatchers.Main) { onRcChannels(sysId, channels) }
+                            // Autonomous output — already in PPM order, show when in AUTO
+                            val mode = msg.optString("mode", "")
+                            if (mode.contains("AUTO", true)) {
+                                val chArr = msg.optJSONArray("channels")
+                                if (chArr != null && chArr.length() >= 8) {
+                                    // Build 9-ch array: cmd channels[0..7] + CH9 from rc_input
+                                    val ch = IntArray(9) { if (it < chArr.length()) chArr.optInt(it, 1500) else 1500 }
+                                    ch[8] = roverCh9[sysId] ?: 1500  // keep CH9 from RC
+                                    roverPpmChannels[sysId] = ch
+                                    scope.launch(Dispatchers.Main) { onRcChannels(sysId, ch) }
+                                }
                             }
                         }
                         topic.endsWith("/rerouted_path") -> {
@@ -321,6 +332,8 @@ class RoverPositionManager(
 
     // Cache heading from rosbridge (updated faster than position callback)
     private val rosbridgeHeading = HashMap<Int, Float>()
+    private val roverCh9 = HashMap<Int, Int>()  // CH9 from rc_input for rover select
+    private val roverArmed = HashMap<Int, Boolean>()
     // Per-rover rosbridge connection state — when true, MAVLink GPS/STATUS/WP are ignored
     private val rosbridgeConnected = HashMap<Int, Boolean>()
 
