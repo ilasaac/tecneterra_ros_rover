@@ -2022,7 +2022,7 @@ class NavigatorNode(Node):
         def make_bypass_wp(lat: float, lon: float,
                            ref_wp: MissionWaypoint) -> MissionWaypoint:
             bp = MissionWaypoint()
-            bp.seq               = 0          # sentinel — filtered in _advance_path
+            bp.seq               = -99        # bypass marker — filtered in _advance_path
             bp.latitude          = lat
             bp.longitude         = lon
             bp.speed             = ref_wp.speed
@@ -2213,7 +2213,7 @@ class NavigatorNode(Node):
                 # Rebuild bypass indices
                 new_bp = set()
                 for k, wp in enumerate(reduced):
-                    if wp.seq == 0 and k > 0 and k < len(reduced) - 1:
+                    if wp.seq == -99:
                         new_bp.add(k)
                 self._bypass_indices = new_bp
                 new_bypass_indices = new_bp
@@ -2286,7 +2286,7 @@ class NavigatorNode(Node):
                         self._path = reduced
                         new_bp = set()
                         for k, wp in enumerate(reduced):
-                            if wp.seq == 0 and k > 0 and k < len(reduced) - 1:
+                            if wp.seq == -99:
                                 new_bp.add(k)
                         self._bypass_indices = new_bp
                         self._path_s = self._rebuild_path_s(reduced,
