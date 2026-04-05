@@ -1815,38 +1815,83 @@ class NavigatorNode(Node):
         self._corridor_turn_indices = set()
         self._bypass_indices = set()
 
-        CTE_TARGET = 0.20
-        MAX_ITERS = 5
-        speed_scale = 1.0
+        ANGLE_THRESH = 25.0
+        MAX_PASSES = 3
+        speed_k = self._bypass_arc_speed_k
+        # Save original speeds for mapping to trace points
+        orig_speeds = [(wp.latitude, wp.longitude,
+                        wp.speed if wp.speed > 0 else self._max_speed)
+                       for wp in sub_path]
         best_trace = []
         best_cte = 99.0
 
-        for iteration in range(MAX_ITERS):
-            if speed_scale < 1.0:
-                for wp in self._path:
-                    if wp.speed > 0:
-                        wp.speed = max(self._min_speed, wp.speed * speed_scale)
-
+        for pass_n in range(MAX_PASSES):
             result = self._sim_validate_path()
             max_cte = result.get('max_cte', 99)
             sim_trace = result.get('sim_path', [])
-
-            self.get_logger().info(
-                f'Smoother iter {iteration}: max_cte={max_cte:.3f}m '
-                f'speed_scale={speed_scale:.2f} trace={len(sim_trace)} pts')
 
             if sim_trace and (max_cte < best_cte or not best_trace):
                 best_trace = sim_trace
                 best_cte = max_cte
 
-            if max_cte <= CTE_TARGET or speed_scale <= 0.3:
+            self.get_logger().info(
+                f'Smoother pass {pass_n}: max_cte={best_cte:.3f}m '
+                f'trace={len(best_trace)} pts')
+
+            if len(best_trace) < 3:
                 break
 
-            # Restore sub-path with lower speed
-            self._path = [self._clone_wp(wp) for wp in sub_path]
-            self._path_s = self._rebuild_path_s(self._path,
-                                                 sub_path[0].latitude, sub_path[0].longitude)
-            speed_scale *= 0.7
+            # Find sharp angles in the trace
+            sharp_indices = set()
+            for i in range(1, len(best_trace) - 1):
+                h1 = bearing_to(best_trace[i-1][0], best_trace[i-1][1],
+                                best_trace[i][0], best_trace[i][1])
+                h2 = bearing_to(best_trace[i][0], best_trace[i][1],
+                                best_trace[i+1][0], best_trace[i+1][1])
+                ang = abs(((h2 - h1 + 180) % 360) - 180)
+                if ang > ANGLE_THRESH:
+                    # Mark this point and neighbours for slowdown
+                    for k in range(max(0, i - 3), min(len(best_trace), i + 4)):
+                        sharp_indices.add(k)
+
+            if not sharp_indices:
+                self.get_logger().info(f'Smoother pass {pass_n}: no sharp angles — done')
+                break
+
+            self.get_logger().info(
+                f'Smoother pass {pass_n}: {len(sharp_indices)} sharp-zone pts — '
+                f're-running with reduced speed at those points')
+
+            # Use the trace as the new path, with reduced speed at sharp spots
+            new_wps = []
+            for i, (lat, lon) in enumerate(best_trace):
+                # Find nearest original waypoint's speed
+                base_spd = self._max_speed
+                best_d = float('inf')
+                for olat, olon, ospd in orig_speeds:
+                    d = haversine(lat, lon, olat, olon)
+                    if d < best_d:
+                        best_d = d
+                        base_spd = ospd
+                wp = MissionWaypoint()
+                wp.seq = i
+                wp.latitude = lat
+                wp.longitude = lon
+                if i in sharp_indices:
+                    wp.speed = max(self._min_speed, base_spd * (1.0 - speed_k))
+                else:
+                    wp.speed = base_spd
+                wp.hold_secs = 0.0
+                wp.acceptance_radius = self._accept_r
+                new_wps.append(wp)
+
+            self._path = new_wps
+            self._path_origin_lat = new_wps[0].latitude
+            self._path_origin_lon = new_wps[0].longitude
+            self._path_s = self._rebuild_path_s(new_wps,
+                                                 new_wps[0].latitude, new_wps[0].longitude)
+            self._corridor_turn_indices = set()
+            self._bypass_indices = set()
 
         # Restore full path state
         self._path = saved_path
@@ -1860,14 +1905,22 @@ class NavigatorNode(Node):
             self.get_logger().warn('Smoother: trace too short — keeping original path')
             return
 
-        # Build smoothed waypoints from trace
+        # Build smoothed waypoints from trace with original speeds
         smooth_wps = []
         for lat, lon in best_trace:
+            # Map to nearest original waypoint's speed
+            base_spd = self._max_speed
+            best_d = float('inf')
+            for olat, olon, ospd in orig_speeds:
+                d = haversine(lat, lon, olat, olon)
+                if d < best_d:
+                    best_d = d
+                    base_spd = ospd
             wp = MissionWaypoint()
             wp.seq = 0
             wp.latitude = lat
             wp.longitude = lon
-            wp.speed = self._max_speed * speed_scale
+            wp.speed = base_spd
             wp.hold_secs = 0.0
             wp.acceptance_radius = self._accept_r
             smooth_wps.append(wp)
