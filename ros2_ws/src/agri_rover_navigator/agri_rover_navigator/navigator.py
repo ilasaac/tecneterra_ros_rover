@@ -1858,13 +1858,16 @@ class NavigatorNode(Node):
         self.get_logger().info(
             f'A-star smoothed: {len(self._path)} total pts')
 
-        # Run Stanley sim through the A-star+Chaikin path for physics-based refinement
+        # Run Stanley sim through the A-star+Chaikin path — iterate up to 3x if CTE > 0.30m
         orig_speeds = [(wp.latitude, wp.longitude,
                         wp.speed if wp.speed > 0 else self._max_speed)
                        for wp in self._path]
-        result = self._sim_validate_path()
-        sim_trace = result.get('sim_path', [])
-        if sim_trace and len(sim_trace) >= 2:
+        for sim_pass in range(3):
+            result = self._sim_validate_path()
+            max_cte = result.get('max_cte', 99)
+            sim_trace = result.get('sim_path', [])
+            if not sim_trace or len(sim_trace) < 2:
+                break
             # Replace path with sim trace
             new_path = []
             for lat, lon in sim_trace:
@@ -1901,10 +1904,12 @@ class NavigatorNode(Node):
                     clean_path,
                     self._path_origin_lat or clean_path[0].latitude,
                     self._path_origin_lon or clean_path[0].longitude)
-                self.get_logger().info(
-                    f'Sim refinement: {len(clean_path)} pts '
-                    f'(dropped {len(new_path) - len(clean_path)} inside obstacles), '
-                    f'max_cte={result.get("max_cte", 0):.3f}m')
+            self.get_logger().info(
+                f'Sim pass {sim_pass}: {len(clean_path)} pts '
+                f'(dropped {len(new_path) - len(clean_path)}), '
+                f'max_cte={max_cte:.3f}m')
+            if max_cte <= 0.30:
+                break
 
     @staticmethod
     def _point_in_polygon(lat: float, lon: float, poly: list) -> bool:
