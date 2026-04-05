@@ -2259,6 +2259,8 @@ class NavigatorNode(Node):
         sim_path_idx = 0
         sim_spin_brg = None
         sim_pivot_min = None
+        sim_pivoting = False       # True while spinning at a turn point
+        sim_pivot_brg = 0.0        # target bearing during pivot
         turn_indices = set(getattr(self, '_corridor_turn_indices', set()))
         is_corridor = self._corridor_mode
 
@@ -2394,7 +2396,25 @@ class NavigatorNode(Node):
             la_lat, la_lon = self._point_at_s(s_look)
             target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
 
-            # Pivot at corridor turn
+            # Pivot state machine — stays in pivot mode until heading aligned
+            if sim_pivoting:
+                pivot_err = ((sim_pivot_brg - heading + 180) % 360) - 180
+                if abs(pivot_err) > self._hdb:
+                    steer_frac = max(-self._max_steer, min(self._max_steer, pivot_err / 45.0))
+                    steer_ppm = int(1500 - steer_frac * 500)
+                    _log(rlat, rlon, heading, sim_pivot_brg, pivot_err, cte,
+                         steer_frac, steer_ppm, 1500, 0, 0, seg_idx, 'sim-pivot')
+                    rover.update(1500, steer_ppm, self._max_speed, 0.6, dt)
+                    sim_time += dt
+                    continue
+                # Pivot done — heading aligned
+                sim_pivoting = False
+                _log(rlat, rlon, heading, sim_pivot_brg, pivot_err, cte,
+                     0, 1500, 1500, 0, 0, seg_idx, 'sim-pivot-done')
+                sim_time += dt
+                continue
+
+            # Pivot trigger at corridor turn
             if turn_idx is not None:
                 tp = self._path[turn_idx]
                 direct_dist = haversine(rlat, rlon, tp.latitude, tp.longitude)
@@ -2402,16 +2422,14 @@ class NavigatorNode(Node):
                     sim_pivot_min = direct_dist
                 if direct_dist < sim_pivot_min:
                     sim_pivot_min = direct_dist
-                # Trigger: overshoot only (same as real navigator L1600)
                 passed = (sim_pivot_min < self._accept_r
                           and direct_dist > sim_pivot_min + 0.05)
                 if passed:
-                    # Advance and reset for next corridor
+                    # Enter pivot mode
                     turn_indices.discard(turn_idx)
                     sim_pivot_min = None
                     sim_path_idx = turn_idx + 1
-                    sim_spin_brg = None
-                    # Find point 2m into next corridor for spin target
+                    # Compute spin target: bearing to point 2m into next corridor
                     nxt = turn_idx + 1
                     best_nxt = min(nxt, len(self._path) - 1)
                     while nxt < len(self._path):
@@ -2423,31 +2441,13 @@ class NavigatorNode(Node):
                             best_nxt = nxt
                             break
                         nxt += 1
-                    next_brg = bearing_to(tp.latitude, tp.longitude,
-                                          self._path[best_nxt].latitude,
-                                          self._path[best_nxt].longitude)
-                    pivot_err = ((next_brg - heading + 180) % 360) - 180
-                    if abs(pivot_err) > self._hdb:
-                        steer_frac = max(-self._max_steer, min(self._max_steer, pivot_err / 45.0))
-                        steer_ppm = int(1500 - steer_frac * 500)
-                        _log(rlat, rlon, heading, next_brg, pivot_err, cte,
-                             steer_frac, steer_ppm, 1500, 0, direct_dist, seg_idx, 'sim-pivot')
-                        rover.update(1500, steer_ppm, self._max_speed, 0.6, dt)
-                        sim_time += dt
-                        continue
-                    # Pivot done
-                    _log(rlat, rlon, heading, next_brg, pivot_err, cte,
-                         0, 1500, 1500, 0, direct_dist, seg_idx, 'sim-pivot-done')
-                    turn_indices.discard(turn_idx)
-                    sim_pivot_min = None
-                    sim_path_idx = turn_idx + 1
-                    sim_spin_brg = None
+                    sim_pivot_brg = bearing_to(tp.latitude, tp.longitude,
+                                               self._path[best_nxt].latitude,
+                                               self._path[best_nxt].longitude)
+                    sim_pivoting = True
+                    rover.update(1500, 1500, self._max_speed, 0.6, dt)  # stop first
                     sim_time += dt
                     continue
-
-            # Freeze bearing during spin
-            if sim_spin_brg is not None:
-                target_bearing = sim_spin_brg
             heading_err = ((target_bearing - heading + 180) % 360) - 180
 
             # Speed
