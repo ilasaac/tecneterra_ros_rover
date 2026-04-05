@@ -1758,14 +1758,13 @@ class NavigatorNode(Node):
         self._save_run_mission()
 
     def _smooth_bypass_corners(self):
-        """Stanley-sim smoother: run the controller through the sharp path,
-        use the simulated trace as the new smoothed path.
+        """Use the preflight sim to generate a smoothed path.
 
-        The sim uses 5-segment lookahead (vs 3 in the real controller) for
-        extra smoothing. Iterates speed down until max CTE < 0.20m.
+        Runs _sim_validate_path (which already works with pivot logic)
+        and replaces the path with the simulated trace. Iterates speed
+        down until CTE < 20cm.
 
-        bypass_arc_radius_m controls the sampling distance between output
-        points (0 = disabled).
+        bypass_arc_radius_m controls sample distance (0 = disabled).
         """
         if not self._bypass_indices or not self._path:
             return
@@ -1773,191 +1772,80 @@ class NavigatorNode(Node):
         if sample_dist <= 0:
             return
 
-        from agri_rover_simulator.diff_drive import DiffDriveState
-
-        CTE_TARGET = 0.20  # metres
+        CTE_TARGET = 0.20
         MAX_ITERS = 5
         speed_scale = 1.0
+        original_path = list(self._path)
+        original_path_s = list(self._path_s)
+        original_bypass = set(self._bypass_indices)
+        original_turns = set(getattr(self, '_corridor_turn_indices', set()))
 
         for iteration in range(MAX_ITERS):
-            # Init at first path point
-            wp0 = self._path[0]
-            wp1 = self._path[1] if len(self._path) > 1 else wp0
-            hdg = bearing_to(wp0.latitude, wp0.longitude, wp1.latitude, wp1.longitude)
-            baseline = 1.0
-            half_bm = baseline / 2.0
-            hdg_rad = math.radians(hdg)
-            cos_lat0 = math.cos(math.radians(wp0.latitude)) or 1e-9
-            rear_lat = wp0.latitude - (half_bm * math.cos(hdg_rad)) / 111320.0
-            rear_lon = wp0.longitude - (half_bm * math.sin(hdg_rad)) / (111320.0 * cos_lat0)
+            # Scale speeds on current path
+            if speed_scale < 1.0:
+                for wp in self._path:
+                    if wp.speed > 0:
+                        wp.speed = max(self._min_speed, wp.speed * speed_scale)
 
-            rover = DiffDriveState(rear_lat, rear_lon, hdg, max_steer=self._max_steer)
-            dt = self._dt
-            total_s = self._path_s[-1] if self._path_s else 0.0
-
-            sim_idx = 0
-            sim_spin_brg = None
-            turn_indices = set(getattr(self, '_corridor_turn_indices', set()))
-            max_cte = 0.0
-            trace = []  # [(lat, lon, speed, cte), ...]
-            last_trace_s = -sample_dist  # force first point
-
-            for _ in range(int(600.0 / dt)):
-                cos_lat = math.cos(math.radians(rover.lat)) or 1e-9
-                rlat = rover.lat + (half_bm * math.cos(rover.heading_rad)) / 111320.0
-                rlon = rover.lon + (half_bm * math.sin(rover.heading_rad)) / (111320.0 * cos_lat)
-                flat = rover.lat + (baseline * math.cos(rover.heading_rad)) / 111320.0
-                flon = rover.lon + (baseline * math.sin(rover.heading_rad)) / (111320.0 * cos_lat)
-                heading = rover.heading_deg
-
-                # Nearest on path — 5 segments ahead (smoother than real 3)
-                best_s, best_seg, best_dist = 0.0, sim_idx, float('inf')
-                search_limit = min(sim_idx + 5, len(self._path))
-                for ti in sorted(turn_indices):
-                    if ti > sim_idx:
-                        search_limit = min(search_limit, ti)
-                        break
-                for seg_k in range(sim_idx, search_limit):
-                    if seg_k == 0:
-                        a_lat = self._path_origin_lat or wp0.latitude
-                        a_lon = self._path_origin_lon or wp0.longitude
-                        s_a = 0.0
-                    else:
-                        a_lat = self._path[seg_k - 1].latitude
-                        a_lon = self._path[seg_k - 1].longitude
-                        s_a = self._path_s[seg_k - 1]
-                    b_lat = self._path[seg_k].latitude
-                    b_lon = self._path[seg_k].longitude
-                    s_b = self._path_s[seg_k]
-                    mid = math.radians((a_lat + b_lat) / 2)
-                    cl = math.cos(mid) or 1e-9
-                    ml, mo = 111320.0, 111320.0 * cl
-                    sy = (b_lat - a_lat) * ml
-                    sx = (b_lon - a_lon) * mo
-                    sl = math.hypot(sx, sy)
-                    if sl < 0.01:
-                        d = haversine(rlat, rlon, b_lat, b_lon)
-                        if d < best_dist:
-                            best_dist, best_s, best_seg = d, s_b, seg_k
-                        continue
-                    ry = (rlat - a_lat) * ml
-                    rx = (rlon - a_lon) * mo
-                    t = max(0.0, min(1.0, (rx * sx + ry * sy) / sl ** 2))
-                    d = math.hypot(t * sx - rx, t * sy - ry)
-                    if d < best_dist:
-                        best_dist = d
-                        best_s = s_a + t * (s_b - s_a)
-                        best_seg = seg_k
-                s_nearest = best_s
-                seg_idx = best_seg
-
-                if s_nearest >= total_s - self._accept_r:
-                    break
-
-                cte = self._cte_to_seg(flat, flon, seg_idx)
-                abs_cte = abs(cte)
-                if abs_cte > max_cte:
-                    max_cte = abs_cte
-
-                # Advance sim_idx
-                if seg_idx > sim_idx:
-                    limit = len(self._path)
-                    for ti in sorted(turn_indices):
-                        if ti > sim_idx:
-                            limit = ti
-                            break
-                    sim_idx = min(seg_idx, limit)
-
-                # Sample trace at regular distance intervals
-                if s_nearest - last_trace_s >= sample_dist:
-                    wp_ref = self._path[min(seg_idx, len(self._path) - 1)]
-                    trace.append((rlat, rlon, wp_ref.speed * speed_scale, abs_cte))
-                    last_trace_s = s_nearest
-
-                # Turn handling
-                turn_s = None
-                turn_idx = None
-                for ti in sorted(turn_indices):
-                    if ti < len(self._path_s) and self._path_s[ti] >= s_nearest - self._accept_r:
-                        turn_s = self._path_s[ti]
-                        turn_idx = ti
-                        break
-                if turn_s is not None and s_nearest > turn_s:
-                    s_nearest = turn_s
-
-                # Lookahead
-                s_limit = turn_s if turn_s is not None else total_s
-                s_look = min(s_nearest + self._lookahead, s_limit)
-                la_lat, la_lon = self._point_at_s(s_look)
-                target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
-
-                if sim_spin_brg is not None:
-                    target_bearing = sim_spin_brg
-                heading_err = ((target_bearing - heading + 180) % 360) - 180
-
-                # Speed
-                wp_spd = self._path[min(seg_idx, len(self._path) - 1)]
-                target_spd = (wp_spd.speed if wp_spd.speed > 0 else self._max_speed) * speed_scale
-                cte_factor = max(0.0, 1.0 - abs_cte / max(self._stanley_cte_scale, 0.01))
-                v_mps = max(self._min_speed, target_spd * cte_factor)
-
-                if turn_s is not None:
-                    dist_to_turn = turn_s - s_nearest
-                    if dist_to_turn < self._pivot_approach_dist:
-                        v_mps = max(self._min_speed, v_mps * (dist_to_turn / self._pivot_approach_dist))
-
-                # Spin
-                if abs(heading_err) > self._align_thresh:
-                    if sim_spin_brg is None:
-                        sim_spin_brg = target_bearing
-                    sf = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
-                    rover.update(1500, int(1500 - sf * 500), self._max_speed, 0.6, dt)
-                    continue
-                if sim_spin_brg is not None and abs(heading_err) < self._hdb:
-                    sim_spin_brg = None
-
-                # Stanley
-                stanley_ang = heading_err + math.degrees(
-                    math.atan2(self._stanley_k * cte, max(v_mps, self._stanley_softening)))
-                stanley_ang = max(-90.0, min(90.0, stanley_ang))
-                sf = max(-self._max_steer, min(self._max_steer, stanley_ang / 45.0))
-                thr = int(1500 + (v_mps / self._max_speed) * 500)
-                rover.update(thr, int(1500 - sf * 500), self._max_speed, 0.6, dt)
+            # Run the existing preflight sim (has pivot logic, works correctly)
+            result = self._sim_validate_path()
+            max_cte = result.get('max_cte', 99)
+            sim_path = result.get('sim_path', [])
 
             self.get_logger().info(
                 f'Smoother iter {iteration}: max_cte={max_cte:.3f}m '
-                f'speed_scale={speed_scale:.2f} trace={len(trace)} pts')
+                f'speed_scale={speed_scale:.2f} trace={len(sim_path)} pts')
 
             if max_cte <= CTE_TARGET or speed_scale <= 0.3:
                 break
-            speed_scale *= 0.7  # reduce speed and retry
 
-        if not trace or len(trace) < 2:
-            self.get_logger().warn('Smoother produced empty trace — keeping original path')
+            # Restore original path for next iteration with lower speed
+            self._path = [self._clone_wp(wp) for wp in original_path]
+            self._path_s = list(original_path_s)
+            self._bypass_indices = set(original_bypass)
+            self._corridor_turn_indices = set(original_turns)
+            speed_scale *= 0.7
+
+        if not sim_path or len(sim_path) < 2:
+            self.get_logger().warn('Smoother: sim trace too short — keeping original path')
+            self._path = original_path
+            self._path_s = original_path_s
+            self._bypass_indices = original_bypass
+            self._corridor_turn_indices = original_turns
             return
 
-        # Replace path with sim trace
+        # Replace path with sim trace (sampled every ~1 sim-second)
         new_path = []
-        for lat, lon, spd, _ in trace:
+        for lat, lon in sim_path:
             wp = MissionWaypoint()
             wp.seq = len(new_path)
             wp.latitude = lat
             wp.longitude = lon
-            wp.speed = max(self._min_speed, spd)
+            wp.speed = self._max_speed * speed_scale
             wp.hold_secs = 0.0
             wp.acceptance_radius = self._accept_r
             new_path.append(wp)
 
         self._path = new_path
-        self._bypass_indices = set()  # all points are now natural path
-        self._corridor_turn_indices = {0}  # keep start alignment
+        self._bypass_indices = set()
+        self._corridor_turn_indices = {0}
         origin_lat = self._path_origin_lat or new_path[0].latitude
         origin_lon = self._path_origin_lon or new_path[0].longitude
         self._path_s = self._rebuild_path_s(new_path, origin_lat, origin_lon)
 
         self.get_logger().info(
-            f'Path smoothed by Stanley sim: {len(new_path)} pts, '
+            f'Path smoothed: {len(new_path)} pts, '
             f'max_cte={max_cte:.3f}m, speed_scale={speed_scale:.2f}')
+
+    def _clone_wp(self, wp: MissionWaypoint) -> MissionWaypoint:
+        c = MissionWaypoint()
+        c.seq = wp.seq
+        c.latitude = wp.latitude
+        c.longitude = wp.longitude
+        c.speed = wp.speed
+        c.hold_secs = wp.hold_secs
+        c.acceptance_radius = wp.acceptance_radius
+        return c
 
     def _reroute_path(self):
         """
