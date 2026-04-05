@@ -1858,6 +1858,54 @@ class NavigatorNode(Node):
         self.get_logger().info(
             f'A-star smoothed: {len(self._path)} total pts')
 
+        # Run Stanley sim through the A-star+Chaikin path for physics-based refinement
+        orig_speeds = [(wp.latitude, wp.longitude,
+                        wp.speed if wp.speed > 0 else self._max_speed)
+                       for wp in self._path]
+        result = self._sim_validate_path()
+        sim_trace = result.get('sim_path', [])
+        if sim_trace and len(sim_trace) >= 2:
+            # Replace path with sim trace
+            new_path = []
+            for lat, lon in sim_trace:
+                base_spd = self._max_speed
+                best_d = float('inf')
+                for olat, olon, ospd in orig_speeds:
+                    d = haversine(lat, lon, olat, olon)
+                    if d < best_d:
+                        best_d = d
+                        base_spd = ospd
+                wp = MissionWaypoint()
+                wp.seq = len(new_path)
+                wp.latitude = lat
+                wp.longitude = lon
+                wp.speed = base_spd
+                wp.hold_secs = 0.0
+                wp.acceptance_radius = self._accept_r
+                new_path.append(wp)
+            # Drop sim points inside obstacles
+            clean_path = []
+            for wp in new_path:
+                inside = False
+                for poly in self._expanded_polygons:
+                    if self._point_in_polygon(wp.latitude, wp.longitude, poly):
+                        inside = True
+                        break
+                if not inside:
+                    clean_path.append(wp)
+            if len(clean_path) >= 2:
+                self._path = clean_path
+                self._bypass_indices = set()
+                self._corridor_turn_indices = {0}
+                self._path_s = self._rebuild_path_s(
+                    clean_path,
+                    self._path_origin_lat or clean_path[0].latitude,
+                    self._path_origin_lon or clean_path[0].longitude)
+                self.get_logger().info(
+                    f'Sim refinement: {len(clean_path)} pts '
+                    f'(dropped {len(new_path) - len(clean_path)} inside obstacles), '
+                    f'max_cte={result.get("max_cte", 0):.3f}m')
+
     @staticmethod
     def _point_in_polygon(lat: float, lon: float, poly: list) -> bool:
         """Ray-casting point-in-polygon test."""
