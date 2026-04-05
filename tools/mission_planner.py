@@ -1572,15 +1572,8 @@ canvas.addEventListener('mousedown', e => {
 
 canvas.addEventListener('mousemove', e => {
   const {offsetX: x, offsetY: y} = e;
-  // Measure overlay — update position and schedule redraw
-  if (measureMode && !_drag) {
-    _measurePos = {x, y};
-    if (!_rafPending) {
-      _rafPending = true;
-      requestAnimationFrame(() => { redraw(); _rafPending = false; });
-    }
-    return;
-  }
+  // Measure mode: no hover tracking — click-based only
+  if (measureMode && !_drag) return;
   if (!_drag) return;
   _didDrag = true;
   if (_drag.type === 'pan') {
@@ -1660,6 +1653,28 @@ canvas.addEventListener('mouseleave', () => {
 canvas.addEventListener('click', e => {
   if (_didDrag) return;
   const {offsetX: x, offsetY: y} = e;
+  if (measureMode) {
+    // Click on a waypoint or obstacle vertex to measure
+    const wi = hitWaypoint(x, y);
+    const oh = hitObstacleVertex(x, y);
+    if (wi >= 0) {
+      const pts = (optimizedPath && optimizedPath.length) ? optimizedPath : waypoints;
+      if (wi < pts.length) {
+        const p = project(pts[wi].lat, pts[wi].lon);
+        _measurePos = {x: p.x, y: p.y};
+        redraw();
+      }
+    } else if (oh && oh.vert >= 0) {
+      const p = project(obstacles[oh.poly][oh.vert][0], obstacles[oh.poly][oh.vert][1]);
+      _measurePos = {x: p.x, y: p.y};
+      redraw();
+    } else {
+      // Click empty space — measure from that point
+      _measurePos = {x, y};
+      redraw();
+    }
+    return;
+  }
   if (addMode) {
     const ll = unproject(x, y);
     addWp(ll.lat, ll.lon);
