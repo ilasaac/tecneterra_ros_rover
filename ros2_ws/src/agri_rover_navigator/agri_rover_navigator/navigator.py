@@ -1760,7 +1760,7 @@ class NavigatorNode(Node):
     def _smooth_bypass_corners(self):
         """Smooth only the bypass zone using the preflight sim.
 
-        1. Find bypass zone (first..last bypass index) + margin (bypass_arc_radius_m metres)
+        1. Find bypass zone (first..last bypass index) + margin
         2. Extract that sub-path, run sim through it
         3. Replace only that section with the sim trace
         4. Keep the rest of the original path untouched
@@ -1773,7 +1773,6 @@ class NavigatorNode(Node):
         if margin_m <= 0:
             return
 
-        # Find bypass zone boundaries
         first_bp = min(self._bypass_indices)
         last_bp = max(self._bypass_indices)
 
@@ -2155,9 +2154,17 @@ class NavigatorNode(Node):
         self._holding       = False
         self._pivoting      = False
 
+        # Save entry/exit GPS anchors for final validation
+        _entry_ll = None
+        _exit_ll = None
+        if new_bypass_indices:
+            bp_sorted = sorted(new_bypass_indices)
+            entry_idx = max(0, bp_sorted[0] - 1)
+            exit_idx = min(len(self._path) - 1, bp_sorted[-1] + 1)
+            _entry_ll = (self._path[entry_idx].latitude, self._path[entry_idx].longitude)
+            _exit_ll = (self._path[exit_idx].latitude, self._path[exit_idx].longitude)
+
         # Reduce redundant bypass points — 3 passes, front to back.
-        # Goal: skip to the point closest to the EXIT of the bypass zone,
-        # eliminating zigzag vertices that don't help reach the destination.
         if new_bypass_indices:
             total_removed = 0
             for reduce_pass in range(3):
@@ -2246,6 +2253,20 @@ class NavigatorNode(Node):
                 origin_lat = self._path_origin_lat or self._path[0].latitude
                 origin_lon = self._path_origin_lon or self._path[0].longitude
                 self._path_s = self._rebuild_path_s(self._path, origin_lat, origin_lon)
+
+        # Final validation: entry/exit GPS anchors must still exist in path
+        if _entry_ll and _exit_ll:
+            entry_ok = any(
+                haversine(wp.latitude, wp.longitude, _entry_ll[0], _entry_ll[1]) < 0.1
+                for wp in self._path)
+            exit_ok = any(
+                haversine(wp.latitude, wp.longitude, _exit_ll[0], _exit_ll[1]) < 0.1
+                for wp in self._path)
+            if entry_ok and exit_ok:
+                self.get_logger().info('Bypass anchors validated: entry/exit GPS intact')
+            else:
+                self.get_logger().warn(
+                    f'Bypass anchor MISMATCH: entry={entry_ok} exit={exit_ok}')
 
         self._publish_full_path()
         self._path_version += 1
