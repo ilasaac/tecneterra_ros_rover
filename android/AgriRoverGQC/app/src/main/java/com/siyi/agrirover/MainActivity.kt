@@ -973,7 +973,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
             overlays.clear()
         }
-        for ((roverId, _) in roverMissions) {
+        // Iterate all rovers that have either uploaded mission or rerouted path
+        val allRoverIds = roverMissions.keys + roverReroutedPaths.keys
+        for (roverId in allRoverIds) {
             if (roverMissionVisible[roverId] == false) continue
 
             // Use rerouted path (what rover actually follows) if available,
