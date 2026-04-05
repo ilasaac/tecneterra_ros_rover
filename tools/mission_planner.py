@@ -59,8 +59,80 @@ def _parse_nmea_coord(raw: str, hemi: str) -> float | None:
         return None
 
 
+def _load_ntrip_env() -> dict:
+    """Load NTRIP credentials from tools/.env.rtk (same as rover's rtk_forwarder)."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env.rtk')
+    cfg = {}
+    if os.path.isfile(env_path):
+        for line in open(env_path):
+            line = line.strip()
+            if '=' in line and not line.startswith('#'):
+                k, v = line.split('=', 1)
+                cfg[k.strip()] = v.strip()
+    return cfg
+
+
+def _ntrip_thread(ser, stop_event):
+    """Background thread: connect to NTRIP caster, forward RTCM3 to u-blox serial."""
+    import socket, base64
+    cfg = _load_ntrip_env()
+    host = cfg.get('NTRIP_HOST', '')
+    port = int(cfg.get('NTRIP_PORT', 2101))
+    user = cfg.get('NTRIP_USER', '')
+    passwd = cfg.get('NTRIP_PASS', '')
+    mount = cfg.get('NTRIP_MOUNT', '')
+    if not host or not mount:
+        print('[ntrip] No NTRIP config in tools/.env.rtk — skipping corrections', flush=True)
+        return
+    print(f'[ntrip] Connecting to {host}:{port}/{mount}...', flush=True)
+    while not stop_event.is_set():
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10.0)
+            sock.connect((host, port))
+            creds = base64.b64encode(f'{user}:{passwd}'.encode()).decode()
+            req = (f'GET /{mount} HTTP/1.0\r\n'
+                   f'User-Agent: NTRIP AgriRover/1.0\r\n'
+                   f'Authorization: Basic {creds}\r\n\r\n')
+            sock.sendall(req.encode())
+            # Read response header
+            hdr = b''
+            while b'\r\n\r\n' not in hdr and not stop_event.is_set():
+                hdr += sock.recv(1024)
+            if b'200' not in hdr.split(b'\r\n')[0]:
+                print(f'[ntrip] Rejected: {hdr[:100]}', flush=True)
+                sock.close()
+                _time.sleep(5)
+                continue
+            print(f'[ntrip] Connected — forwarding RTCM3 to GPS', flush=True)
+            # Stream RTCM3 to serial
+            sock.settimeout(30.0)
+            total = 0
+            while not stop_event.is_set():
+                try:
+                    data = sock.recv(4096)
+                except socket.timeout:
+                    print('[ntrip] No data for 30s — reconnecting', flush=True)
+                    break
+                if not data:
+                    print('[ntrip] Stream closed — reconnecting', flush=True)
+                    break
+                try:
+                    ser.write(data)
+                    total += len(data)
+                except Exception:
+                    break
+            sock.close()
+        except Exception as e:
+            print(f'[ntrip] Error: {e} — retrying in 5s', flush=True)
+        if not stop_event.is_set():
+            _time.sleep(5)
+    print(f'[ntrip] Stopped', flush=True)
+
+
 def _gps_reader(port: str, baud: int):
-    """Background thread: read NMEA from u-blox, update _gps_fix."""
+    """Background thread: read NMEA from u-blox, update _gps_fix.
+    Also starts NTRIP correction forwarding if .env.rtk exists."""
     import serial
     global _gps_serial
     try:
@@ -74,6 +146,11 @@ def _gps_reader(port: str, baud: int):
     with _gps_lock:
         _gps_serial = ser
     print(f'[gps] Opened {port} @ {baud}', flush=True)
+
+    # Start NTRIP correction thread (writes RTCM3 to same serial port)
+    ntrip_t = _threading.Thread(target=_ntrip_thread, args=(ser, _gps_stop), daemon=True)
+    ntrip_t.start()
+
     buf = b''
     while not _gps_stop.is_set():
         try:
