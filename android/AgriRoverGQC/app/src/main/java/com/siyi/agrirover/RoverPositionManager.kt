@@ -95,6 +95,8 @@ class RoverPositionManager(
     private val onHaccStatus: (Int, Float) -> Unit,
     /** Called when NAMED_VALUE_FLOAT "REROUTE" is received. pending=true means rover awaits confirmation. */
     private val onReroutePending: (Int, Boolean) -> Unit,
+    /** Called when obstacle polygons are received from the rover (mission_fence topic). */
+    private val onObstaclesReceived: (Int, List<List<Pair<Double, Double>>>) -> Unit = { _, _ -> },
 ) {
     private val PORT        = 14550
     private val MASTER_SYSID = 1
@@ -183,7 +185,8 @@ class RoverPositionManager(
                 // Subscribe to topics — no type field (rosbridge auto-detects)
                 val topics = listOf("center_pos", "heading", "nav_status",
                     "wp_active", "xte", "armed", "rerouted_path",
-                    "rc_input", "cmd_override", "rtk_status", "sensors", "reroute_pending")
+                    "rc_input", "cmd_override", "rtk_status", "sensors",
+                    "reroute_pending", "mission_fence")
                 for (t in topics) {
                     webSocket.send("""{"op":"subscribe","topic":"$ns/$t"}""")
                 }
@@ -275,6 +278,31 @@ class RoverPositionManager(
                         topic.endsWith("/reroute_pending") -> {
                             val pending = msg.optBoolean("data", false)
                             scope.launch(Dispatchers.Main) { onReroutePending(sysId, pending) }
+                        }
+                        topic.endsWith("/mission_fence") -> {
+                            // Parse {"polygons": [[[lat,lon],...], ...]}
+                            val jsonStr = msg.optString("data", "")
+                            if (jsonStr.isNotEmpty()) {
+                                try {
+                                    val obj = org.json.JSONObject(jsonStr)
+                                    val polys = obj.optJSONArray("polygons")
+                                    if (polys != null) {
+                                        val obstacles = mutableListOf<List<Pair<Double, Double>>>()
+                                        for (i in 0 until polys.length()) {
+                                            val poly = polys.getJSONArray(i)
+                                            val verts = mutableListOf<Pair<Double, Double>>()
+                                            for (j in 0 until poly.length()) {
+                                                val pt = poly.getJSONArray(j)
+                                                verts.add(Pair(pt.getDouble(0), pt.getDouble(1)))
+                                            }
+                                            obstacles.add(verts)
+                                        }
+                                        scope.launch(Dispatchers.Main) { onObstaclesReceived(sysId, obstacles) }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("ROSBRIDGE", "mission_fence parse: ${e.message}")
+                                }
+                            }
                         }
                         topic.endsWith("/cmd_override") -> {
                             // Autonomous output — already in PPM order, show when in AUTO

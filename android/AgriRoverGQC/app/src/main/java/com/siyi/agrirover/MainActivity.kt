@@ -363,6 +363,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 if (pending && sysId == selectedRoverId) showRerouteConfirmation(sysId)
             }
         },
+        onObstaclesReceived = { _, obstacles ->
+            runOnUiThread {
+                obstaclePolygons.clear()
+                for (poly in obstacles) {
+                    obstaclePolygons.add(poly.map { LatLng(it.first, it.second) })
+                }
+                redrawObstacleOverlays()
+            }
+        },
     )
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────
