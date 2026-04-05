@@ -615,9 +615,9 @@ class NavigatorNode(Node):
     # ── Live parameter tuning ─────────────────────────────────────────────────
 
     def _publish_nav_status(self):
-        """Publish navigator status: NA (no mission), MSL (mission loaded), ARM (armed+autonomous).
+        """Publish navigator status: NA (no mission), MSL (mission loaded), ARM (armed).
         Also re-publishes rerouted_path every 5s so late rosbridge subscribers get it."""
-        if self._armed and self._mode == 'AUTONOMOUS':
+        if self._armed:
             status = 'ARM'
         elif self._path:
             status = 'MSL'
