@@ -2463,20 +2463,9 @@ class NavigatorNode(Node):
                 if dist_to_turn < approach:
                     v_mps = max(self._min_speed, v_mps * (dist_to_turn / approach))
 
-            # Large heading error → spin ONLY at turn points (not mid-corridor)
-            if abs(heading_err) > self._align_thresh and turn_idx is not None and sim_path_idx in turn_indices:
-                if sim_spin_brg is None:
-                    sim_spin_brg = target_bearing
-                steer_frac = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
-                steer_ppm = int(1500 - steer_frac * 500)
-                _log(rlat, rlon, heading, target_bearing, heading_err, cte,
-                     steer_frac, steer_ppm, 1500, 0,
-                     total_s - s_nearest, seg_idx, 'sim-spin')
-                rover.update(1500, steer_ppm, self._max_speed, 0.6, dt)
-                sim_time += dt
-                continue
-            if sim_spin_brg is not None and abs(heading_err) < self._hdb:
-                sim_spin_brg = None
+            # No general spin in sim — pivot code handles turn rotation,
+            # Stanley handles mid-corridor heading corrections naturally.
+            sim_spin_brg = None
 
             # Stanley steering
             stanley_ang = heading_err + math.degrees(
