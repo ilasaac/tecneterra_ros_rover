@@ -1447,11 +1447,15 @@ function toggleMeasureMode() {
 // Nearest point on the planned route (canvas pixel coords).
 // Returns {px, py, distPx, segIdx} or null if no route.
 function nearestOnRoute(mx, my) {
-  if (waypoints.length < 2) return null;
+  // Check optimizedPath first, then waypoints
+  const pts = (optimizedPath && optimizedPath.length)
+    ? optimizedPath.map(p => ({lat: p.lat, lon: p.lon}))
+    : waypoints;
+  if (pts.length < 2) return null;
   let best = null;
-  for (let i = 0; i + 1 < waypoints.length; i++) {
-    const p1 = project(waypoints[i].lat,   waypoints[i].lon);
-    const p2 = project(waypoints[i+1].lat, waypoints[i+1].lon);
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const p1 = project(pts[i].lat, pts[i].lon);
+    const p2 = project(pts[i+1].lat, pts[i+1].lon);
     const dx = p2.x - p1.x, dy = p2.y - p1.y;
     const len2 = dx*dx + dy*dy;
     let t = 0;
@@ -1463,35 +1467,66 @@ function nearestOnRoute(mx, my) {
   return best;
 }
 
+function nearestOnObstacles(mx, my) {
+  let best = null;
+  for (const poly of obstacles) {
+    for (let i = 0; i < poly.length; i++) {
+      const j = (i + 1) % poly.length;
+      const p1 = project(poly[i][0], poly[i][1]);
+      const p2 = project(poly[j][0], poly[j][1]);
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const len2 = dx*dx + dy*dy;
+      let t = 0;
+      if (len2 > 0) t = Math.max(0, Math.min(1, ((mx-p1.x)*dx + (my-p1.y)*dy) / len2));
+      const cx = p1.x + t*dx, cy = p1.y + t*dy;
+      const d = Math.hypot(mx - cx, my - cy);
+      if (!best || d < best.distPx) best = {px: cx, py: cy, distPx: d};
+    }
+  }
+  return best;
+}
+
 function drawMeasureOverlay() {
-  if (!measureMode || !_measurePos || waypoints.length < 2) return;
+  if (!measureMode || !_measurePos) return;
   const {x, y} = _measurePos;
   const near = nearestOnRoute(x, y);
-  if (!near) return;
+  const nearObs = nearestOnObstacles(x, y);
 
-  const distM = near.distPx / scale;  // px ÷ (px/m) = metres
+  if (!near && !nearObs) return;
 
-  // Dashed line from cursor to nearest route point
-  ctx.save();
-  ctx.setLineDash([5, 4]);
-  ctx.strokeStyle = '#FFD600';
-  ctx.lineWidth   = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(x, y);
-  ctx.lineTo(near.px, near.py);
-  ctx.stroke();
-  ctx.restore();
+  // Line to nearest route point (yellow)
+  if (near) {
+    const distM = near.distPx / scale;
+    ctx.save(); ctx.setLineDash([5, 4]); ctx.strokeStyle = '#FFD600'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(near.px, near.py); ctx.stroke(); ctx.restore();
+    ctx.beginPath(); ctx.arc(near.px, near.py, 5, 0, Math.PI*2);
+    ctx.fillStyle = '#FFD600'; ctx.fill();
+  }
+
+  // Line to nearest obstacle edge (red)
+  if (nearObs) {
+    const distO = nearObs.distPx / scale;
+    ctx.save(); ctx.setLineDash([3, 3]); ctx.strokeStyle = '#F44336'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nearObs.px, nearObs.py); ctx.stroke(); ctx.restore();
+    ctx.beginPath(); ctx.arc(nearObs.px, nearObs.py, 5, 0, Math.PI*2);
+    ctx.fillStyle = '#F44336'; ctx.fill();
+  }
 
   // Dot at cursor
   ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2);
   ctx.fillStyle = '#FFD600'; ctx.fill();
 
-  // Dot at nearest route point
-  ctx.beginPath(); ctx.arc(near.px, near.py, 5, 0, Math.PI*2);
-  ctx.fillStyle = '#FFD600'; ctx.fill();
-
-  // Distance label — flip side if too close to right edge
-  const label  = distM < 1 ? `${(distM*100).toFixed(1)} cm` : `${distM.toFixed(3)} m`;
+  // Label with both distances
+  const parts = [];
+  if (near) {
+    const d = near.distPx / scale;
+    parts.push(`Route: ${d < 1 ? (d*100).toFixed(1) + ' cm' : d.toFixed(3) + ' m'}`);
+  }
+  if (nearObs) {
+    const d = nearObs.distPx / scale;
+    parts.push(`Obs: ${d < 1 ? (d*100).toFixed(1) + ' cm' : d.toFixed(3) + ' m'}`);
+  }
+  const label = parts.join('  ');
   const padX   = 7, padY = 4;
   ctx.font     = 'bold 12px monospace';
   const tw     = ctx.measureText(label).width;
