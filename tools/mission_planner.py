@@ -741,14 +741,15 @@ tr:hover td{background:#1e1e3a}
            style="width:38px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 1px;border-radius:2px;font-size:10px">
     <button onclick="applyBulkServo()" style="padding:2px 5px;font-size:10px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer" title="Set CH5-CH8 for all points">Srv&#10003;</button>
   </div>
-  <div id="wp-list" style="flex:1;overflow-y:auto;min-height:60px;max-height:35vh">
+  <div id="wp-list" style="overflow-y:auto;overflow-x:hidden;min-height:40px;height:200px">
     <table>
       <thead><tr><th style="width:18px">#</th><th style="width:28px">Spd</th><th style="width:12px">T</th><th style="width:30px">5</th><th style="width:30px">6</th><th style="width:30px">7</th><th style="width:30px">8</th></tr></thead>
       <tbody id="wp-tbody"></tbody>
     </table>
   </div>
+  <div id="wp-resize" style="height:6px;background:#333;cursor:ns-resize;flex-shrink:0" title="Drag to resize"></div>
   <!-- ── Analyze section (permanent) ── -->
-  <div id="analyze-panel" style="display:flex;flex-direction:column;max-height:30vh;overflow-y:auto">
+  <div id="analyze-panel" style="display:flex;flex-direction:column;flex:1;overflow-y:auto;overflow-x:hidden">
     <div style="padding:4px 8px;background:#0a1a3a;border-top:2px solid #1a5aaa;border-bottom:1px solid #333">
       <b style="color:#8cf;font-size:12px">ANALYSIS</b>
     </div>
@@ -1446,6 +1447,21 @@ canvas.addEventListener('mouseleave', () => {
   canvas.style.cursor = 'default';
   if (measureMode) redraw();
 });
+
+// ── WP table resize handle ────────────────────────────────────────
+{
+  const handle = document.getElementById('wp-resize');
+  const wpList = document.getElementById('wp-list');
+  let startY = 0, startH = 0;
+  handle.addEventListener('mousedown', e => {
+    startY = e.clientY; startH = wpList.offsetHeight;
+    const onMove = ev => { wpList.style.height = Math.max(40, startH + ev.clientY - startY) + 'px'; };
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    e.preventDefault();
+  });
+}
 
 canvas.addEventListener('click', e => {
   if (_didDrag) return;
