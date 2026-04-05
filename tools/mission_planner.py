@@ -1051,8 +1051,14 @@ tr:hover td{background:#1e1e3a}
     </select>
   </div>
 
-  <label style="margin-top:7px">Speed (m/s, 0 = navigator default)</label>
+  <label style="margin-top:7px">Speed (m/s, 0 = default)</label>
   <input id="gen-speed" type="number" value="1.0" min="0" max="1.5" step="0.1">
+  <div style="display:flex;gap:3px;align-items:center;margin-top:4px">
+    <label style="margin:0">CH5</label><input id="gen-ch5" type="number" value="1500" min="1000" max="2000" step="50" style="width:45px">
+    <label style="margin:0">CH6</label><input id="gen-ch6" type="number" value="1500" min="1000" max="2000" step="50" style="width:45px">
+    <label style="margin:0">CH7</label><input id="gen-ch7" type="number" value="1500" min="1000" max="2000" step="50" style="width:45px">
+    <label style="margin:0">CH8</label><input id="gen-ch8" type="number" value="1500" min="1000" max="2000" step="50" style="width:45px">
+  </div>
   <label>Center on</label>
   <select id="gen-center">
     <option value="view">View centre</option>
@@ -1834,6 +1840,28 @@ function refreshTable() {
         gi++;
       });
     });
+    return;
+  }
+  // Fallback: show raw waypoints with speed + servo
+  if (waypoints.length) {
+    waypoints.forEach((wp, i) => {
+      const tr = document.createElement('tr');
+      const spd = wp.speed || 0;
+      const spdColor = spd < 0 ? '#ffeb3b' : spd <= 0.5 ? '#ff9800' : '#ccc';
+      const s = wp.servos || {};
+      const c5 = s[5]||s['5']||''; const c6 = s[6]||s['6']||'';
+      const c7 = s[7]||s['7']||''; const c8 = s[8]||s['8']||'';
+      const ss = 'font-size:8px;cursor:pointer;color:#5a8;padding:0 1px';
+      tr.innerHTML = `
+        <td style="color:#666;font-size:9px;padding:0 2px">${i}</td>
+        <td style="color:${spdColor};padding:0 2px">${spd.toFixed(1)}</td>
+        <td style="padding:0 1px">${spd < 0 ? '<span style="color:#ffeb3b">T</span>' : ''}</td>
+        <td style="${ss}">${c5||'-'}</td>
+        <td style="${ss}">${c6||'-'}</td>
+        <td style="${ss}">${c7||'-'}</td>
+        <td style="${ss}">${c8||'-'}</td>`;
+      tb.appendChild(tr);
+    });
   }
 }
 
@@ -2520,6 +2548,12 @@ function offsetLatLon(lat0, lon0, dNorth, dEast) {
 function applyGenerate(append) {
   const pat   = document.getElementById('gen-pattern').value;
   const spd   = parseFloat(document.getElementById('gen-speed').value) || 0;
+  const genServos = {
+    '5': parseInt(document.getElementById('gen-ch5').value) || 1500,
+    '6': parseInt(document.getElementById('gen-ch6').value) || 1500,
+    '7': parseInt(document.getElementById('gen-ch7').value) || 1500,
+    '8': parseInt(document.getElementById('gen-ch8').value) || 1500,
+  };
   const cMode = document.getElementById('gen-center').value;
   let cLat, cLon;
   if (cMode === 'start') {
@@ -2543,7 +2577,7 @@ function applyGenerate(append) {
         const [lat, lon] = offsetLatLon(cLat, cLon,
           a * Math.cos(hdg) - p * Math.sin(hdg),
           a * Math.sin(hdg) + p * Math.cos(hdg));
-        pts.push({lat, lon, speed: spd, hold_secs: 0});
+        pts.push({lat, lon, speed: spd, hold_secs: 0, servos: {...genServos}});
       }
       if (r % 2 === 1) pts.reverse();
       newWps.push(...pts);
@@ -2561,7 +2595,7 @@ function applyGenerate(append) {
       const [lat, lon] = offsetLatLon(cLat, cLon,
         along * Math.cos(hdg) - perp * Math.sin(hdg),
         along * Math.sin(hdg) + perp * Math.cos(hdg));
-      newWps.push({lat, lon, speed: spd, hold_secs: 0});
+      newWps.push({lat, lon, speed: spd, hold_secs: 0, servos: {...genServos}});
     }
 
   } else if (pat === 'scatter') {
@@ -2574,7 +2608,7 @@ function applyGenerate(append) {
     for (let i = 0; i < nPts; i++) {
       const r = radius * Math.sqrt(rnd()), ang = rnd() * 2 * Math.PI;
       const [lat, lon] = offsetLatLon(cLat, cLon, r * Math.cos(ang), r * Math.sin(ang));
-      newWps.push({lat, lon, speed: spd, hold_secs: 0});
+      newWps.push({lat, lon, speed: spd, hold_secs: 0, servos: {...genServos}});
     }
 
   } else if (pat === 'spiral') {
@@ -2587,7 +2621,7 @@ function applyGenerate(append) {
       const r     = armSp * theta / (2 * Math.PI);
       const [lat, lon] = offsetLatLon(cLat, cLon,
         r * Math.cos(theta - Math.PI / 2), r * Math.sin(theta - Math.PI / 2));
-      newWps.push({lat, lon, speed: spd, hold_secs: 0});
+      newWps.push({lat, lon, speed: spd, hold_secs: 0, servos: {...genServos}});
     }
 
   } else if (pat === 'corridor') {
@@ -2608,6 +2642,7 @@ function applyGenerate(append) {
       .then(d => {
         if (!d.ok) { alert('Corridor error: ' + d.error); return; }
         if (!append) { waypoints = []; simResult = null; }
+        d.waypoints.forEach(w => { w.servos = {...genServos}; });
         waypoints.push(...d.waypoints);
         window._lastCorridorJson = d.corridor_json;
         redraw();
