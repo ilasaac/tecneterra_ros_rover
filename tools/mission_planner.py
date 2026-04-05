@@ -727,13 +727,19 @@ tr:hover td{background:#1e1e3a}
     <input id="bulk-speed" type="number" value="1.0" min="0" max="1.5" step="0.1"
            style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 3px;border-radius:2px;font-size:11px">
     <button onclick="applyBulkSpeed()" style="padding:2px 5px;font-size:10px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer">&#10003;</button>
-    <span style="color:#888;font-size:10px;margin-left:4px">CH5:</span>
+    <span style="color:#888;font-size:9px;margin-left:3px">5:</span>
     <input id="bulk-ch5" type="number" value="1500" min="1000" max="2000" step="50"
-           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 2px;border-radius:2px;font-size:10px">
-    <span style="color:#888;font-size:10px">CH6:</span>
+           style="width:38px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 1px;border-radius:2px;font-size:10px">
+    <span style="color:#888;font-size:9px">6:</span>
     <input id="bulk-ch6" type="number" value="1500" min="1000" max="2000" step="50"
-           style="width:42px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 2px;border-radius:2px;font-size:10px">
-    <button onclick="applyBulkServo()" style="padding:2px 5px;font-size:10px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer" title="Set CH5-CH6 for all points">Srv&#10003;</button>
+           style="width:38px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 1px;border-radius:2px;font-size:10px">
+    <span style="color:#888;font-size:9px">7:</span>
+    <input id="bulk-ch7" type="number" value="1500" min="1000" max="2000" step="50"
+           style="width:38px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 1px;border-radius:2px;font-size:10px">
+    <span style="color:#888;font-size:9px">8:</span>
+    <input id="bulk-ch8" type="number" value="1500" min="1000" max="2000" step="50"
+           style="width:38px;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 1px;border-radius:2px;font-size:10px">
+    <button onclick="applyBulkServo()" style="padding:2px 5px;font-size:10px;background:#0f3460;color:#fff;border:none;border-radius:2px;cursor:pointer" title="Set CH5-CH8 for all points">Srv&#10003;</button>
   </div>
   <div id="wp-list" style="flex:1;overflow-y:auto">
     <table>
@@ -2405,16 +2411,20 @@ function applyBulkSpeed() {
 function applyBulkServo() {
   const ch5 = parseInt(document.getElementById('bulk-ch5').value) || 1500;
   const ch6 = parseInt(document.getElementById('bulk-ch6').value) || 1500;
+  const ch7 = parseInt(document.getElementById('bulk-ch7').value) || 1500;
+  const ch8 = parseInt(document.getElementById('bulk-ch8').value) || 1500;
   waypoints.forEach(wp => {
     if (!wp.servos) wp.servos = {};
     wp.servos['5'] = ch5; wp.servos['6'] = ch6;
+    wp.servos['7'] = ch7; wp.servos['8'] = ch8;
   });
   if (optimizedPath) optimizedPath.forEach(pt => {
     if (!pt.servo) pt.servo = {};
     pt.servo[5] = ch5; pt.servo[6] = ch6;
+    pt.servo[7] = ch7; pt.servo[8] = ch8;
   });
   refreshTable();
-  status(`CH5=${ch5} CH6=${ch6} set on all points.`);
+  status(`CH5=${ch5} CH6=${ch6} CH7=${ch7} CH8=${ch8} set on all points.`);
 }
 
 function editCell(td, idx, field) {
