@@ -182,7 +182,8 @@ class RoverPositionManager(
                 rosbridgeConnected[sysId] = true
                 // Subscribe to topics — no type field (rosbridge auto-detects)
                 val topics = listOf("center_pos", "heading", "nav_status",
-                    "wp_active", "xte", "armed", "rerouted_path")
+                    "wp_active", "xte", "armed", "rerouted_path",
+                    "rc_input", "rtk_status", "sensors", "reroute_pending")
                 for (t in topics) {
                     webSocket.send("""{"op":"subscribe","topic":"$ns/$t"}""")
                 }
@@ -224,7 +225,49 @@ class RoverPositionManager(
                             scope.launch(Dispatchers.Main) { onArmState(sysId, armed) }
                         }
                         topic.endsWith("/xte") -> {
-                            // XTE available via rosbridge — could update HUD
+                            // XTE available via rosbridge
+                        }
+                        topic.endsWith("/rc_input") -> {
+                            // RCInput: channels[], mode, sbus_ok, rf_link_ok
+                            val chArr = msg.optJSONArray("channels")
+                            if (chArr != null) {
+                                val channels = IntArray(chArr.length()) { chArr.optInt(it, 1500) }
+                                val remapped = remapSbusToLogical(channels)
+                                roverPpmChannels[sysId] = remapped
+                                scope.launch(Dispatchers.Main) { onRcChannels(sysId, remapped) }
+                            }
+                            val sbusOk = msg.optBoolean("sbus_ok", true)
+                            val rfOk = msg.optBoolean("rf_link_ok", true)
+                            scope.launch(Dispatchers.Main) {
+                                onLinkStatus(sysId, "SBUS", sbusOk)
+                                onLinkStatus(sysId, "RF", rfOk)
+                            }
+                        }
+                        topic.endsWith("/rtk_status") -> {
+                            val rtk = msg.optString("data", "")
+                            val fixType = when {
+                                rtk.contains("RTK_FIX", true) || rtk == "6" -> 6
+                                rtk.contains("RTK_FLT", true) || rtk == "5" -> 5
+                                rtk.contains("DGPS", true) || rtk == "4" -> 4
+                                rtk.contains("3D", true) || rtk == "3" -> 3
+                                rtk.contains("GPS", true) || rtk == "1" -> 1
+                                else -> 0
+                            }
+                            scope.launch(Dispatchers.Main) { onGpsStatus(sysId, fixType) }
+                        }
+                        topic.endsWith("/sensors") -> {
+                            // SensorData: tank_level, temperature, humidity, pressure
+                            val tank = msg.optDouble("tank_level", 0.0).toFloat()
+                            val temp = msg.optDouble("temperature", 0.0).toFloat()
+                            val humid = msg.optDouble("humidity", 0.0).toFloat()
+                            // battery from tank_level for now
+                            scope.launch(Dispatchers.Main) {
+                                onSensorUpdate(sysId, 0f, temp, tank, humid)
+                            }
+                        }
+                        topic.endsWith("/reroute_pending") -> {
+                            val pending = msg.optBoolean("data", false)
+                            scope.launch(Dispatchers.Main) { onReroutePending(sysId, pending) }
                         }
                         topic.endsWith("/rerouted_path") -> {
                             // Parse [[lat, lon, bypass, speed, hold_secs], ...]
@@ -297,6 +340,21 @@ class RoverPositionManager(
         }
         val ns = "/rv$sysId"
         ws.send("""{"op":"publish","topic":"$ns/mode","type":"std_msgs/msg/String","msg":{"data":"$mode"}}""")
+    }
+
+    /** Send reroute confirmation via rosbridge. */
+    fun rosbridgeRerouteResponse(sysId: Int, accept: Boolean) {
+        val ws = rosbridgeWs[sysId] ?: return
+        val ns = "/rv$sysId"
+        ws.send("""{"op":"publish","topic":"$ns/reroute_response","type":"std_msgs/msg/Bool","msg":{"data":$accept}}""")
+    }
+
+    /** Send station coordinates via rosbridge. */
+    fun rosbridgeStationUpdate(sysId: Int, type: String, lat: Double, lon: Double) {
+        val ws = rosbridgeWs[sysId] ?: return
+        val ns = "/rv$sysId"
+        val json = """{"type":"$type","lat":$lat,"lon":$lon}"""
+        ws.send("""{"op":"publish","topic":"$ns/station_update","type":"std_msgs/msg/String","msg":{"data":"${json.replace("\"", "\\\"")}"}}""")
     }
 
     // ─── Public API ──────────────────────────────────────────────────────────
@@ -413,18 +471,19 @@ class RoverPositionManager(
      *  Use sysId=0 for broadcast (e.g. E-STOP to all rovers).
      */
     fun sendCommand(sysId: Int, commandId: Int, p1: Float, p2: Float) {
-        // Route ARM/DISARM and SET_MODE through rosbridge when connected (TCP reliable)
-        if (rosbridgeConnected[sysId] == true || (sysId == 0 && rosbridgeConnected.values.any { it })) {
-            val targets = if (sysId == 0) listOf(MASTER_SYSID, SLAVE_SYSID) else listOf(sysId)
-            for (t in targets) {
-                if (rosbridgeConnected[t] != true) continue
-                when (commandId) {
-                    400 -> { rosbridgeArm(t, p1 >= 1f); return }
-                    176 -> { rosbridgeSetMode(t, if (p2 == 0f) "MANUAL" else "AUTONOMOUS"); return }
-                }
+        // Route ALL commands through rosbridge when connected
+        val targets = if (sysId == 0) listOf(MASTER_SYSID, SLAVE_SYSID) else listOf(sysId)
+        for (t in targets) {
+            if (rosbridgeConnected[t] != true) continue
+            when (commandId) {
+                400 -> { rosbridgeArm(t, p1 >= 1f); return }
+                176 -> { rosbridgeSetMode(t, if (p2 == 0f) "MANUAL" else "AUTONOMOUS"); return }
+                50001 -> { rosbridgeStationUpdate(t, "recharge", (p1 / 1e5).toDouble(), (p2 / 1e5).toDouble()); return }
+                50002 -> { rosbridgeStationUpdate(t, "water", (p1 / 1e5).toDouble(), (p2 / 1e5).toDouble()); return }
+                50003 -> { rosbridgeRerouteResponse(t, p1 >= 1f); return }
             }
         }
-        // Fallback: MAVLink
+        // Fallback: MAVLink (only if rosbridge not connected)
         scope.launch {
             val ip = roverIp(sysId)
             repeat(2) { attempt ->
