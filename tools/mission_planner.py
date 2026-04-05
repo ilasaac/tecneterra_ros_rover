@@ -737,7 +737,7 @@ tr:hover td{background:#1e1e3a}
   </div>
   <div id="wp-list" style="flex:1;overflow-y:auto">
     <table>
-      <thead><tr><th>#</th><th>Spd</th><th>Turn</th><th>CH6</th></tr></thead>
+      <thead><tr><th style="width:18px">#</th><th style="width:28px">Spd</th><th style="width:12px">T</th><th style="width:30px">5</th><th style="width:30px">6</th><th style="width:30px">7</th><th style="width:30px">8</th></tr></thead>
       <tbody id="wp-tbody"></tbody>
     </table>
   </div>
@@ -1533,16 +1533,21 @@ function refreshTable() {
       const tr = document.createElement('tr');
       const isTurn = pt.turn === true;
       const spdColor = pt.speed < 0 ? '#ffeb3b' : pt.speed <= 0.5 ? '#ff9800' : '#ccc';
-      const turnLabel = isTurn
-        ? `<span style="color:#ff5722;cursor:pointer" onclick="toggleTurn(${i})" title="Click to remove turn">T</span>`
-        : `<span style="color:#333;cursor:pointer" onclick="toggleTurn(${i})" title="Click to add turn">·</span>`;
-      const srv = pt.servo || {};
-      const c6 = srv[6]||srv['6']||1500;
+      const tl = isTurn
+        ? `<span style="color:#f52;cursor:pointer" onclick="toggleTurn(${i})">T</span>`
+        : `<span style="color:#333;cursor:pointer" onclick="toggleTurn(${i})">·</span>`;
+      const s = pt.servo || {};
+      const c5 = s[5]||s['5']||''; const c6 = s[6]||s['6']||'';
+      const c7 = s[7]||s['7']||''; const c8 = s[8]||s['8']||'';
+      const ss = 'font-size:8px;cursor:pointer;color:#5a8;padding:0 1px';
       tr.innerHTML = `
-        <td style="color:#aaa">${i}</td>
-        <td style="color:${spdColor};cursor:pointer" onclick="editCell(this,${i},'speed')" title="Click to edit">${pt.speed.toFixed(1)}</td>
-        <td>${turnLabel}</td>
-        <td style="color:#5a8;font-size:9px;cursor:pointer" onclick="editCell(this,${i},'ch6')" title="Click to edit CH6">${c6}</td>`;
+        <td style="color:#666;font-size:9px;padding:0 2px">${i}</td>
+        <td style="color:${spdColor};cursor:pointer;padding:0 2px" onclick="editCell(this,${i},'speed')">${pt.speed.toFixed(1)}</td>
+        <td style="padding:0 1px">${tl}</td>
+        <td style="${ss}" onclick="editCell(this,${i},'ch5')">${c5||'-'}</td>
+        <td style="${ss}" onclick="editCell(this,${i},'ch6')">${c6||'-'}</td>
+        <td style="${ss}" onclick="editCell(this,${i},'ch7')">${c7||'-'}</td>
+        <td style="${ss}" onclick="editCell(this,${i},'ch8')">${c8||'-'}</td>`;
       if (isTurn) tr.style.background = '#2a1a0a';
       tb.appendChild(tr);
     });
