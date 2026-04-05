@@ -1397,13 +1397,30 @@ function hitWaypoint(x, y) {
 }
 
 function hitObstacleVertex(x, y) {
+  // Returns {poly, vert} or null. vert=-1 means interior (drag whole polygon)
   for (let i = obstacles.length - 1; i >= 0; i--) {
-    for (const [la, lo] of obstacles[i]) {
-      const p = project(la, lo);
-      if (Math.hypot(p.x - x, p.y - y) <= 7) return i;
+    for (let v = 0; v < obstacles[i].length; v++) {
+      const p = project(obstacles[i][v][0], obstacles[i][v][1]);
+      if (Math.hypot(p.x - x, p.y - y) <= 8) return {poly: i, vert: v};
     }
   }
-  return -1;
+  // Check if inside any polygon (for whole-polygon drag)
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    if (_pointInPoly(x, y, obstacles[i])) return {poly: i, vert: -1};
+  }
+  return null;
+}
+
+function _pointInPoly(px, py, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const pi = project(poly[i][0], poly[i][1]);
+    const pj = project(poly[j][0], poly[j][1]);
+    if ((pi.y > py) !== (pj.y > py) &&
+        px < (pj.x - pi.x) * (py - pi.y) / (pj.y - pi.y) + pi.x)
+      inside = !inside;
+  }
+  return inside;
 }
 
 // ── Measure mode ──────────────────────────────────────────────────
@@ -1500,6 +1517,19 @@ canvas.addEventListener('mousedown', e => {
       _drag = {type: 'wp', idx: wi};
       return;
     }
+    const oh = hitObstacleVertex(x, y);
+    if (oh) {
+      if (oh.vert >= 0) {
+        // Drag single vertex
+        _drag = {type: 'obs_vert', poly: oh.poly, vert: oh.vert};
+      } else {
+        // Drag whole polygon — store start position for offset
+        const ll = unproject(x, y);
+        _drag = {type: 'obs_poly', poly: oh.poly, startLat: ll.lat, startLon: ll.lon};
+      }
+      canvas.style.cursor = 'move';
+      return;
+    }
     _drag = {type: 'pan', sx: x, sy: y, sLat: viewLat, sLon: viewLon};
     canvas.style.cursor = 'grabbing';
   }
@@ -1533,6 +1563,18 @@ canvas.addEventListener('mousemove', e => {
       waypoints[_drag.idx].lon = ll.lon;
     }
     refreshTable();
+    redraw();
+  } else if (_drag.type === 'obs_vert') {
+    const ll = unproject(x, y);
+    obstacles[_drag.poly][_drag.vert] = [ll.lat, ll.lon];
+    redraw();
+  } else if (_drag.type === 'obs_poly') {
+    const ll = unproject(x, y);
+    const dlat = ll.lat - _drag.startLat;
+    const dlon = ll.lon - _drag.startLon;
+    obstacles[_drag.poly].forEach(v => { v[0] += dlat; v[1] += dlon; });
+    _drag.startLat = ll.lat;
+    _drag.startLon = ll.lon;
     redraw();
   }
 });
