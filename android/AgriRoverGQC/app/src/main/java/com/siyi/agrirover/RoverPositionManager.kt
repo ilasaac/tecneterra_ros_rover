@@ -229,6 +229,7 @@ class RoverPositionManager(
                         topic.endsWith("/rerouted_path") -> {
                             // Parse [[lat, lon, bypass, speed, hold_secs], ...]
                             val jsonStr = msg.optString("data", "")
+                            Log.e("ROSBRIDGE", "rerouted_path data len=${jsonStr.length}")
                             if (jsonStr.isNotEmpty()) {
                                 try {
                                     val arr = org.json.JSONArray(jsonStr)
@@ -237,9 +238,11 @@ class RoverPositionManager(
                                         val pt = arr.getJSONArray(j)
                                         path.add(Triple(pt.getDouble(0), pt.getDouble(1), pt.getInt(2) != 0))
                                     }
+                                    Log.e("ROSBRIDGE", "rerouted_path parsed: ${path.size} pts")
                                     scope.launch(Dispatchers.Main) { onReroutedPath(sysId, path) }
                                 } catch (e: Exception) {
-                                    Log.e("ROSBRIDGE", "rerouted_path parse: ${e.message}")
+                                    Log.e("ROSBRIDGE", "rerouted_path parse ERROR: ${e.message}")
+                                    Log.e("ROSBRIDGE", "rerouted_path first 200: ${jsonStr.take(200)}")
                                 }
                             }
                         }
