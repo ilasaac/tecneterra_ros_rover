@@ -2070,6 +2070,24 @@ class NavigatorNode(Node):
         # Smooth full mission — the sim naturally curves around obstacles
         if new_bypass_indices:
             self._smooth_bypass_corners()
+            # Push any points inside expanded polygons outward
+            pushed = 0
+            for wp in self._path:
+                for poly in self._expanded_polygons:
+                    if self._point_in_polygon(wp.latitude, wp.longitude, poly):
+                        clat = sum(p[0] for p in poly) / len(poly)
+                        clon = sum(p[1] for p in poly) / len(poly)
+                        brg = bearing_to(clat, clon, wp.latitude, wp.longitude)
+                        cos_lat = math.cos(math.radians(wp.latitude)) or 1e-9
+                        wp.latitude += (self._clearance * 0.5 * math.cos(math.radians(brg))) / 111320.0
+                        wp.longitude += (self._clearance * 0.5 * math.sin(math.radians(brg))) / (111320.0 * cos_lat)
+                        pushed += 1
+                        break
+            if pushed:
+                self.get_logger().info(f'Post-smooth: pushed {pushed} pts outside obstacles')
+                origin_lat = self._path_origin_lat or self._path[0].latitude
+                origin_lon = self._path_origin_lon or self._path[0].longitude
+                self._path_s = self._rebuild_path_s(self._path, origin_lat, origin_lon)
 
         # Final validation: entry/exit GPS anchors must still exist in path
         if _entry_ll and _exit_ll:
