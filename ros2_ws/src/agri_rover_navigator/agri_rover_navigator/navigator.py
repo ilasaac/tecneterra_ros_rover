@@ -1758,156 +1758,39 @@ class NavigatorNode(Node):
         self._save_run_mission()
 
     def _smooth_bypass_corners(self):
-        """Smooth only the bypass zone using the preflight sim.
+        """Smooth the FULL mission using the preflight sim.
 
-        1. Find bypass zone (first..last bypass index) + margin
-        2. Extract that sub-path, run sim through it
-        3. Replace only that section with the sim trace
-        4. Keep the rest of the original path untouched
+        When obstacles are present, the sim trace naturally curves around them.
+        The entire path is replaced with the sim output — no zone splicing.
 
-        bypass_arc_radius_m = margin in metres before/after bypass zone (0 = disabled).
+        bypass_arc_radius_m > 0 enables smoothing (0 = disabled).
         """
         if not self._bypass_indices or not self._path or not self._path_s:
             return
-        margin_m = self._bypass_arc_radius
-        if margin_m <= 0:
+        if self._bypass_arc_radius <= 0:
             return
 
-        first_bp = min(self._bypass_indices)
-        last_bp = max(self._bypass_indices)
-
-        # Expand zone by margin_m metres before first bypass
-        zone_start = first_bp
-        target_s = self._path_s[first_bp] - margin_m
-        while zone_start > 1 and self._path_s[zone_start - 1] > target_s:
-            zone_start -= 1
-
-        # Expand zone by margin_m metres after last bypass
-        zone_end = last_bp
-        target_s = self._path_s[last_bp] + margin_m
-        while zone_end < len(self._path) - 2 and self._path_s[zone_end + 1] < target_s:
-            zone_end += 1
-
-        self.get_logger().info(
-            f'Smoother: bypass zone [{first_bp}..{last_bp}] '
-            f'expanded to [{zone_start}..{zone_end}] with {margin_m}m margin')
-
-        # Extract sub-path for sim
-        sub_path = self._path[zone_start:zone_end + 1]
-        if len(sub_path) < 2:
-            return
-
-        # Build temporary path state for the sub-path
-        saved_path = self._path
-        saved_path_s = self._path_s
-        saved_bypass = self._bypass_indices
-        saved_turns = self._corridor_turn_indices
-        saved_origin_lat = self._path_origin_lat
-        saved_origin_lon = self._path_origin_lon
-
-        self._path = sub_path
-        self._path_origin_lat = sub_path[0].latitude
-        self._path_origin_lon = sub_path[0].longitude
-        self._path_s = self._rebuild_path_s(sub_path,
-                                             sub_path[0].latitude, sub_path[0].longitude)
-        # No turn indices in the sub-path (bypass zone only)
-        self._corridor_turn_indices = set()
-        self._bypass_indices = set()
-
-        ANGLE_THRESH = 25.0
-        MAX_PASSES = 3
-        speed_k = self._bypass_arc_speed_k
-        # Save original speeds for mapping to trace points
+        # Save original speeds for mapping
         orig_speeds = [(wp.latitude, wp.longitude,
                         wp.speed if wp.speed > 0 else self._max_speed)
-                       for wp in sub_path]
-        best_trace = []
-        best_cte = 99.0
+                       for wp in self._path]
 
-        for pass_n in range(MAX_PASSES):
-            result = self._sim_validate_path()
-            max_cte = result.get('max_cte', 99)
-            sim_trace = result.get('sim_path', [])
+        # Run preflight sim on the full rerouted path
+        result = self._sim_validate_path()
+        sim_trace = result.get('sim_path', [])
+        best_cte = result.get('max_cte', 99)
 
-            if sim_trace and (max_cte < best_cte or not best_trace):
-                best_trace = sim_trace
-                best_cte = max_cte
-
-            self.get_logger().info(
-                f'Smoother pass {pass_n}: max_cte={best_cte:.3f}m '
-                f'trace={len(best_trace)} pts')
-
-            if len(best_trace) < 3:
-                break
-
-            # Find sharp angles in the trace
-            sharp_indices = set()
-            for i in range(1, len(best_trace) - 1):
-                h1 = bearing_to(best_trace[i-1][0], best_trace[i-1][1],
-                                best_trace[i][0], best_trace[i][1])
-                h2 = bearing_to(best_trace[i][0], best_trace[i][1],
-                                best_trace[i+1][0], best_trace[i+1][1])
-                ang = abs(((h2 - h1 + 180) % 360) - 180)
-                if ang > ANGLE_THRESH:
-                    # Mark this point and neighbours for slowdown
-                    for k in range(max(0, i - 3), min(len(best_trace), i + 4)):
-                        sharp_indices.add(k)
-
-            if not sharp_indices:
-                self.get_logger().info(f'Smoother pass {pass_n}: no sharp angles — done')
-                break
-
-            self.get_logger().info(
-                f'Smoother pass {pass_n}: {len(sharp_indices)} sharp-zone pts — '
-                f're-running with reduced speed at those points')
-
-            # Use the trace as the new path, with reduced speed at sharp spots
-            new_wps = []
-            for i, (lat, lon) in enumerate(best_trace):
-                # Find nearest original waypoint's speed
-                base_spd = self._max_speed
-                best_d = float('inf')
-                for olat, olon, ospd in orig_speeds:
-                    d = haversine(lat, lon, olat, olon)
-                    if d < best_d:
-                        best_d = d
-                        base_spd = ospd
-                wp = MissionWaypoint()
-                wp.seq = i
-                wp.latitude = lat
-                wp.longitude = lon
-                if i in sharp_indices:
-                    wp.speed = max(self._min_speed, base_spd * (1.0 - speed_k))
-                else:
-                    wp.speed = base_spd
-                wp.hold_secs = 0.0
-                wp.acceptance_radius = self._accept_r
-                new_wps.append(wp)
-
-            self._path = new_wps
-            self._path_origin_lat = new_wps[0].latitude
-            self._path_origin_lon = new_wps[0].longitude
-            self._path_s = self._rebuild_path_s(new_wps,
-                                                 new_wps[0].latitude, new_wps[0].longitude)
-            self._corridor_turn_indices = set()
-            self._bypass_indices = set()
-
-        # Restore full path state
-        self._path = saved_path
-        self._path_s = saved_path_s
-        self._bypass_indices = saved_bypass
-        self._corridor_turn_indices = saved_turns
-        self._path_origin_lat = saved_origin_lat
-        self._path_origin_lon = saved_origin_lon
-
-        if not best_trace or len(best_trace) < 2:
-            self.get_logger().warn('Smoother: trace too short — keeping original path')
+        if not sim_trace or len(sim_trace) < 2:
+            self.get_logger().warn('Smoother: sim trace too short — keeping original')
             return
 
-        # Build smoothed waypoints from trace with original speeds
-        smooth_wps = []
-        for lat, lon in best_trace:
-            # Map to nearest original waypoint's speed
+        self.get_logger().info(
+            f'Smoother: full mission sim → {len(sim_trace)} pts, '
+            f'max_cte={best_cte:.3f}m')
+
+        # Replace entire path with sim trace
+        new_path = []
+        for lat, lon in sim_trace:
             base_spd = self._max_speed
             best_d = float('inf')
             for olat, olon, ospd in orig_speeds:
@@ -1916,64 +1799,23 @@ class NavigatorNode(Node):
                     best_d = d
                     base_spd = ospd
             wp = MissionWaypoint()
-            wp.seq = 0
+            wp.seq = len(new_path)
             wp.latitude = lat
             wp.longitude = lon
             wp.speed = base_spd
             wp.hold_secs = 0.0
             wp.acceptance_radius = self._accept_r
-            smooth_wps.append(wp)
-
-        # Replace only the bypass zone in the original path
-        new_path = list(self._path[:zone_start]) + smooth_wps + list(self._path[zone_end + 1:])
-
-        # Rebuild indices — bypass indices gone, turn indices adjusted
-        shift = len(smooth_wps) - (zone_end + 1 - zone_start)
-        new_turns = set()
-        for ti in self._corridor_turn_indices:
-            if ti < zone_start:
-                new_turns.add(ti)
-            elif ti > zone_end:
-                new_turns.add(ti + shift)
-        new_turns.add(0)  # keep start alignment
+            new_path.append(wp)
 
         self._path = new_path
         self._bypass_indices = set()
-        self._corridor_turn_indices = new_turns
-        origin_lat = self._path_origin_lat or new_path[0].latitude
-        origin_lon = self._path_origin_lon or new_path[0].longitude
-        self._path_s = self._rebuild_path_s(new_path, origin_lat, origin_lon)
-
-        # Obstacle clearance is validated by the outer loop in _reroute_path()
-
-        # Restore full path and splice smoothed zone
-        self._path = saved_path
-        self._path_s = saved_path_s
-        self._bypass_indices = saved_bypass
-        self._corridor_turn_indices = saved_turns
-        self._path_origin_lat = saved_origin_lat
-        self._path_origin_lon = saved_origin_lon
-
-        new_path = list(self._path[:zone_start]) + smooth_wps + list(self._path[zone_end + 1:])
-        shift = len(smooth_wps) - (zone_end + 1 - zone_start)
-        new_turns = set()
-        for ti in self._corridor_turn_indices:
-            if ti < zone_start:
-                new_turns.add(ti)
-            elif ti > zone_end:
-                new_turns.add(ti + shift)
-        new_turns.add(0)
-
-        self._path = new_path
-        self._bypass_indices = set()
-        self._corridor_turn_indices = new_turns
+        self._corridor_turn_indices = {0}
         origin_lat = self._path_origin_lat or new_path[0].latitude
         origin_lon = self._path_origin_lon or new_path[0].longitude
         self._path_s = self._rebuild_path_s(new_path, origin_lat, origin_lon)
 
         self.get_logger().info(
-            f'Bypass zone smoothed: [{zone_start}..{zone_end}] → {len(smooth_wps)} pts, '
-            f'total path {len(new_path)} pts, best_cte={best_cte:.3f}m')
+            f'Path smoothed: {len(new_path)} pts, best_cte={best_cte:.3f}m')
 
     @staticmethod
     def _point_in_polygon(lat: float, lon: float, poly: list) -> bool:
