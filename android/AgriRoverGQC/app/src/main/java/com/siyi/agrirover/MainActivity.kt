@@ -590,7 +590,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         obstacleOverlays.clear()
         redrawMap()
         redrawRoverMissions()
-        roverManager.uploadMission(selectedRoverId, emptyList())
+        // Clear mission on rover via rosbridge
+        roverManager.rosbridgeClearMission(selectedRoverId)
+        roverNavStatus[selectedRoverId] = "NA"
+        updateNavStatus(selectedRoverId, "NA")
+        Toast.makeText(this, "Mission cleared on RV$selectedRoverId", Toast.LENGTH_SHORT).show()
     }
 
     /**

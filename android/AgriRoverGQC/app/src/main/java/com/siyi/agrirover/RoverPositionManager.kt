@@ -342,6 +342,15 @@ class RoverPositionManager(
         ws.send("""{"op":"publish","topic":"$ns/mode","type":"std_msgs/msg/String","msg":{"data":"$mode"}}""")
     }
 
+    /** Clear mission on rover via rosbridge. */
+    fun rosbridgeClearMission(sysId: Int) {
+        val ws = rosbridgeWs[sysId] ?: return
+        val ns = "/rv$sysId"
+        ws.send("""{"op":"publish","topic":"$ns/mission_clear","type":"std_msgs/msg/Bool","msg":{"data":true}}""")
+        // Also disarm
+        rosbridgeArm(sysId, false)
+    }
+
     /** Send reroute confirmation via rosbridge. */
     fun rosbridgeRerouteResponse(sysId: Int, accept: Boolean) {
         val ws = rosbridgeWs[sysId] ?: return
