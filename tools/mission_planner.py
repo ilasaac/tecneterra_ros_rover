@@ -2734,7 +2734,7 @@ function toggleTurn(idx) {
   if (optimizedPath && idx < optimizedPath.length) {
     optimizedPath[idx].turn = !optimizedPath[idx].turn;
     if (optimizedPath[idx].turn) {
-      optimizedPath[idx].speed = 0;  // turn = stop (decel on approach)
+      optimizedPath[idx].speed = -1;  // turn marker (speed < 0 = turn in corridor processing)
     } else if (optimizedPath[idx].speed <= 0) {
       optimizedPath[idx].speed = 0.5;  // un-turn = restore speed
     }
