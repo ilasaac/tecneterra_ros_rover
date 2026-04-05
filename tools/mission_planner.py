@@ -2573,17 +2573,27 @@ function applyGenerate(append) {
     const rowSp = parseFloat(document.getElementById('gen-row-sp').value) || 5;
     const colSp = parseFloat(document.getElementById('gen-col-sp').value) || 5;
     const hdg   = (parseFloat(document.getElementById('gen-hdg').value) || 0) * Math.PI / 180;
+    const ptSpacing = 0.5;  // metres between intermediate points
     const tA = colSp * (cols - 1), tP = rowSp * (rows - 1);
     for (let r = 0; r < rows; r++) {
+      // Row start and end
+      const startA = -tA / 2, endA = tA / 2;
+      const p = r * rowSp - tP / 2;
+      const rowLen = tA;
+      const nPts = Math.max(2, Math.ceil(rowLen / ptSpacing) + 1);
       const pts = [];
-      for (let c = 0; c < cols; c++) {
-        const a = c * colSp - tA / 2, p = r * rowSp - tP / 2;
+      for (let k = 0; k < nPts; k++) {
+        const a = startA + (endA - startA) * k / (nPts - 1);
         const [lat, lon] = offsetLatLon(cLat, cLon,
           a * Math.cos(hdg) - p * Math.sin(hdg),
           a * Math.sin(hdg) + p * Math.cos(hdg));
         pts.push({lat, lon, speed: spd, hold_secs: 0, servos: {...genServos}});
       }
       if (r % 2 === 1) pts.reverse();
+      // Turn marker at end of row (except last row)
+      if (r < rows - 1 && pts.length > 0) {
+        pts[pts.length - 1].speed = -1;  // turn marker
+      }
       newWps.push(...pts);
     }
 
@@ -2592,14 +2602,22 @@ function applyGenerate(append) {
     const legLen = parseFloat(document.getElementById('gen-leg-len').value) || 10;
     const legOff = parseFloat(document.getElementById('gen-leg-off').value) || 5;
     const hdg    = (parseFloat(document.getElementById('gen-zhdg').value) || 0) * Math.PI / 180;
+    const ptSpacing = 0.5;  // metres between intermediate points
     const tP     = legOff * (legs - 1);
     for (let i = 0; i < legs; i++) {
-      const perp  = i * legOff - tP / 2;
-      const along = (i % 2 === 0) ? -legLen / 2 : legLen / 2;
-      const [lat, lon] = offsetLatLon(cLat, cLon,
-        along * Math.cos(hdg) - perp * Math.sin(hdg),
-        along * Math.sin(hdg) + perp * Math.cos(hdg));
-      newWps.push({lat, lon, speed: spd, hold_secs: 0, servos: {...genServos}});
+      const perp = i * legOff - tP / 2;
+      // Each leg: from one end to the other with intermediate points
+      const startAlong = (i % 2 === 0) ? -legLen / 2 : legLen / 2;
+      const endAlong = (i % 2 === 0) ? legLen / 2 : -legLen / 2;
+      const nPts = Math.max(2, Math.ceil(legLen / ptSpacing) + 1);
+      for (let k = 0; k < nPts; k++) {
+        const along = startAlong + (endAlong - startAlong) * k / (nPts - 1);
+        const [lat, lon] = offsetLatLon(cLat, cLon,
+          along * Math.cos(hdg) - perp * Math.sin(hdg),
+          along * Math.sin(hdg) + perp * Math.cos(hdg));
+        const isTurn = (k === nPts - 1 && i < legs - 1);  // turn at end of each leg
+        newWps.push({lat, lon, speed: isTurn ? -1 : spd, hold_secs: 0, servos: {...genServos}});
+      }
     }
 
   } else if (pat === 'scatter') {
