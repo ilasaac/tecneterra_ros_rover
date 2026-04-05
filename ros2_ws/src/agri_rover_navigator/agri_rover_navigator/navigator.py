@@ -2347,8 +2347,10 @@ class NavigatorNode(Node):
             s_nearest = best_s
             seg_idx = best_seg
 
-            # Mission complete?
-            if s_nearest >= total_s - self._accept_r:
+            # Mission complete? Arc-length OR proximity to last point
+            last_wp = self._path[-1]
+            d_last = haversine(rlat, rlon, last_wp.latitude, last_wp.longitude)
+            if s_nearest >= total_s - self._accept_r or d_last < self._accept_r:
                 break
 
             # CTE (front antenna, same as real navigator)
@@ -2376,6 +2378,9 @@ class NavigatorNode(Node):
                     if sim_path_idx not in turn_indices:
                         sim_path_idx += 1
                         sim_pivot_min = None
+                        # Mission complete by proximity to last point
+                        if sim_path_idx >= len(self._path):
+                            break
 
             # Turn handling for corridors
             turn_s = None
