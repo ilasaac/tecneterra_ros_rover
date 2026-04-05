@@ -180,23 +180,24 @@ class RoverPositionManager(
             override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
                 Log.e("ROSBRIDGE", "Connected to RV$sysId rosbridge")
                 rosbridgeConnected[sysId] = true
-                // Subscribe to center position (midpoint of dual antennas — same as diag CSV)
-                webSocket.send("""{"op":"subscribe","topic":"$ns/center_pos","type":"sensor_msgs/msg/NavSatFix"}""")
-                webSocket.send("""{"op":"subscribe","topic":"$ns/heading","type":"std_msgs/msg/Float32"}""")
-                // Subscribe to navigator status + progress
-                webSocket.send("""{"op":"subscribe","topic":"$ns/nav_status","type":"std_msgs/msg/String"}""")
-                webSocket.send("""{"op":"subscribe","topic":"$ns/wp_active","type":"std_msgs/msg/Int32"}""")
-                webSocket.send("""{"op":"subscribe","topic":"$ns/xte","type":"std_msgs/msg/Float32"}""")
-                // Subscribe to armed state
-                webSocket.send("""{"op":"subscribe","topic":"$ns/armed","type":"std_msgs/msg/Bool"}""")
-                // Subscribe to mission path (displayed on map regardless of upload source)
-                webSocket.send("""{"op":"subscribe","topic":"$ns/rerouted_path","type":"std_msgs/msg/String"}""")
+                // Subscribe to topics — no type field (rosbridge auto-detects)
+                val topics = listOf("center_pos", "heading", "nav_status",
+                    "wp_active", "xte", "armed", "rerouted_path")
+                for (t in topics) {
+                    webSocket.send("""{"op":"subscribe","topic":"$ns/$t"}""")
+                }
+                Log.e("ROSBRIDGE", "Subscribed to ${topics.size} topics on $ns")
             }
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
                 try {
                     val json = org.json.JSONObject(text)
                     val topic = json.optString("topic", "")
-                    val msg = json.optJSONObject("msg") ?: return
+                    val msg = json.optJSONObject("msg") ?: run {
+                        Log.e("ROSBRIDGE", "No msg in: ${text.take(200)}")
+                        return
+                    }
+                    if (!topic.endsWith("/heading") && !topic.endsWith("/center_pos") && !topic.endsWith("/xte"))
+                        Log.e("ROSBRIDGE", "RX: $topic")
                     when {
                         topic.endsWith("/nav_status") -> {
                             val status = msg.optString("data", "NA")
