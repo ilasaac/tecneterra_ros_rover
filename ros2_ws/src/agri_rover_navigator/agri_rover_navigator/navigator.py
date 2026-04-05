@@ -992,10 +992,11 @@ class NavigatorNode(Node):
         self._expanded_polygons      = []
         self._obstacle_polygons      = []
         self._reroute_pending        = False
+        self._servo_ch               = [PPM_CENTER] * 4  # reset servos to neutral
         clr_msg = String(); clr_msg.data = '[]'
         self.rerouted_pub.publish(clr_msg)
         self._publish_halt()
-        self.get_logger().info('Mission cleared — path reset')
+        self.get_logger().info('Mission cleared — path + servos reset')
 
     def _cb_mission(self, msg: MissionWaypoint):
         """Append waypoint to path and update cumulative arc-lengths."""
