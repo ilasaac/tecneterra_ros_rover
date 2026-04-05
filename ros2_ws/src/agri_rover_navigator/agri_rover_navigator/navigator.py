@@ -2155,54 +2155,68 @@ class NavigatorNode(Node):
         self._holding       = False
         self._pivoting      = False
 
-        # Reduce redundant bypass points: if skipping ahead is closer, remove intermediates
+        # Reduce redundant bypass points — 3 passes, front to back.
+        # Goal: skip to the point closest to the EXIT of the bypass zone,
+        # eliminating zigzag vertices that don't help reach the destination.
         if new_bypass_indices:
-            reduced = []
-            skip_to = -1
-            bp_sorted = sorted(new_bypass_indices)
-            bp_set = set(new_bypass_indices)
-            first_bp = bp_sorted[0] if bp_sorted else len(self._path)
-            last_bp = bp_sorted[-1] if bp_sorted else 0
-            i = 0
-            removed = 0
-            while i < len(self._path):
-                if i < first_bp or i > last_bp or i not in bp_set:
+            total_removed = 0
+            for reduce_pass in range(3):
+                bp_set = set(self._bypass_indices)
+                if not bp_set:
+                    break
+                bp_sorted = sorted(bp_set)
+                first_bp = bp_sorted[0]
+                last_bp = bp_sorted[-1]
+                # Target: first non-bypass point after the bypass zone
+                exit_idx = last_bp + 1
+                exit_wp = self._path[exit_idx] if exit_idx < len(self._path) else self._path[-1]
+
+                reduced = []
+                i = 0
+                removed = 0
+                while i < len(self._path):
+                    if i not in bp_set:
+                        reduced.append(self._path[i])
+                        i += 1
+                        continue
+                    # Bypass point — check if skipping ahead gets closer to exit
                     reduced.append(self._path[i])
-                    i += 1
-                    continue
-                # This is a bypass point — check if a point up to 5 ahead is closer
-                # to the previous point's trajectory
-                reduced.append(self._path[i])
-                best_next = i + 1
-                if i + 1 < len(self._path):
-                    prev = self._path[i]
-                    d_next = haversine(prev.latitude, prev.longitude,
-                                       self._path[i + 1].latitude, self._path[i + 1].longitude)
-                    for k in range(2, 6):
-                        if i + k >= len(self._path):
-                            break
-                        if (i + k) not in bp_set:
-                            break  # don't skip past bypass zone
-                        d_k = haversine(prev.latitude, prev.longitude,
-                                        self._path[i + k].latitude, self._path[i + k].longitude)
-                        if d_k < d_next:
-                            best_next = i + k
-                            d_next = d_k
-                if best_next > i + 1:
-                    removed += best_next - (i + 1)
-                i = best_next
-            if removed > 0:
-                self.get_logger().info(f'Bypass reducer: removed {removed} redundant pts')
+                    best_next = i + 1
+                    if i + 1 < len(self._path):
+                        d_next = haversine(self._path[i + 1].latitude, self._path[i + 1].longitude,
+                                           exit_wp.latitude, exit_wp.longitude)
+                        for k in range(2, 6):
+                            if i + k >= len(self._path):
+                                break
+                            if (i + k) not in bp_set and (i + k) > last_bp:
+                                break
+                            d_k = haversine(self._path[i + k].latitude, self._path[i + k].longitude,
+                                            exit_wp.latitude, exit_wp.longitude)
+                            if d_k < d_next:
+                                best_next = i + k
+                                d_next = d_k
+                    if best_next > i + 1:
+                        removed += best_next - (i + 1)
+                    i = best_next
+
+                if removed == 0:
+                    break
+                total_removed += removed
                 self._path = reduced
-                # Rebuild bypass indices for the reduced path
-                new_bypass_indices = set()
+                # Rebuild bypass indices
+                new_bp = set()
                 for k, wp in enumerate(reduced):
                     if wp.seq == 0 and k > 0 and k < len(reduced) - 1:
-                        new_bypass_indices.add(k)
-                self._bypass_indices = new_bypass_indices
+                        new_bp.add(k)
+                self._bypass_indices = new_bp
+                new_bypass_indices = new_bp
                 origin_lat = self._path_origin_lat or reduced[0].latitude
                 origin_lon = self._path_origin_lon or reduced[0].longitude
                 self._path_s = self._rebuild_path_s(reduced, origin_lat, origin_lon)
+
+            if total_removed > 0:
+                self.get_logger().info(
+                    f'Bypass reducer: removed {total_removed} pts in {reduce_pass + 1} passes')
 
         # Smooth → validate clearance → push violators → re-smooth loop
         if new_bypass_indices:
