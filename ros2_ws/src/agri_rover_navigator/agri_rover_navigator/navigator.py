@@ -2370,17 +2370,11 @@ class NavigatorNode(Node):
                             limit = ti
                             break
                 sim_path_idx = min(seg_idx, limit)
-            # Proximity advance: if close to current waypoint, advance past it
-            if sim_path_idx < len(self._path):
-                wp_target = self._path[sim_path_idx]
-                d_to_wp = haversine(rlat, rlon, wp_target.latitude, wp_target.longitude)
-                if d_to_wp < self._accept_r * 2.0:
-                    if sim_path_idx not in turn_indices:
-                        sim_path_idx += 1
-                        sim_pivot_min = None
-                        # Mission complete by proximity to last point
-                        if sim_path_idx >= len(self._path):
-                            break
+            # Proximity advance: disabled — let arc-length handle it.
+            # The proximity advance was pushing sim_path_idx forward prematurely,
+            # causing CTE to be computed against the wrong segment.
+            if sim_path_idx >= len(self._path):
+                break
 
             # Turn handling for corridors
             turn_s = None
