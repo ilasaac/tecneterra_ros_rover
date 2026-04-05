@@ -992,7 +992,7 @@ class NavigatorNode(Node):
         self._expanded_polygons      = []
         self._obstacle_polygons      = []
         self._reroute_pending        = False
-        self._servo_ch               = [PPM_CENTER] * 4  # reset servos to neutral
+        self._servo_ch               = [1061, 1061, PPM_CENTER, PPM_CENTER]  # CH5,CH6=off CH7,CH8=neutral
         clr_msg = String(); clr_msg.data = '[]'
         self.rerouted_pub.publish(clr_msg)
         self._publish_halt()
