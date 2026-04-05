@@ -189,6 +189,8 @@ class RoverPositionManager(
                 webSocket.send("""{"op":"subscribe","topic":"$ns/xte","type":"std_msgs/msg/Float32"}""")
                 // Subscribe to armed state
                 webSocket.send("""{"op":"subscribe","topic":"$ns/armed","type":"std_msgs/msg/Bool"}""")
+                // Subscribe to mission path (displayed on map regardless of upload source)
+                webSocket.send("""{"op":"subscribe","topic":"$ns/rerouted_path","type":"std_msgs/msg/String"}""")
             }
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
                 try {
@@ -222,6 +224,23 @@ class RoverPositionManager(
                         }
                         topic.endsWith("/xte") -> {
                             // XTE available via rosbridge — could update HUD
+                        }
+                        topic.endsWith("/rerouted_path") -> {
+                            // Parse [[lat, lon, bypass, speed, hold_secs], ...]
+                            val jsonStr = msg.optString("data", "")
+                            if (jsonStr.isNotEmpty()) {
+                                try {
+                                    val arr = org.json.JSONArray(jsonStr)
+                                    val path = mutableListOf<Triple<Double, Double, Boolean>>()
+                                    for (j in 0 until arr.length()) {
+                                        val pt = arr.getJSONArray(j)
+                                        path.add(Triple(pt.getDouble(0), pt.getDouble(1), pt.getInt(2) != 0))
+                                    }
+                                    scope.launch(Dispatchers.Main) { onReroutedPath(sysId, path) }
+                                } catch (e: Exception) {
+                                    Log.e("ROSBRIDGE", "rerouted_path parse: ${e.message}")
+                                }
+                            }
                         }
                     }
                 } catch (e: Exception) {
