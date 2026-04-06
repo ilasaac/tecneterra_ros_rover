@@ -862,6 +862,12 @@ class NavigatorNode(Node):
         self._path_origin_lon = rover_lon
         self._path_s = self._rebuild_path_s(self._path, rover_lat, rover_lon)
         self._bypass_indices = set(range(len(approach_wps)))
+        # Shift corridor turn indices by number of prepended approach points
+        shift = len(approach_wps)
+        self._corridor_turn_indices = {ti + shift for ti in self._corridor_turn_indices}
+        # Also update corridor total arc-length if in corridor mode
+        if self._corridor_mode and self._path_s:
+            self._corridor_total_s = self._path_s[-1]
         self._approach_planned = True
         # Show on map
         self._publish_full_path()
