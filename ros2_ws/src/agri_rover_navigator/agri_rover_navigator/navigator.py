@@ -1555,6 +1555,13 @@ class NavigatorNode(Node):
             self._publish_halt()
             return
 
+        # ── Inter-rover proximity safety ──────────────────────────────────────
+        if self._peer_ns:
+            self._compute_proximity()
+            if self._prox_level in ('halt', 'estop'):
+                self._publish_halt()
+                return
+
         rlat, rlon = self._center_pos()
         flat, flon = self._front_pos()
 
@@ -1604,10 +1611,6 @@ class NavigatorNode(Node):
             m = Int32(); m.data = -3
             self.wp_pub.publish(m)
             self._corridor_entered = False  # reset so entry grace applies on re-arm
-            return
-
-        # CTE safety alarm removed — user confirms mission by arming twice
-            self._corridor_entered = False
             return
 
         # XTE telemetry
