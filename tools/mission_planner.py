@@ -2183,13 +2183,18 @@ function _perimeterToWalls(verts, wallWidth) {
   const walls = [];
   const n = verts.length;
   const DEG_PER_M = 1.0 / 111320;
-  // Compute polygon winding (positive = CCW in lat/lon)
+  // Compute polygon winding using flat-earth metres (x=east, y=north)
+  const cLat = verts.reduce((s,v) => s+v[0], 0) / n;
+  const cLon = verts.reduce((s,v) => s+v[1], 0) / n;
+  const cosC = Math.cos(cLat * Math.PI / 180);
+  const ptsM = verts.map(v => [(v[1]-cLon)*111320*cosC, (v[0]-cLat)*111320]);
   let area2 = 0;
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
-    area2 += (verts[j][1] - verts[i][1]) * (verts[j][0] + verts[i][0]);
+    area2 += ptsM[i][0]*ptsM[j][1] - ptsM[j][0]*ptsM[i][1];
   }
-  const ccw = area2 > 0;  // if true, outward normal is to the right of edge direction
+  // w=+1 for CCW (outward = right of edge), w=-1 for CW (outward = left of edge)
+  const w = area2 > 0 ? 1.0 : -1.0;
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
     const lat0 = verts[i][0], lon0 = verts[i][1];
@@ -2201,9 +2206,8 @@ function _perimeterToWalls(verts, wallWidth) {
     const edgeLen = Math.sqrt(dx * dx + dy * dy);
     if (edgeLen < 0.01) continue;
     // Outward normal (perpendicular, pointing outside polygon)
-    let nx, ny;
-    if (ccw) { nx = dy / edgeLen; ny = -dx / edgeLen; }
-    else     { nx = -dy / edgeLen; ny = dx / edgeLen; }
+    const nx = w * dy / edgeLen;
+    const ny = -w * dx / edgeLen;
     // Offset in degrees
     const offLat = ny * wallWidth * DEG_PER_M;
     const offLon = nx * wallWidth * DEG_PER_M / cosLat;
