@@ -1316,34 +1316,44 @@ class NavigatorNode(Node):
         area2 = sum(pts[i][0] * pts[(i + 1) % n][1] -
                     pts[(i + 1) % n][0] * pts[i][1]
                     for i in range(n))
-        # Outward normal direction: left of edge for CCW (+1), right for CW (-1)
+        orig_abs_area = abs(area2)
+
+        def _offset(w_sign: float):
+            off: list[tuple[float, float, float, float]] = []
+            for i in range(n):
+                x1, y1 = pts[i]
+                x2, y2 = pts[(i + 1) % n]
+                dx, dy = x2 - x1, y2 - y1
+                length  = math.hypot(dx, dy) or 1e-9
+                nx, ny  = w_sign * dy / length, -w_sign * dx / length
+                ox, oy  = nx * clearance_m, ny * clearance_m
+                off.append((x1 + ox, y1 + oy, x2 + ox, y2 + oy))
+            verts: list[tuple[float, float]] = []
+            for i in range(n):
+                x1, y1, x2, y2 = off[i]
+                x3, y3, x4, y4 = off[(i + 1) % n]
+                dx1, dy1 = x2 - x1, y2 - y1
+                dx2, dy2 = x4 - x3, y4 - y3
+                denom = dx1 * dy2 - dy1 * dx2
+                if abs(denom) < 1e-9:
+                    verts.append((x2, y2))
+                else:
+                    t = ((x3 - x1) * dy2 - (y3 - y1) * dx2) / denom
+                    verts.append((x1 + t * dx1, y1 + t * dy1))
+            return verts
+
+        # Try outward expansion based on winding direction
         w = 1.0 if area2 > 0 else -1.0
+        expanded_m = _offset(w)
 
-        # Offset each edge outward by clearance_m
-        off: list[tuple[float, float, float, float]] = []
-        for i in range(n):
-            x1, y1 = pts[i]
-            x2, y2 = pts[(i + 1) % n]
-            dx, dy = x2 - x1, y2 - y1
-            length  = math.hypot(dx, dy) or 1e-9
-            nx, ny  =  w * dy / length, -w * dx / length     # outward unit normal
-            ox, oy  = nx * clearance_m, ny * clearance_m
-            off.append((x1 + ox, y1 + oy, x2 + ox, y2 + oy))
+        # Verify expanded polygon is BIGGER — if not, flip direction
+        exp_area = abs(sum(expanded_m[i][0] * expanded_m[(i + 1) % n][1] -
+                          expanded_m[(i + 1) % n][0] * expanded_m[i][1]
+                          for i in range(n)))
+        if exp_area < orig_abs_area:
+            expanded_m = _offset(-w)
 
-        # Intersect consecutive offset edges to produce new vertices
-        result: list[tuple[float, float]] = []
-        for i in range(n):
-            x1, y1, x2, y2 = off[i]
-            x3, y3, x4, y4 = off[(i + 1) % n]
-            dx1, dy1 = x2 - x1, y2 - y1
-            dx2, dy2 = x4 - x3, y4 - y3
-            denom = dx1 * dy2 - dy1 * dx2
-            if abs(denom) < 1e-9:
-                result.append(to_ll(x2, y2))   # parallel — use edge endpoint
-            else:
-                t = ((x3 - x1) * dy2 - (y3 - y1) * dx2) / denom
-                result.append(to_ll(x1 + t * dx1, y1 + t * dy1))
-        return result
+        return [to_ll(x, y) for x, y in expanded_m]
 
     def _seg_intersect_polygon(
             self,
