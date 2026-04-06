@@ -404,6 +404,21 @@ class State:
         self.current_tab = 0
         self.scroll_offset = 0
         self.unknown_ids = defaultdict(int)
+        self.log_file = None
+        self.log_handle = None
+
+    def start_logging(self, path=None):
+        if path is None:
+            path = f"can_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        self.log_file = path
+        self.log_handle = open(path, 'w')
+        self.log_handle.write("timestamp,can_id,hex_data,decoded\n")
+        self.log_handle.flush()
+
+    def stop_logging(self):
+        if self.log_handle:
+            self.log_handle.close()
+            self.log_handle = None
 
     def reset_counters(self):
         with self.lock:
@@ -429,12 +444,12 @@ class State:
             self.last_time[can_id] = ts
             self.last_data[can_id] = bytes(data[:8])
 
+            fields = None
             if can_id in CAN_DB:
                 _, _, decoder = CAN_DB[can_id]
                 try:
                     fields = decoder(data)
                     self.decoded[can_id] = fields
-                    # Collect alerts
                     for label, val, alert in fields:
                         if alert >= ALERT_CRIT:
                             entry = (datetime.fromtimestamp(ts).strftime("%H:%M:%S"),
@@ -447,15 +462,40 @@ class State:
             else:
                 self.unknown_ids[can_id] += 1
 
+            # --- Log every frame to CSV ---
+            if self.log_handle:
+                hex_str = " ".join(f"{b:02X}" for b in data[:8])
+                dec_str = ""
+                if fields:
+                    dec_str = "; ".join(f"{l}={v}" for l, v, _ in fields)
+                ts_str = f"{ts:.6f}"
+                self.log_handle.write(f"{ts_str},0x{can_id:04X},{hex_str},{dec_str}\n")
+                # flush every 100 msgs for crash safety
+                if self.total_msgs % 100 == 0:
+                    self.log_handle.flush()
+
+            # --- Pump watchdog: flag if pump-related IDs go silent ---
+            PUMP_IDS = {0x1002, 0x100D, 0x100E, 0x1012}
+            now = ts
+            for pid in PUMP_IDS:
+                if pid in self.last_time:
+                    gap = now - self.last_time[pid]
+                    name = CAN_DB.get(pid, ("?",))[0]
+                    if gap > 2.0:
+                        entry = (datetime.fromtimestamp(now).strftime("%H:%M:%S"),
+                                 f"TIMEOUT 0x{pid:04X} {name} silent {gap:.1f}s", ALERT_CRIT)
+                        # Avoid spamming: only add if not already the last alert for this ID
+                        if not self.alerts or self.alerts[-1][1] != entry[1]:
+                            self.alerts.append(entry)
+
 
 state = State()
 
 # ---------------------------------------------------------------------------
 # CAN reader thread
 # ---------------------------------------------------------------------------
-def can_reader_socketcan(interface):
-    bus = python_can.Bus(interface=interface, channel=interface if '/' not in interface else interface,
-                         bustype='socketcan')
+def can_reader_socketcan(iface):
+    bus = python_can.Bus(interface='socketcan', channel=iface)
     while True:
         msg = bus.recv(timeout=1.0)
         if msg is not None:
@@ -775,7 +815,8 @@ def draw_dashboard(stdscr):
         if state.unknown_ids:
             unk = ", ".join(f"0x{k:X}:{v}" for k, v in sorted(state.unknown_ids.items())[:5])
             unk_str = f"  Unknown: {unk}"
-        footer = f" q:quit p:pause r:reset 1-6:tab arrows:scroll{unk_str}"
+        log_str = f"  LOG:{state.log_file}" if state.log_file else ""
+        footer = f" q:quit p:pause r:reset 1-6:tab arrows:scroll{unk_str}{log_str}"
         try:
             stdscr.addnstr(h - 1, 0, footer.ljust(w), w, C_HEAD | curses.A_REVERSE)
         except curses.error:
@@ -790,16 +831,29 @@ def draw_dashboard(stdscr):
 def main():
     interface = "can0"
     log_file = None
+    no_log = False
 
     args = sys.argv[1:]
     if "--help" in args or "-h" in args:
         print(__doc__)
+        print("\n  --file <dump.log>   Replay candump log")
+        print("  --nolog             Disable CSV logging")
+        print("  <interface>         SocketCAN interface (default: can0)")
+        print("\nAll frames are logged to can_log_YYYYMMDD_HHMMSS.csv by default.")
         sys.exit(0)
+    if "--nolog" in args:
+        no_log = True
+        args.remove("--nolog")
     if "--file" in args:
         idx = args.index("--file")
         log_file = args[idx + 1]
     elif args and not args[0].startswith("-"):
         interface = args[0]
+
+    # Start CSV logging
+    if not no_log:
+        state.start_logging()
+        print(f"Logging to: {state.log_file}")
 
     # Start reader thread
     if log_file:
@@ -812,7 +866,12 @@ def main():
         sys.exit(1)
 
     reader.start()
-    curses.wrapper(draw_dashboard)
+    try:
+        curses.wrapper(draw_dashboard)
+    finally:
+        state.stop_logging()
+        if state.log_file:
+            print(f"\nLog saved: {state.log_file}  ({state.total_msgs} frames)")
 
 
 if __name__ == "__main__":
