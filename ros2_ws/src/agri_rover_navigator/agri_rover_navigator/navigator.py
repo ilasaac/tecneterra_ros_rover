@@ -864,6 +864,23 @@ class NavigatorNode(Node):
             wp.hold_secs = 0.0
             wp.acceptance_radius = self._accept_r
             approach_wps.append(wp)
+        # Check angle between approach arrival and first mission segment.
+        # If > 30°, insert a turn point so the rover pivots at WP[0].
+        if len(planned) >= 2 and len(self._path) >= 2:
+            approach_brg = bearing_to(planned[-2][0], planned[-2][1],
+                                      planned[-1][0], planned[-1][1])
+            mission_brg = bearing_to(self._path[0].latitude, self._path[0].longitude,
+                                     self._path[1].latitude, self._path[1].longitude)
+            angle_diff = abs((mission_brg - approach_brg + 180) % 360 - 180)
+            if angle_diff > 30.0:
+                self.get_logger().info(
+                    f'Approach→mission angle {angle_diff:.0f}° > 30° — adding turn at WP[0]')
+                needs_turn_at_junction = True
+            else:
+                needs_turn_at_junction = False
+        else:
+            needs_turn_at_junction = False
+
         # Prepend to mission
         self._path = approach_wps + list(self._path)
         self._path_origin_lat = rover_lat
@@ -873,6 +890,9 @@ class NavigatorNode(Node):
         # Shift corridor turn indices by number of prepended approach points
         shift = len(approach_wps)
         self._corridor_turn_indices = {ti + shift for ti in self._corridor_turn_indices}
+        # Add turn at junction if angle requires pivot
+        if needs_turn_at_junction:
+            self._corridor_turn_indices.add(len(approach_wps))
         # Also update corridor total arc-length if in corridor mode
         if self._corridor_mode and self._path_s:
             self._corridor_total_s = self._path_s[-1]
