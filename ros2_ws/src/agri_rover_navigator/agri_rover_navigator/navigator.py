@@ -845,14 +845,22 @@ class NavigatorNode(Node):
             self.get_logger().warn('Approach planning failed — proceeding without')
             self._approach_planned = True
             return
-        # Build approach waypoints at min speed
+        # Build approach waypoints — speed proportional to remaining distance
+        total_dist = sum(
+            haversine(planned[i][0], planned[i][1], planned[i+1][0], planned[i+1][1])
+            for i in range(len(planned) - 1))
         approach_wps = []
-        for lat, lon in planned[:-1]:
+        remaining = total_dist
+        for i, (lat, lon) in enumerate(planned[:-1]):
+            frac = remaining / max(total_dist, 0.1)
+            spd = self._min_speed + (self._max_speed - self._min_speed) * frac
+            if i + 1 < len(planned):
+                remaining -= haversine(lat, lon, planned[i+1][0], planned[i+1][1])
             wp = MissionWaypoint()
             wp.seq = -99
             wp.latitude = lat
             wp.longitude = lon
-            wp.speed = self._min_speed
+            wp.speed = max(self._min_speed, spd)
             wp.hold_secs = 0.0
             wp.acceptance_radius = self._accept_r
             approach_wps.append(wp)

@@ -44,7 +44,7 @@
     lookahead_distance:        2.0
     default_acceptance_radius: 0.5
     max_speed:                 1.5
-    min_speed:                 0.2
+    min_speed:                 0.5
     max_steering:              0.8
     control_rate:              25.0   # Hz — must match GPS hardware NMEA output rate
     gps_timeout:               2.0
