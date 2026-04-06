@@ -1615,21 +1615,40 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun saveMissionFile(name: String) {
-        // Save with speed from recordedMission (if available) or corridorList
-        val speeds = if (corridorList.isNotEmpty()) {
-            corridorList.flatten().map { it.second }
-        } else {
-            recordedMission.filterIsInstance<MissionAction.Waypoint>().map { it.speed }
-        }
+        // If user has local routePoints, save those (with speed from recording).
+        // Otherwise fall back to the rover's rerouted path (externally uploaded mission).
         val sb = StringBuilder("Latitude,Longitude,Speed\n")
-        routePoints.forEachIndexed { i, pt ->
-            val spd = speeds.getOrElse(i) { 0f }
-            sb.append("${pt.latitude},${pt.longitude},${spd}\n")
+        var count = 0
+        if (routePoints.isNotEmpty()) {
+            val speeds = if (corridorList.isNotEmpty()) {
+                corridorList.flatten().map { it.second }
+            } else {
+                recordedMission.filterIsInstance<MissionAction.Waypoint>().map { it.speed }
+            }
+            routePoints.forEachIndexed { i, pt ->
+                val spd = speeds.getOrElse(i) { 0f }
+                sb.append("${pt.latitude},${pt.longitude},${spd}\n")
+            }
+            count = routePoints.size
+        } else {
+            // Try rover's rerouted path (from navigator via rosbridge)
+            val path = roverReroutedPaths[selectedRoverId]
+                ?: roverMissions[selectedRoverId]?.map { Triple(it.latitude, it.longitude, false) }
+            if (path != null) {
+                path.forEach { (lat, lon, _) ->
+                    sb.append("${lat},${lon},0.0\n")
+                }
+                count = path.size
+            }
+        }
+        if (count == 0) {
+            Toast.makeText(this, "No waypoints to save", Toast.LENGTH_SHORT).show()
+            return
         }
         try {
             val fname = if (name.endsWith(".csv")) name else "$name.csv"
             File(getExternalFilesDir(null), fname).writeText(sb.toString())
-            Toast.makeText(this, "Saved $fname (${routePoints.size} pts)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Saved $fname ($count pts)", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Save failed: ${e.message}", Toast.LENGTH_SHORT).show()
         }
