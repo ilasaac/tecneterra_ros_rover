@@ -59,6 +59,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     // Per-rover rerouted path received from navigator via TUNNEL (after obstacle avoidance)
     // Triple: (lat, lon, isBypass)
     private val roverReroutedPaths   = HashMap<Int, List<Triple<Double, Double, Boolean>>>()
+    private val roverReroutedSpeeds  = HashMap<Int, List<Float>>()  // parallel speed per waypoint
     private val reroutedPathOverlays = HashMap<Int, MutableList<Any>>()
 
     // Live parameter tuning — EditText fields keyed by MAVLink param name;
@@ -249,6 +250,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     roverMissions.remove(sysId)
                     roverMissionBypass.remove(sysId)
                     roverReroutedPaths.remove(sysId)
+                    roverReroutedSpeeds.remove(sysId)
                     roverNextWaypointIndex[sysId] = 0
                     roverNavStatus[sysId] = "NA"
                     updateNavStatus(sysId, "NA")
@@ -321,9 +323,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         // Rerouted path from navigator — this IS the rover's actual mission view.
         // Redraw mission overlays to show the corrected path (with bypass segments,
         // spin points, etc.) instead of the raw uploaded waypoints.
-        onReroutedPath = { sysId, path ->
+        onReroutedPath = { sysId, path, speeds ->
             runOnUiThread {
                 roverReroutedPaths[sysId] = path
+                roverReroutedSpeeds[sysId] = speeds
                 roverMissionVisible[sysId] = true
                 redrawRoverMissions()
             }
@@ -599,6 +602,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         roverMissionVisible.remove(selectedRoverId)
         // Clear rerouted path overlay
         roverReroutedPaths.remove(selectedRoverId)
+        roverReroutedSpeeds.remove(selectedRoverId)
         reroutedPathOverlays[selectedRoverId]?.forEach {
             when (it) { is Marker -> it.remove(); is Polyline -> it.remove() }
         }
@@ -1634,9 +1638,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             // Try rover's rerouted path (from navigator via rosbridge)
             val path = roverReroutedPaths[selectedRoverId]
                 ?: roverMissions[selectedRoverId]?.map { Triple(it.latitude, it.longitude, false) }
+            val speeds = roverReroutedSpeeds[selectedRoverId]
             if (path != null) {
-                path.forEach { (lat, lon, _) ->
-                    sb.append("${lat},${lon},0.0\n")
+                path.forEachIndexed { i, (lat, lon, _) ->
+                    val spd = speeds?.getOrElse(i) { 0f } ?: 0f
+                    sb.append("${lat},${lon},${spd}\n")
                 }
                 count = path.size
             }

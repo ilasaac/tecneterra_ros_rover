@@ -65,9 +65,10 @@ class RoverPositionManager(
     /**
      * Called when the rover's rerouted path is received.
      * path: list of (lat, lon, isBypass) triples for each waypoint in order.
+     * speeds: parallel list of speed (m/s) per waypoint.
      * An empty list means the path was cleared.
      */
-    private val onReroutedPath:     (Int, List<Triple<Double, Double, Boolean>>) -> Unit,
+    private val onReroutedPath:     (Int, List<Triple<Double, Double, Boolean>>, List<Float>) -> Unit,
     /**
      * Called when GPS_RAW_INT (#24) is received.
      * fixType: 0=NO_GPS  1=NO_FIX  2=2D  3=3D  4=DGPS  5=RTK_FLOAT  6=RTK_FIXED
@@ -326,12 +327,14 @@ class RoverPositionManager(
                                 try {
                                     val arr = org.json.JSONArray(jsonStr)
                                     val path = mutableListOf<Triple<Double, Double, Boolean>>()
+                                    val speeds = mutableListOf<Float>()
                                     for (j in 0 until arr.length()) {
                                         val pt = arr.getJSONArray(j)
                                         path.add(Triple(pt.getDouble(0), pt.getDouble(1), pt.getInt(2) != 0))
+                                        speeds.add(if (pt.length() > 3) pt.getDouble(3).toFloat() else 0f)
                                     }
                                     Log.e("ROSBRIDGE", "rerouted_path parsed: ${path.size} pts")
-                                    scope.launch(Dispatchers.Main) { onReroutedPath(sysId, path) }
+                                    scope.launch(Dispatchers.Main) { onReroutedPath(sysId, path, speeds) }
                                 } catch (e: Exception) {
                                     Log.e("ROSBRIDGE", "rerouted_path parse ERROR: ${e.message}")
                                     Log.e("ROSBRIDGE", "rerouted_path first 200: ${jsonStr.take(200)}")
@@ -1299,11 +1302,13 @@ class RoverPositionManager(
                     try {
                         val arr  = org.json.JSONArray(json)
                         val path = mutableListOf<Triple<Double, Double, Boolean>>()
+                        val speeds = mutableListOf<Float>()
                         for (i in 0 until arr.length()) {
                             val pt = arr.getJSONArray(i)
                             path.add(Triple(pt.getDouble(0), pt.getDouble(1), pt.getInt(2) != 0))
+                            speeds.add(if (pt.length() > 3) pt.getDouble(3).toFloat() else 0f)
                         }
-                        scope.launch(Dispatchers.Main) { onReroutedPath(senderId, path) }
+                        scope.launch(Dispatchers.Main) { onReroutedPath(senderId, path, speeds) }
                     } catch (e: Exception) {
                         Log.w("RoverMgr", "TUNNEL JSON parse error: ${e.message}")
                     }
