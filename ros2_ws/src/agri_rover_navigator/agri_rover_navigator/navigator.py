@@ -1061,6 +1061,7 @@ class NavigatorNode(Node):
         self._expanded_polygons      = []
         self._obstacle_polygons      = []
         self._reroute_pending        = False
+        self._approach_planned       = False
         self._servo_ch               = [1061, 1061, PPM_CENTER, PPM_CENTER]  # CH5,CH6=off CH7,CH8=neutral
         clr_msg = String(); clr_msg.data = '[]'
         self.rerouted_pub.publish(clr_msg)
@@ -1088,6 +1089,7 @@ class NavigatorNode(Node):
             self._expanded_polygons      = []
             self._obstacle_polygons      = []
             self._reroute_pending        = False
+            self._approach_planned       = False
             # Record rover centre as path origin (start of virtual segment → wp[0]).
             if self._fix is not None:
                 self._path_origin_lat, self._path_origin_lon = self._center_pos()
@@ -1486,6 +1488,7 @@ class NavigatorNode(Node):
             self._spin_target_brg   = None
             self._corridor_mode     = True
             self._corridor_entered  = False
+            self._approach_planned  = False
             self._pivot_min_dist    = None
             self._corridor_widths.clear()
 
