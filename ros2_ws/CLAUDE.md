@@ -285,7 +285,8 @@ Servo channels (PPM CH5-CH8):
   - `rover_rear_corner_dist_m` (1.0 m): diagonal from rear antenna to each rear corner. Rear overhang = `sqrt(1.0² − 0.5²) ≈ 0.87 m`.
   - `rover_half_width_m` (0.5 m): half the physical rover width.
 - Clearance computed by `_rects_clearance()`: minimum corner-to-edge distance between the two convex quads (returns 0.0 if overlapping).
-- Three levels (checked at every 25 Hz control tick):
+- Runs in **both** `_control_loop_corridor()` and the waypoint control loop (checked at every 25 Hz tick).
+- Three levels:
   - `slow` (clearance < `proximity_slow_m` = 1.5 m): throttle above neutral is halved in `_publish_cmd()`.
   - `halt` (clearance < `proximity_halt_m` = 1.0 m): `_publish_halt()` + return from control loop.
   - `estop` (clearance < `proximity_estop_m` = 0.5 m): same as halt + publish `'MANUAL'` to `{peer_ns}/mode` topic to stop the peer navigator.
