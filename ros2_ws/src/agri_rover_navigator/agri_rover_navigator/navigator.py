@@ -897,9 +897,23 @@ class NavigatorNode(Node):
         if self._corridor_mode and self._path_s:
             self._corridor_total_s = self._path_s[-1]
         self._approach_planned = True
-        # Show on map
+
+        # Validate approach waypoints are not inside any obstacle
+        if self._expanded_polygons:
+            for i, wp in enumerate(approach_wps):
+                for poly in self._expanded_polygons:
+                    if self._point_in_polygon(wp.latitude, wp.longitude, poly):
+                        self.get_logger().warn(
+                            f'Approach WP[{i}] inside obstacle — removing')
+                        wp.latitude = approach_wps[max(0, i-1)].latitude
+                        wp.longitude = approach_wps[max(0, i-1)].longitude
+                        break
+
+        # Publish path + run preflight sim (same as obstacle reroute pipeline)
         self._publish_full_path()
-        # Disarm — user reviews approach then arms again
+        self._sim_validate_path()
+
+        # Disarm — user reviews approach + sim result then arms again
         self._armed = False
         a = Bool(); a.data = False
         self.armed_pub.publish(a)
