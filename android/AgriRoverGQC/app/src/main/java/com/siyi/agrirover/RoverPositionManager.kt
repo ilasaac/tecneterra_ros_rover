@@ -194,6 +194,12 @@ class RoverPositionManager(
                 Log.e("ROSBRIDGE", "Subscribed to ${topics.size} topics on $ns")
             }
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+                // Update heartbeat watchdog — any rosbridge message proves rover is alive
+                roverLastHb[sysId] = System.currentTimeMillis()
+                if (roverConnected[sysId] != true) {
+                    roverConnected[sysId] = true
+                    scope.launch(Dispatchers.Main) { onConnectionChange(sysId, true) }
+                }
                 try {
                     val json = org.json.JSONObject(text)
                     val topic = json.optString("topic", "")
@@ -350,12 +356,24 @@ class RoverPositionManager(
                 Log.e("ROSBRIDGE", "RV$sysId connection failed: ${t.message}")
                 rosbridgeWs.remove(sysId)
                 rosbridgeConnected[sysId] = false
+                roverConnected[sysId] = false
+                scope.launch(Dispatchers.Main) {
+                    onConnectionChange(sysId, false)
+                    onLinkStatus(sysId, "SBUS", false)
+                    onLinkStatus(sysId, "RF", false)
+                }
                 // Reconnect after 5s
                 scope.launch { delay(5000); roverAddresses[sysId]?.let { connectRosbridge(sysId, it) } }
             }
             override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
                 rosbridgeWs.remove(sysId)
                 rosbridgeConnected[sysId] = false
+                roverConnected[sysId] = false
+                scope.launch(Dispatchers.Main) {
+                    onConnectionChange(sysId, false)
+                    onLinkStatus(sysId, "SBUS", false)
+                    onLinkStatus(sysId, "RF", false)
+                }
             }
         })
         rosbridgeWs[sysId] = ws
