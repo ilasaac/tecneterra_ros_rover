@@ -244,11 +244,25 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         onMissionProgress = { sysId, seq ->
             runOnUiThread {
-                roverNextWaypointIndex[sysId] = seq
-                val total = roverReroutedPaths[sysId]?.size ?: roverMissions[sysId]?.size ?: 0
-                val wpView = if (sysId == 1) txtRv1Wp else txtRv2Wp
-                wpView.text = if (total > 0) "WP: ${seq + 1}/$total" else "WP: --"
-                redrawRoverMissions()
+                if (seq == -1) {
+                    // Mission complete — clear mission from map
+                    roverMissions.remove(sysId)
+                    roverMissionBypass.remove(sysId)
+                    roverReroutedPaths.remove(sysId)
+                    roverNextWaypointIndex[sysId] = 0
+                    roverNavStatus[sysId] = "NA"
+                    updateNavStatus(sysId, "NA")
+                    val wpView = if (sysId == 1) txtRv1Wp else txtRv2Wp
+                    wpView.text = "WP: --"
+                    redrawRoverMissions()
+                    Toast.makeText(this, "RV$sysId mission complete", Toast.LENGTH_SHORT).show()
+                } else {
+                    roverNextWaypointIndex[sysId] = seq
+                    val total = roverReroutedPaths[sysId]?.size ?: roverMissions[sysId]?.size ?: 0
+                    val wpView = if (sysId == 1) txtRv1Wp else txtRv2Wp
+                    wpView.text = if (total > 0) "WP: ${seq + 1}/$total" else "WP: --"
+                    redrawRoverMissions()
+                }
             }
         },
 
