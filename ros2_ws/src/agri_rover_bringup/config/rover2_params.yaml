@@ -52,7 +52,7 @@
     stanley_k:                 0.3
     stanley_softening:         0.3
     stanley_cte_scale_m:       1.0    # CTE (m) at which speed halves (proportional slowdown)
-    stanley_cte_alarm_m:       1.5    # CTE (m) above which rover disarms (safety)
+    stanley_cte_alarm_m:       1.0    # CTE (m) above which rover disarms (safety)
     min_turn_radius_m:         3.0    # minimum turn radius for corridor arc turns (metres)
     pivot_threshold:           25.0
     pivot_approach_dist:       2.0

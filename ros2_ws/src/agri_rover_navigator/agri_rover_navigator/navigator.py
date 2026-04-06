@@ -257,7 +257,7 @@ class NavigatorNode(Node):
         self.declare_parameter('stanley_k',                 1.0)
         self.declare_parameter('stanley_softening',         0.3)
         self.declare_parameter('stanley_cte_scale_m',       1.0)   # CTE (m) at which speed halves
-        self.declare_parameter('stanley_cte_alarm_m',       1.5)   # CTE (m) → disarm + halt
+        self.declare_parameter('stanley_cte_alarm_m',       1.0)   # CTE (m) → disarm + halt
         # Pivot-turn parameters:
         #   pivot_threshold    — turn angle (degrees) above which an in-place pivot
         #                        is performed instead of curving through the waypoint.
@@ -1599,22 +1599,31 @@ class NavigatorNode(Node):
                     seg_idx = try_seg
                     break
 
-        # Corridor width boundary — only enforce once the rover has entered the
-        # corridor (CTE was within width at least once).  On mission start the
-        # rover may be outside the corridor and needs to drive to the path first.
-        width = self._corridor_widths[seg_idx] if seg_idx < len(self._corridor_widths) else 1.5
-        if abs(cte) < width:
+        # CTE hard limit — disarm if rover drifts too far from path.
+        # Only enforce once the rover has entered the corridor (CTE was within
+        # limit at least once).  On mission start the rover may be outside and
+        # needs to drive to the path first.
+        cte_limit = self._stanley_cte_alarm
+        if abs(cte) < cte_limit:
             self._corridor_entered = True
-        if self._corridor_entered and abs(cte) >= width:
+        if self._corridor_entered and abs(cte) >= cte_limit:
             self.get_logger().error(
-                f'CORRIDOR BOUNDARY: CTE {cte:.2f}m >= width {width:.1f}m — disarming')
+                f'CTE ALARM: |CTE|={abs(cte):.2f}m >= limit {cte_limit:.1f}m — disarming')
             self._publish_halt()
-            # Use -3 (at_base signal) to disarm but keep mission loaded (STATUS=MSL).
-            # User can reposition and re-arm to continue.
             m = Int32(); m.data = -3
             self.wp_pub.publish(m)
-            self._corridor_entered = False  # reset so entry grace applies on re-arm
+            self._corridor_entered = False
             return
+
+        # Runtime obstacle proximity — halt if rover enters any expanded polygon
+        if self._expanded_polygons:
+            for poly in self._expanded_polygons:
+                if self._point_in_polygon(rlat, rlon, poly):
+                    self.get_logger().error('OBSTACLE PROXIMITY — rover inside safety zone, halting')
+                    self._publish_halt()
+                    m = Int32(); m.data = -3
+                    self.wp_pub.publish(m)
+                    return
 
         # XTE telemetry
         xte_msg = Float32(); xte_msg.data = abs(cte)
