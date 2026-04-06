@@ -172,7 +172,7 @@ class RoverPositionManager(
 
     private fun connectRosbridge(sysId: Int, ip: InetAddress) {
         if (rosbridgeWs.containsKey(sysId)) return  // already connected
-        val port = if (sysId == 1) 9090 else 9091
+        val port = 9090  // both rovers on same port (different Jetsons)
         val ns = "/rv$sysId"
         val url = "ws://${ip.hostAddress}:$port"
         Log.e("ROSBRIDGE", "Connecting to $url for RV$sysId telemetry")
@@ -766,7 +766,7 @@ class RoverPositionManager(
         width: Float,
     ) {
         val ns = "/rv$sysId"
-        val port = if (sysId == 1) 9090 else 9091
+        val port = 9090  // both rovers on same port (different Jetsons)
         val addr = roverAddresses[sysId]
         if (addr == null) {
             scope.launch(Dispatchers.Main) { onMissionAck("No rover $sysId IP — connect first") }
