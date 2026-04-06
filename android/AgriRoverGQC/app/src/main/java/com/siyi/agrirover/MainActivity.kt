@@ -1619,10 +1619,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun saveMissionFile(name: String) {
-        // If user has local routePoints, save those (with speed from recording).
-        // Otherwise fall back to the rover's rerouted path (externally uploaded mission).
-        val sb = StringBuilder("Latitude,Longitude,Speed\n")
-        var count = 0
+        // Build waypoint list from local recording or rover's rerouted path
+        val wpList = mutableListOf<org.json.JSONObject>()
         if (routePoints.isNotEmpty()) {
             val speeds = if (corridorList.isNotEmpty()) {
                 corridorList.flatten().map { it.second }
@@ -1631,30 +1629,41 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
             routePoints.forEachIndexed { i, pt ->
                 val spd = speeds.getOrElse(i) { 0f }
-                sb.append("${pt.latitude},${pt.longitude},${spd}\n")
+                wpList.add(org.json.JSONObject().apply {
+                    put("lat", pt.latitude); put("lon", pt.longitude); put("speed", spd.toDouble())
+                })
             }
-            count = routePoints.size
         } else {
-            // Try rover's rerouted path (from navigator via rosbridge)
             val path = roverReroutedPaths[selectedRoverId]
                 ?: roverMissions[selectedRoverId]?.map { Triple(it.latitude, it.longitude, false) }
             val speeds = roverReroutedSpeeds[selectedRoverId]
-            if (path != null) {
-                path.forEachIndexed { i, (lat, lon, _) ->
-                    val spd = speeds?.getOrElse(i) { 0f } ?: 0f
-                    sb.append("${lat},${lon},${spd}\n")
-                }
-                count = path.size
+            path?.forEachIndexed { i, (lat, lon, _) ->
+                val spd = speeds?.getOrElse(i) { 0f } ?: 0f
+                wpList.add(org.json.JSONObject().apply {
+                    put("lat", lat); put("lon", lon); put("speed", spd.toDouble())
+                })
             }
         }
-        if (count == 0) {
+        if (wpList.isEmpty()) {
             Toast.makeText(this, "No waypoints to save", Toast.LENGTH_SHORT).show()
             return
         }
+        // Build obstacles array
+        val obsArr = org.json.JSONArray()
+        for (poly in obstaclePolygons) {
+            val polyArr = org.json.JSONArray()
+            for (pt in poly) {
+                polyArr.put(org.json.JSONArray().apply { put(pt.latitude); put(pt.longitude) })
+            }
+            obsArr.put(polyArr)
+        }
+        val root = org.json.JSONObject()
+        root.put("waypoints", org.json.JSONArray(wpList))
+        root.put("obstacles", obsArr)
         try {
-            val fname = if (name.endsWith(".csv")) name else "$name.csv"
-            File(getExternalFilesDir(null), fname).writeText(sb.toString())
-            Toast.makeText(this, "Saved $fname ($count pts)", Toast.LENGTH_SHORT).show()
+            val fname = if (name.endsWith(".json")) name else "$name.json"
+            File(getExternalFilesDir(null), fname).writeText(root.toString(2))
+            Toast.makeText(this, "Saved $fname (${wpList.size} pts, ${obstaclePolygons.size} obs)", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Save failed: ${e.message}", Toast.LENGTH_SHORT).show()
         }
@@ -1662,44 +1671,58 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun showLoadDialog() {
         val files = getExternalFilesDir(null)
-            ?.listFiles { _, n -> n.endsWith(".csv") } ?: return
+            ?.listFiles { _, n -> n.endsWith(".json") } ?: return
         if (files.isEmpty()) {
             Toast.makeText(this, "No saved missions", Toast.LENGTH_SHORT).show()
             return
         }
         AlertDialog.Builder(this).setTitle("Load Mission")
             .setItems(files.map { it.name }.toTypedArray()) { _, i ->
-                parseCSV(files[i].readText())
+                loadMissionJSON(files[i].readText())
             }.show()
     }
 
-    private fun parseCSV(content: String) {
+    private fun loadMissionJSON(content: String) {
         nextWaypointIndex = 0
         routePoints.clear()
         recordedMission.clear()
         corridorList.clear()
+        obstaclePolygons.clear()
         val loadedSpeeds = mutableListOf<Float>()
-        content.split("\n").drop(1).forEach { line ->
-            val p = line.split(",")
-            if (p.size >= 2) {
-                try {
-                    val lat = p[0].trim().toDouble()
-                    val lon = p[1].trim().toDouble()
-                    val spd = if (p.size >= 3) p[2].trim().toFloatOrNull() ?: 0f else 0f
-                    routePoints.add(LatLng(lat, lon))
-                    loadedSpeeds.add(spd)
-                    recordedMission.add(MissionAction.Waypoint(lat, lon, spd))
-                } catch (_: NumberFormatException) {}
+        try {
+            val root = org.json.JSONObject(content)
+            val wps = root.getJSONArray("waypoints")
+            for (i in 0 until wps.length()) {
+                val wp = wps.getJSONObject(i)
+                val lat = wp.getDouble("lat")
+                val lon = wp.getDouble("lon")
+                val spd = wp.optDouble("speed", 0.0).toFloat()
+                routePoints.add(LatLng(lat, lon))
+                loadedSpeeds.add(spd)
+                recordedMission.add(MissionAction.Waypoint(lat, lon, spd))
             }
+            val obs = root.optJSONArray("obstacles")
+            if (obs != null) {
+                for (i in 0 until obs.length()) {
+                    val polyArr = obs.getJSONArray(i)
+                    val poly = mutableListOf<LatLng>()
+                    for (j in 0 until polyArr.length()) {
+                        val pt = polyArr.getJSONArray(j)
+                        poly.add(LatLng(pt.getDouble(0), pt.getDouble(1)))
+                    }
+                    if (poly.size >= 3) obstaclePolygons.add(poly)
+                }
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "JSON parse error: ${e.message}", Toast.LENGTH_SHORT).show()
+            return
         }
-        // Pre-populate corridorList so corridor mode upload works from loaded data
         if (routePoints.size >= 2) {
-            val corridor = routePoints.mapIndexed { i, pt ->
+            corridorList.add(routePoints.mapIndexed { i, pt ->
                 Pair(pt, loadedSpeeds.getOrElse(i) { 0f })
-            }
-            corridorList.add(corridor)
+            })
         }
         redrawMap()
-        Toast.makeText(this, "Loaded ${routePoints.size} waypoints", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Loaded ${routePoints.size} WPs + ${obstaclePolygons.size} obstacles", Toast.LENGTH_SHORT).show()
     }
 }
