@@ -225,6 +225,11 @@ class SimHarnessNode(Node):
                 self._rover.update(
                     self._throttle, self._steering,
                     self._max_speed, self._wheelbase, self._dt)
+                # Continuously publish mode+armed to override rp2040_bridge
+                m = String(); m.data = 'AUTONOMOUS'
+                self.pub_mode.publish(m)
+                b = Bool(); b.data = True
+                self.pub_armed.publish(b)
 
             self._publish_gps()
 

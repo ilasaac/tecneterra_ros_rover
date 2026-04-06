@@ -63,12 +63,12 @@ def generate_launch_description():
              parameters=[config],
              output='screen'),
 
-        # mavlink_bridge REMOVED — all communication via rosbridge WebSocket
-        # Node(package='agri_rover_mavlink',
-        #      executable='mavlink_bridge',
-        #      namespace=ns,
-        #      parameters=[config],
-        #      output='screen'),
+        # mavlink_bridge kept for simulator GPS + legacy compatibility
+        Node(package='agri_rover_mavlink',
+             executable='mavlink_bridge',
+             namespace=ns,
+             parameters=[config],
+             output='screen'),
 
         Node(package='agri_rover_sensors',
              executable='sensor_node',

@@ -2365,11 +2365,15 @@ class NavigatorNode(Node):
         if not self._path or len(self._path) < 2 or not self._path_s:
             return {'ok': False, 'reason': 'no path'}
 
-        # Init position at first path point, heading toward second
+        # Init position and heading — use real rover heading if available
+        # (approach path starts at rover's current position/heading, not WP[0]→WP[1])
         wp0 = self._path[0]
         wp1 = self._path[1]
-        hdg = bearing_to(wp0.latitude, wp0.longitude,
-                         wp1.latitude, wp1.longitude)
+        if self._heading is not None and self._fix is not None:
+            hdg = self._heading
+        else:
+            hdg = bearing_to(wp0.latitude, wp0.longitude,
+                             wp1.latitude, wp1.longitude)
 
         baseline = 1.0  # antenna baseline metres
         half_bm = baseline / 2.0
