@@ -1468,7 +1468,7 @@ class NavigatorNode(Node):
 
             # Turn indices and servo state from corridors_to_path
             # Always include index 0 — rover aligns heading before driving
-            self._corridor_turn_indices = {0} | {
+            self._corridor_turn_indices = {
                 i for i, pt in enumerate(path_pts) if pt[4]
             }
             self._corridor_servo = [pt[5] for pt in path_pts]
@@ -1917,7 +1917,7 @@ class NavigatorNode(Node):
         origin_lat = self._path_origin_lat or self._path[0].latitude
         origin_lon = self._path_origin_lon or self._path[0].longitude
         self._path_s = self._rebuild_path_s(self._path, origin_lat, origin_lon)
-        self._corridor_turn_indices = {0}
+        self._corridor_turn_indices = set()
 
         self.get_logger().info(
             f'A-star smoothed: {len(self._path)} total pts')
@@ -1963,7 +1963,7 @@ class NavigatorNode(Node):
             if len(clean_path) >= 2:
                 self._path = clean_path
                 self._bypass_indices = set()
-                self._corridor_turn_indices = {0}
+                self._corridor_turn_indices = set()
                 self._path_s = self._rebuild_path_s(
                     clean_path,
                     self._path_origin_lat or clean_path[0].latitude,

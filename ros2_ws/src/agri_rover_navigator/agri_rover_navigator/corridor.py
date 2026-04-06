@@ -308,10 +308,7 @@ def corridors_to_path(
             smoothed[i] = sum(vals) / len(vals)
     path = [(lat, lon, smoothed[i], w, t, s) for i, (lat, lon, _, w, t, s) in enumerate(path)]
 
-    # Mark first point as turn — rover aligns heading before driving
-    if path:
-        lat, lon, spd, w, _, srv = path[0]
-        path[0] = (lat, lon, spd, w, True, srv)
+    # First point is NOT a turn — approach path handles smooth arrival
 
     # Set first point after each turn to post_turn_speed for alignment
     for i, pt in enumerate(path):
