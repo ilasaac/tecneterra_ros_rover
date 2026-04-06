@@ -882,17 +882,25 @@ class NavigatorNode(Node):
             needs_turn_at_junction = False
 
         # Prepend to mission
+        shift = len(approach_wps)
         self._path = approach_wps + list(self._path)
         self._path_origin_lat = rover_lat
         self._path_origin_lon = rover_lon
         self._path_s = self._rebuild_path_s(self._path, rover_lat, rover_lon)
-        self._bypass_indices = set(range(len(approach_wps)))
+        self._bypass_indices = set(range(shift))
+        # Prepend corridor widths and servo state for approach waypoints
+        # Use CTE alarm as approach width; neutral servos (no spraying during approach)
+        approach_width = self._stanley_cte_alarm
+        if self._corridor_widths:
+            self._corridor_widths = [approach_width] * shift + self._corridor_widths
+        servo_list = getattr(self, '_corridor_servo', [])
+        if servo_list:
+            self._corridor_servo = [None] * shift + servo_list
         # Shift corridor turn indices by number of prepended approach points
-        shift = len(approach_wps)
         self._corridor_turn_indices = {ti + shift for ti in self._corridor_turn_indices}
         # Add turn at junction if angle requires pivot
         if needs_turn_at_junction:
-            self._corridor_turn_indices.add(len(approach_wps))
+            self._corridor_turn_indices.add(shift)
         # Also update corridor total arc-length if in corridor mode
         if self._corridor_mode and self._path_s:
             self._corridor_total_s = self._path_s[-1]
