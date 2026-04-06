@@ -268,7 +268,7 @@ _SERVER_VER  = str(int(_time.time()))
 
 # ── Mission file storage ───────────────────────────────────────────────────────
 MISSIONS_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mission_logs'))
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions'))
 os.makedirs(MISSIONS_DIR, exist_ok=True)
 
 def _save_mission_file(name: str, waypoints: list, obstacles: list,

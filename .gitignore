@@ -68,4 +68,3 @@ Thumbs.db
 *.db3
 tools/.env.rtk
 tools/mission_logs/
-missions/*.json
