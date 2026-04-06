@@ -78,7 +78,7 @@
     rover_rear_corner_dist_m:  1.0
     rover_half_width_m:        0.5
     proximity_slow_m:          1.5
-    proximity_halt_m:          1.0
+    proximity_halt_m:          0.75
     proximity_estop_m:         0.5
     # Resource management — set GPS coordinates of your field base stations
     recharge_lat:      0.0
