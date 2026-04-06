@@ -2398,9 +2398,10 @@ async function loadObstacles() {
   const resp = await fetch(`/load_obstacles?name=${encodeURIComponent(name)}`);
   const d = await resp.json();
   if (d.error) { status(d.error, '#e74c3c'); return; }
-  obstacles = d.obstacles || [];
+  const loaded = d.obstacles || [];
+  loaded.forEach(poly => obstacles.push(poly));
   refreshTable(); renderAll();
-  status(`Loaded ${obstacles.length} obstacle(s) from "${name}".`);
+  status(`Added ${loaded.length} obstacle(s) from "${name}" (total: ${obstacles.length}).`);
 }
 
 async function refreshObstacleList() {
