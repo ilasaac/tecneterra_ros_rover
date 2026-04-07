@@ -193,7 +193,7 @@ static Mode compute_mode(void) {
     if (!rf_ok) return MODE_EMERGENCY;
 
     // Emergency switch (CH4) always overrides — read from received RF packet
-    if (rf_ch[CH_EMERGENCY] > EMERGENCY_THRESH) return MODE_EMERGENCY;
+    if (rf_ch[CH_EMERGENCY] < EMERGENCY_THRESH) return MODE_EMERGENCY;
 
     uint16_t ch9 = rf_ch[CH_ROVER_SEL];
 
@@ -203,13 +203,13 @@ static Mode compute_mode(void) {
     // CH9 middle: no rover manually selected — autonomous if all conditions met,
     //   otherwise idle (not emergency — SWA is the only emergency trigger)
     if (ch9 <= RELAY_HIGH) {
-        if (rf_ch[CH_AUTONOMOUS] > AUTO_THRESH && hb_alive && cmd_fresh)
+        if (rf_ch[CH_AUTONOMOUS] < AUTO_THRESH && hb_alive && cmd_fresh)
             return MODE_AUTONOMOUS;
         // CH5 in AUTO + HB alive but no fresh <J:> cmd yet.  Report AUTO-TIMEOUT
         // so rp2040_bridge treats it as AUTONOMOUS and the navigator starts publishing
         // cmd_override — the first <J:> received will flip cmd_fresh and enter true
         // AUTONOMOUS on the very next frame.  PPM output stays neutral (idle) here.
-        if (rf_ch[CH_AUTONOMOUS] > AUTO_THRESH && hb_alive)
+        if (rf_ch[CH_AUTONOMOUS] < AUTO_THRESH && hb_alive)
             return MODE_AUTO_TIMEOUT;
         return MODE_IDLE;
     }

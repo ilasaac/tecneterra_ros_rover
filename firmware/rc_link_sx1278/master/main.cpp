@@ -269,14 +269,14 @@ static Mode compute_mode(void) {
 
     if (!sbus_ok) return MODE_EMERGENCY;
 
-    if (sbus_ch[CH_EMERGENCY] > EMERGENCY_THRESH) return MODE_EMERGENCY;
+    if (sbus_ch[CH_EMERGENCY] < EMERGENCY_THRESH) return MODE_EMERGENCY;
 
     // CH9 high: slave manually selected — master neutral, keep relaying over LoRa
     if (sbus_ch[CH_ROVER_SEL] > RELAY_HIGH) return MODE_RELAY;
 
     // CH9 middle: no rover manually selected — autonomous possible, else relay-neutral
     if (sbus_ch[CH_ROVER_SEL] >= RELAY_LOW && sbus_ch[CH_ROVER_SEL] <= RELAY_HIGH) {
-        if (sbus_ch[CH_AUTONOMOUS] > AUTO_THRESH) {
+        if (sbus_ch[CH_AUTONOMOUS] < AUTO_THRESH) {
             if (!hb_alive)  return MODE_AUTO_NO_HB;
             if (!cmd_fresh) return MODE_AUTO_TIMEOUT;
             return MODE_AUTONOMOUS;

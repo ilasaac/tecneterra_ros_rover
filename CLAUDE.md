@@ -174,14 +174,14 @@ SX1278 runs at **3.3 V** — do not connect to 5 V. No other DIOx pins (DIO1–D
 ```
 ── Master (RV1) ──────────────────────────────────────────────────────────────
 SBUS lost/timeout (200ms)          → EMERGENCY
-CH4 (SWA) > 1700                   → EMERGENCY  ← only trigger besides signal loss
+CH4 (SWA) < 1700                   → EMERGENCY  ← only trigger besides signal loss
 CH9 > 1750                         → RELAY  (master neutral, slave selected)
 CH9 in [1250, 1750]:
-  CH5 (SWB) > 1700:
+  CH5 (SWB) < 1700:
     + no Jetson heartbeat          → AUTO-NO-HB  (neutral)
     + heartbeat but no cmd         → AUTO-TIMEOUT (neutral)
     + heartbeat + fresh cmd        → AUTONOMOUS  (Jetson controls master)
-  CH5 <= 1700                      → RELAY  (master neutral, raw SBUS forwarded)
+  CH5 >= 1700                      → RELAY  (master neutral, raw SBUS forwarded)
 CH9 < 1250                         → MANUAL (master moves, raw SBUS passthrough)
 
 ── Slave (RV2) ───────────────────────────────────────────────────────────────
@@ -189,7 +189,7 @@ RF lost/timeout (500ms)            → EMERGENCY
 CH4 (from RF) < 1700               → EMERGENCY
 CH9 < 1250                         → IDLE  (master selected, not alarm)
 CH9 in [1250, 1750]:
-  CH5 > 1700 + HB alive + fresh cmd → AUTONOMOUS
+  CH5 < 1700 + HB alive + fresh cmd → AUTONOMOUS
   else                               → IDLE
 CH9 > 1750                         → MODE_RF (slave moves, relay values)
 ```
