@@ -436,7 +436,7 @@ def _start_beacon_listener():
         sock.settimeout(2.0)
         while True:
             try:
-                data, _ = sock.recvfrom(512)
+                data, (src_ip, _) = sock.recvfrom(512)
             except _socket.timeout:
                 continue
             except Exception:
@@ -451,6 +451,8 @@ def _start_beacon_listener():
             with _rover_live_lock:
                 entry = _rover_live.get(sysid, {})
                 entry['ts'] = _time.time()
+                entry['ip'] = src_ip
+                entry['rosbridge'] = obj.get('rosbridge', 9090)
                 entry['wp_active'] = obj.get('wp_active', entry.get('wp_active'))
                 entry['armed'] = obj.get('armed', entry.get('armed'))
                 lat = obj.get('lat')
@@ -1220,7 +1222,8 @@ let simResult     = null;
 let obstacles     = [];
 let obsMode       = false;
 let obsCurPts     = [];
-let liveRovers    = {};   // sysid → {lat, lon, hdg, ts}
+let liveRovers    = {};   // sysid → {lat, lon, hdg, ts, ip, rosbridge}
+let roverWs       = {};   // sysid → WebSocket (persistent rosbridge subscription)
 let analyzeResult = null;
 let logFileData   = null;
 let fetchedMission = null;  // mission metadata from rover run (corridor_mode, algorithm)
@@ -3602,6 +3605,56 @@ async function pollLiveRovers() {
 }
 setInterval(pollLiveRovers, 2000);
 pollLiveRovers();
+
+// ── Rosbridge GPS subscription (persistent WebSocket per rover) ───
+function connectRoverGps(sid, ip, port) {
+  if (roverWs[sid]) return;  // already connected
+  const ns = `/rv${sid}`;
+  let ws;
+  try { ws = new WebSocket(`ws://${ip}:${port}`); } catch(e) { return; }
+  ws.onopen = () => {
+    // Subscribe to fix (NavSatFix) and heading (Float32)
+    ws.send(JSON.stringify({op:'subscribe', topic:`${ns}/fix`, type:'sensor_msgs/msg/NavSatFix', throttle_rate:500}));
+    ws.send(JSON.stringify({op:'subscribe', topic:`${ns}/heading`, type:'std_msgs/msg/Float32', throttle_rate:500}));
+    ws.send(JSON.stringify({op:'subscribe', topic:`${ns}/wp_active`, type:'std_msgs/msg/Int32', throttle_rate:1000}));
+    ws.send(JSON.stringify({op:'subscribe', topic:`${ns}/armed`, type:'std_msgs/msg/Bool', throttle_rate:1000}));
+  };
+  ws.onmessage = (ev) => {
+    try {
+      const m = JSON.parse(ev.data);
+      if (m.op !== 'publish') return;
+      const r = liveRovers[sid] || {};
+      if (m.topic.endsWith('/fix') && m.msg) {
+        r.lat = m.msg.latitude;
+        r.lon = m.msg.longitude;
+        r.ts = Date.now() / 1000;
+        liveRovers[sid] = r;
+        redraw();
+      } else if (m.topic.endsWith('/heading') && m.msg) {
+        r.hdg = m.msg.data;
+        liveRovers[sid] = r;
+      } else if (m.topic.endsWith('/wp_active') && m.msg) {
+        r.wp_active = m.msg.data;
+        liveRovers[sid] = r;
+      } else if (m.topic.endsWith('/armed') && m.msg) {
+        r.armed = m.msg.data;
+        liveRovers[sid] = r;
+      }
+    } catch(e) {}
+  };
+  ws.onclose = () => { delete roverWs[sid]; };
+  ws.onerror = () => { ws.close(); delete roverWs[sid]; };
+  roverWs[sid] = ws;
+}
+
+// Auto-connect to discovered rovers every poll cycle
+setInterval(() => {
+  for (const [sid, r] of Object.entries(liveRovers)) {
+    if (r.ip && r.rosbridge && !roverWs[sid]) {
+      connectRoverGps(sid, r.ip, r.rosbridge);
+    }
+  }
+}, 3000);
 
 // ── Mission analyzer ──────────────────────────────────────────────
 

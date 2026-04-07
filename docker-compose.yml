@@ -27,6 +27,7 @@ x-rover-base: &rover-base
     - ./tools:/workspaces/isaac_ros-dev/tools      # sim tools (nmea_wifi_rx.py etc.)
     - ./ros2_ws/src/agri_rover_bringup/config:/workspaces/isaac_ros-dev/install/agri_rover_bringup/share/agri_rover_bringup/config  # live params YAML
     - ./ros2_ws/src/agri_rover_bringup/launch:/workspaces/isaac_ros-dev/install/agri_rover_bringup/share/agri_rover_bringup/launch  # live launch files
+    - ./docker-entrypoint.sh:/docker-entrypoint.sh  # live entrypoint — no rebuild needed
   restart: unless-stopped
 
 services:
