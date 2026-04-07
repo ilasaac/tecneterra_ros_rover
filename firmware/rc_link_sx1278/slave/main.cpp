@@ -164,7 +164,7 @@ static void dma_ppm_init(void) {
 //   CH1  = CH3           CH5  = CH11
 //   CH2  = CH1 inverted  CH6  = CH12
 //   CH3  = CH5            CH7  = CH7  inverted
-//   CH4  = CH6 inverted  CH8  = CH8  inverted
+//   CH4  = CH6            CH8  = CH8  inverted
 //
 // Inversion: 3000 − value  maps 1000↔2000, keeps 1500 at centre.
 
@@ -174,7 +174,7 @@ static void apply_ppm_map(const volatile uint16_t *src, volatile uint16_t *dst) 
     dst[0] = src[2];           // CH1 = RF CH3
     dst[1] = PPM_INV(src[0]);  // CH2 = RF CH1 inverted
     dst[2] = src[4];            // CH3 = RF CH5
-    dst[3] = PPM_INV(src[5]);  // CH4 = RF CH6 inverted
+    dst[3] = src[5];            // CH4 = RF CH6
     dst[4] = src[10];          // CH5 = RF CH11
     dst[5] = src[11];          // CH6 = RF CH12
     dst[6] = PPM_INV(src[6]);  // CH7 = RF CH7 inverted
@@ -226,8 +226,7 @@ static void apply_mode(Mode m) {
             break;
         case MODE_AUTONOMOUS:
             for (int i = 0; i < CHANNELS; i++) out_ch[i] = auto_ch[i];
-            // CH4/CH7/CH8 hardware expects inverted values
-            out_ch[3] = PPM_INV(auto_ch[3]);  // CH4
+            // CH7/CH8 hardware expects inverted values (valves/aux)
             out_ch[6] = PPM_INV(auto_ch[6]);  // CH7
             out_ch[7] = PPM_INV(auto_ch[7]);  // CH8
             break;
