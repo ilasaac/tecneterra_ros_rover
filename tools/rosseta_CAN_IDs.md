@@ -477,3 +477,55 @@ Additionally `VCU_CollisionSta = 1` was active, which blocks the pump via `check
 ## Other: PushMot ErrLvl = 3
 
 Push motor has a persistent critical error (level 3), causing PDU K2 relay to stay open. Separate issue from pump. Needs investigation.
+
+---
+
+# Power On / Power Off Sequence
+
+## Physical Controls
+
+- **HV power button** - Enables high-voltage system
+- **2x Emergency stop buttons** - Each has 2 pairs of cables (NC contacts). Cuts power when pressed.
+- **Start button** - Activates the system after HV and e-stops are cleared
+
+## Power ON Procedure
+
+1. HV power button ON
+2. Release emergency stops (if set)
+3. Press Start button
+
+## Power OFF Procedure
+
+Reverse of power on:
+1. Press emergency stop (or stop button)
+2. HV power button OFF
+
+## CAN Signals During Power Sequence
+
+### CAN A (Motor Bus)
+
+**0x0160 byte[0]** - Power/ignition state:
+| Value | Meaning |
+|-------|---------|
+| 0x00 | Power OFF / standby |
+| 0x01 | Power ON (system alive) |
+
+Transitions observed:
+- Power ON: 0x0160 goes 0x00 -> 0x01, then 0x0351 climbs to 0xAD (normal)
+- Power OFF: 0x0160 goes 0x01 -> 0x00, all motors go 0x21 (fault) -> 0x01 (standby), 0x0351 drops to 0x2C, bus dies ~0.5s later
+
+### CAN C (NAV Bus)
+
+| CAN ID | Field | Meaning |
+|--------|-------|---------|
+| 0x1002 bit 26 | NAV_EmergPowerOff | NAV commanding VCU to shut down |
+| 0x1007 bit 13 | VCU_ForceStopSta | Force stop active |
+| 0x1007 bit 14 | VCU_HwEmergStopSwitchSta | Hardware e-stop pressed |
+| 0x3100 bits 10-11 | PDU_EmergStopSig_Sta | PDU emergency stop signal |
+
+### TODO (2026-04-07)
+
+- Map which CAN signals correspond to each physical button
+- Identify which e-stop button maps to which signal
+- Document the full relay sequence (K1-K4) during power on/off
+- Check CAN T port purpose
