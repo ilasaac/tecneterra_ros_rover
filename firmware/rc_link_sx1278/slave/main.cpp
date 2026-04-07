@@ -193,7 +193,7 @@ static Mode compute_mode(void) {
     if (!rf_ok) return MODE_EMERGENCY;
 
     // Emergency switch (CH4) always overrides — read from received RF packet
-    if (rf_ch[CH_EMERGENCY] < EMERGENCY_THRESH) return MODE_EMERGENCY;
+    if (rf_ch[CH_EMERGENCY] > EMERGENCY_THRESH) return MODE_EMERGENCY;
 
     uint16_t ch9 = rf_ch[CH_ROVER_SEL];
 

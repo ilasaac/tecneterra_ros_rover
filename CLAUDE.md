@@ -174,7 +174,7 @@ SX1278 runs at **3.3 V** — do not connect to 5 V. No other DIOx pins (DIO1–D
 ```
 ── Master (RV1) ──────────────────────────────────────────────────────────────
 SBUS lost/timeout (200ms)          → EMERGENCY
-CH4 (SWA) < 1700                   → EMERGENCY  ← only trigger besides signal loss
+CH4 (SWA) > 1700                   → EMERGENCY  ← only trigger besides signal loss
 CH9 > 1750                         → RELAY  (master neutral, slave selected)
 CH9 in [1250, 1750]:
   CH5 (SWB) > 1700:
