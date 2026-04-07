@@ -37,7 +37,7 @@ ros_agri_rover/
     ├── start_rover1_sim.sh / start_rover2_sim.sh ← single-command sim launchers
     ├── start_sim_harness.sh             ← on-Jetson SIL: stops rover1, starts sim1 container
     ├── sim_navigator.py         ← SIL: Stanley+MPC+TTR+pivot+obstacle; reads rover1_params.yaml; --algo flag overrides; TTR uses DiffDriveState (track-width kinematics + SmoothSpeed + angular limit from Robot.cpp); diagnostics → tools/obstacle_debug.log
-    ├── mission_planner.py       ← web mission editor + SIL (HTTP :8089); Gen button: Grid/Zigzag/Scatter/Spiral; GPS Survey (u-blox USB)
+    ├── mission_planner.py       ← web mission editor + SIL (HTTP :8089); Gen button: Grid/Zigzag/Scatter/Spiral; Path Shift (offset missions + auto-upload queue); GPS Survey (u-blox USB)
     ├── monitor.py               ← terminal dashboard + Leaflet map (HTTP :8088); auto-fit, localStorage zoom, 5s refresh
     ├── mission_uploader.py      ← CSV waypoints → MAVLink mission upload
     ├── dynamics_collector.py    ← manual-drive data logger for model tuning (PPM + GPS → CSV)
@@ -530,6 +530,41 @@ Connect a **u-blox GPS module** via USB serial to the host PC running mission_pl
 - In-progress polygon: green dashed (perimeter) / red dashed (obstacle) with numbered vertices
 
 **Typical workflow**: connect u-blox → select Perimeter → walk fence corners pressing Capture at each → Close Polygon → switch to Obstacle → walk around tree/rock pressing Capture → Close Polygon → Save mission → Upload to rover.
+
+---
+
+## Path Shift — offset missions + auto-upload queue (mission_planner.py)
+
+**Problem:** Rover driving the same path repeatedly creates ruts/holes in the ground.
+
+**Path Shift panel** (toolbar "Shift" button):
+- Generates N offset copies of the current mission, each shifted perpendicular to the path direction
+- **Offset distance**: configurable (default ±1 m)
+- **Pattern**: Alternate (+d, -d, +d, -d...) or Graduated (+d, -d, +d/2, -d/2...)
+- **Obstacle awareness**: if offset point gets too close to any obstacle polygon, offset shrinks in 5 cm steps toward center to maintain min clearance (default 0.5 m)
+- **Chaikin smoothing**: configurable passes (default 2) — preserves turn markers and endpoints
+- Point-in-polygon test prevents offset points from landing inside obstacles
+
+**Algorithm** (client-side JS):
+1. For each waypoint, compute path tangent from adjacent points
+2. Offset perpendicular by ±d metres using `offsetLatLon()`
+3. Check `_minDistToObstacles()` — shrink offset in 5 cm steps if too close
+4. Apply Chaikin corner-cutting (skip turn marker points)
+
+**Mission Queue panel** (auto-opens after generation):
+- Shows "Mission X / N" with prev/next navigation
+- Clickable progress dots (color-coded: yellow=previewing, green=running, grey=done)
+- Ghost lines for all missions drawn as faint dashed lines on canvas
+- Current mission displayed at full brightness
+- Rover selector (RV1/RV2)
+- **Start Queue**: uploads mission[0] via rosbridge, arms rover
+- **Auto-advance**: polls `wp_active` and `armed` from beacon every 2 s; when `wp_active == -1` and `armed == false`, uploads next mission after 3 s settle delay
+- **Stop Queue**: cancels auto-upload
+
+**Beacon enrichment** (`docker-entrypoint.sh`):
+- Beacon now subscribes to `/rvN/wp_active` (Int32) and `/rvN/armed` (Bool) via DDS loopback
+- Broadcast JSON includes `wp_active` and `armed` fields (no extra network traffic)
+- `_start_beacon_listener()` in mission_planner stores these in `_rover_live[sysid]`
 
 ---
 
