@@ -31,7 +31,7 @@ def ros_listener():
     import rclpy
     from rclpy.node import Node
     from sensor_msgs.msg import NavSatFix
-    from std_msgs.msg import Float32
+    from std_msgs.msg import Float32, Int32, Bool
     rclpy.init()
     node = rclpy.create_node('beacon_$ROVER_ID')
     def on_fix(msg):
@@ -40,8 +40,14 @@ def ros_listener():
             pos['lon'] = msg.longitude
     def on_hdg(msg):
         pos['hdg'] = msg.data
+    def on_wp(msg):
+        pos['wp_active'] = msg.data
+    def on_armed(msg):
+        pos['armed'] = msg.data
     node.create_subscription(NavSatFix, ns + '/fix', on_fix, 10)
     node.create_subscription(Float32, ns + '/heading', on_hdg, 10)
+    node.create_subscription(Int32, ns + '/wp_active', on_wp, 10)
+    node.create_subscription(Bool, ns + '/armed', on_armed, 10)
     rclpy.spin(node)
 
 t = threading.Thread(target=ros_listener, daemon=True)
@@ -57,6 +63,10 @@ while True:
         pkt['lon'] = round(pos['lon'], 8)
     if 'hdg' in pos:
         pkt['hdg'] = round(pos['hdg'], 2)
+    if 'wp_active' in pos:
+        pkt['wp_active'] = pos['wp_active']
+    if 'armed' in pos:
+        pkt['armed'] = pos['armed']
     s.sendto(json.dumps(pkt).encode(), ('255.255.255.255', 5555))
     time.sleep(2)
 " &

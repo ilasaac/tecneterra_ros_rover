@@ -456,6 +456,8 @@ def _start_beacon_listener():
                         'lat': lat,
                         'lon': lon,
                         'hdg': obj.get('hdg'),
+                        'wp_active': obj.get('wp_active'),
+                        'armed': obj.get('armed'),
                         'ts': _time.time(),
                     }
     t = _threading.Thread(target=_run, daemon=True, name='beacon-listener')
@@ -826,6 +828,7 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-blue" onclick="document.getElementById('file-import').click()">&#8593; Import</button>
     <button class="btn-red" onclick="clearAll()">&#10005; Clear</button>
     <button class="btn-orange" onclick="toggleGenPanel()">&#9881; Gen</button>
+    <button class="btn-blue" onclick="toggleShiftPanel()" title="Generate offset missions to avoid ruts">&#8644; Shift</button>
     <!-- analyze is now a permanent section, no toggle button -->
     <input type="file" id="file-import" accept=".csv" style="display:none" onchange="importCSV(event)">
   </div>
@@ -1121,6 +1124,52 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-blue" style="flex:1;padding:4px" onclick="applyGenerate(true)">&#43; Append</button>
   </div>
 </div>
+<div id="shift-panel" style="display:none;position:fixed;left:318px;top:45px;z-index:2000;background:#1a1a2e;border:1px solid #0f3460;border-radius:4px;padding:10px;width:240px;font-size:11px;color:#ddd;box-shadow:0 4px 14px rgba(0,0,0,.8)">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+    <b style="color:#fff;font-size:12px">&#8644; Path Shift</b>
+    <button onclick="toggleShiftPanel()" style="background:none;border:none;color:#aaa;font-size:15px;cursor:pointer;padding:0 3px">&#10005;</button>
+  </div>
+  <label>Number of missions</label>
+  <input id="shift-count" type="number" value="6" min="1" max="20">
+  <label>Offset distance (m)</label>
+  <input id="shift-dist" type="number" value="1.0" min="0.1" max="5" step="0.1">
+  <label>Min obstacle clearance (m)</label>
+  <input id="shift-clearance" type="number" value="0.5" min="0.1" max="3" step="0.1">
+  <label>Smoothing passes</label>
+  <input id="shift-smooth" type="number" value="2" min="0" max="5">
+  <label>Pattern</label>
+  <select id="shift-pattern">
+    <option value="alternate">Alternate (+d, -d, +d, -d...)</option>
+    <option value="graduated">Graduated (+d, -d, +d/2, -d/2...)</option>
+  </select>
+  <div class="grow" style="margin-top:7px">
+    <button class="btn-green" style="flex:1;padding:4px" onclick="runPathShift()">&#9654; Generate</button>
+  </div>
+</div>
+<div id="queue-panel" style="display:none;position:fixed;left:318px;bottom:10px;z-index:2000;background:#1a1a2e;border:1px solid #0f3460;border-radius:4px;padding:10px;width:260px;font-size:11px;color:#ddd;box-shadow:0 4px 14px rgba(0,0,0,.8)">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+    <b style="color:#fff;font-size:12px">&#9776; Mission Queue</b>
+    <button onclick="toggleQueuePanel()" style="background:none;border:none;color:#aaa;font-size:15px;cursor:pointer;padding:0 3px">&#10005;</button>
+  </div>
+  <div id="queue-label" style="margin-bottom:5px;color:#888">No missions generated</div>
+  <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px">
+    <button class="btn-blue" style="padding:3px 8px" onclick="queuePrev()">&laquo; Prev</button>
+    <span id="queue-idx" style="flex:1;text-align:center;font-weight:bold;font-size:13px">0 / 0</span>
+    <button class="btn-blue" style="padding:3px 8px" onclick="queueNext()">Next &raquo;</button>
+  </div>
+  <div id="queue-progress" style="display:flex;gap:2px;margin-bottom:6px;flex-wrap:wrap"></div>
+  <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px">
+    <label style="margin:0">Rover</label>
+    <select id="queue-rover" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px;border-radius:2px">
+      <option value="1">RV1</option>
+      <option value="2">RV2</option>
+    </select>
+  </div>
+  <div class="grow">
+    <button id="btn-queue-start" class="btn-green" style="flex:1;padding:4px" onclick="startQueue()">&#9654; Start Queue</button>
+    <button id="btn-queue-stop" class="btn-red" style="flex:1;padding:4px;display:none" onclick="stopQueue()">&#9632; Stop</button>
+  </div>
+</div>
 <div id="sidebar-resize" style="width:5px;cursor:ew-resize;background:#333;flex-shrink:0"></div>
 <div id="cv-wrap">
   <canvas id="canvas"></canvas>
@@ -1178,6 +1227,13 @@ let optimizedPath = null;      // optimized path from rover (what it actually fo
 let simPreflight = null;       // preflight sim result from navigator (sim_preflight.json)
 let simDiagCsv = null;         // sim_diag.csv — same format as navigator_diag.csv
 
+// ── Mission queue (path shift) ───────────────────────────────────
+let missionQueue  = [];      // array of waypoint arrays
+let queueIndex    = 0;       // currently previewed mission
+let queueRunning  = false;   // auto-upload in progress
+let queueRunIdx   = -1;      // mission currently executing on rover
+let baseMission   = null;    // original waypoints before offset generation
+
 // Drag / pan tracking
 let _drag    = null;   // {type:'wp',idx} | {type:'pan',sx,sy,sLat,sLon}
 let _didDrag = false;
@@ -1231,6 +1287,7 @@ function redraw() {
   drawStartMarker();
   drawRover();
   if (showReal) drawAnalyzeTrack();
+  drawQueueGhosts();
   drawLiveRovers();
   drawGpsSurvey();
   drawMeasureOverlay();
@@ -2821,6 +2878,372 @@ function applyGenerate(append) {
   status(`Generated ${newWps.length} waypoints (${pat}).`);
 }
 
+// ── Path Shift — offset mission generation ───────────────────────
+const QUEUE_COLORS = ['#00e676','#ff9100','#2196f3','#e040fb','#ffea00','#00bcd4',
+                      '#ff5252','#76ff03','#448aff','#ff6e40'];
+
+function toggleShiftPanel() {
+  const p = document.getElementById('shift-panel');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+function toggleQueuePanel() {
+  const p = document.getElementById('queue-panel');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+
+function _pathTangent(wps, i) {
+  // Returns bearing in radians (0=north, CW) at waypoint i
+  const toRad = Math.PI / 180;
+  let i0 = Math.max(0, i - 1), i1 = Math.min(wps.length - 1, i + 1);
+  if (i0 === i1) i1 = Math.min(wps.length - 1, i0 + 1);
+  if (i0 === i1) return 0;
+  const dLat = (wps[i1].lat - wps[i0].lat) * 111320;
+  const dLon = (wps[i1].lon - wps[i0].lon) * 111320 * Math.cos(wps[i].lat * toRad);
+  return Math.atan2(dLon, dLat);  // radians, 0=north CW
+}
+
+function _perpOffset(lat, lon, bearing, dist) {
+  // Offset point perpendicular to bearing (positive = left of travel direction)
+  const perpBrg = bearing - Math.PI / 2;
+  const dN = dist * Math.cos(perpBrg);
+  const dE = dist * Math.sin(perpBrg);
+  return offsetLatLon(lat, lon, dN, dE);
+}
+
+function _ptToSegDist(px, py, ax, ay, bx, by) {
+  // Distance from point (px,py) to segment (ax,ay)-(bx,by) in metres
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-12) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function _minDistToObstacles(lat, lon) {
+  // Returns minimum distance in metres from (lat,lon) to any obstacle edge
+  const toRad = Math.PI / 180;
+  const cosLat = Math.cos(lat * toRad);
+  const px = lon * 111320 * cosLat;
+  const py = lat * 111320;
+  let minD = Infinity;
+  for (const poly of obstacles) {
+    for (let i = 0; i < poly.length; i++) {
+      const j = (i + 1) % poly.length;
+      const ax = poly[i][1] * 111320 * cosLat, ay = poly[i][0] * 111320;
+      const bx = poly[j][1] * 111320 * cosLat, by = poly[j][0] * 111320;
+      const d = _ptToSegDist(px, py, ax, ay, bx, by);
+      if (d < minD) minD = d;
+    }
+  }
+  return minD;
+}
+
+function _pointInAnyObstacle(lat, lon) {
+  for (const poly of obstacles) {
+    // Ray casting
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const yi = poly[i][0], xi = poly[i][1];
+      const yj = poly[j][0], xj = poly[j][1];
+      if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi))
+        inside = !inside;
+    }
+    if (inside) return true;
+  }
+  return false;
+}
+
+function _chaikinSmooth(wps, passes) {
+  // Chaikin corner-cutting — preserves first, last, and turn markers
+  if (passes <= 0 || wps.length < 3) return wps;
+  let pts = [...wps];
+  for (let p = 0; p < passes; p++) {
+    const out = [pts[0]];  // keep first
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      // Preserve turn markers exactly
+      if (a.speed < 0 || b.speed < 0) {
+        if (i > 0 || a.speed < 0) out.push(a);
+        continue;
+      }
+      const q = {
+        lat: a.lat * 0.75 + b.lat * 0.25,
+        lon: a.lon * 0.75 + b.lon * 0.25,
+        speed: a.speed, hold_secs: a.hold_secs, servos: a.servos
+      };
+      const r = {
+        lat: a.lat * 0.25 + b.lat * 0.75,
+        lon: a.lon * 0.25 + b.lon * 0.75,
+        speed: b.speed, hold_secs: b.hold_secs, servos: b.servos
+      };
+      out.push(q, r);
+    }
+    out.push(pts[pts.length - 1]);  // keep last
+    pts = out;
+  }
+  return pts;
+}
+
+function generateOffsetMissions(baseWps, count, dist, minClearance, smoothPasses, pattern) {
+  const missions = [];
+  for (let k = 0; k < count; k++) {
+    let offsetDist;
+    if (pattern === 'graduated') {
+      // +d, -d, +d/2, -d/2, +d/3, -d/3 ...
+      const tier = Math.floor(k / 2) + 1;
+      const sign = (k % 2 === 0) ? 1 : -1;
+      offsetDist = sign * dist / tier;
+    } else {
+      // alternate: +d, -d, +d, -d ...
+      offsetDist = (k % 2 === 0) ? dist : -dist;
+    }
+
+    const offsetWps = baseWps.map((wp, i) => {
+      const brg = _pathTangent(baseWps, i);
+      let d = offsetDist;
+
+      // Check obstacle clearance — shrink offset in 5cm steps
+      if (obstacles.length > 0) {
+        for (let trial = Math.abs(d); trial >= 0; trial -= 0.05) {
+          const sign = d >= 0 ? 1 : -1;
+          const tryD = sign * trial;
+          const [tLat, tLon] = _perpOffset(wp.lat, wp.lon, brg, tryD);
+          const obsDist = _minDistToObstacles(tLat, tLon);
+          if (obsDist >= minClearance && !_pointInAnyObstacle(tLat, tLon)) {
+            d = tryD;
+            break;
+          }
+          if (trial <= 0.01) { d = 0; break; }
+        }
+      }
+
+      const [lat, lon] = _perpOffset(wp.lat, wp.lon, brg, d);
+      return {lat, lon, speed: wp.speed, hold_secs: wp.hold_secs,
+              servos: wp.servos ? {...wp.servos} : {}};
+    });
+
+    missions.push(_chaikinSmooth(offsetWps, smoothPasses));
+  }
+  return missions;
+}
+
+function runPathShift() {
+  if (waypoints.length < 2) {
+    status('Load a base mission first (need at least 2 waypoints).', '#e74c3c');
+    return;
+  }
+  const count     = parseInt(document.getElementById('shift-count').value) || 6;
+  const dist      = parseFloat(document.getElementById('shift-dist').value) || 1.0;
+  const clearance = parseFloat(document.getElementById('shift-clearance').value) || 0.5;
+  const smooth    = parseInt(document.getElementById('shift-smooth').value) || 2;
+  const pattern   = document.getElementById('shift-pattern').value;
+
+  baseMission = waypoints.map(w => ({...w, servos: w.servos ? {...w.servos} : {}}));
+  const offsets = generateOffsetMissions(baseMission, count, dist, clearance, smooth, pattern);
+  missionQueue = [baseMission, ...offsets];
+  queueIndex = 0;
+  queueRunIdx = -1;
+  queueRunning = false;
+  waypoints = missionQueue[0].map(w => ({...w}));
+
+  document.getElementById('shift-panel').style.display = 'none';
+  document.getElementById('queue-panel').style.display = 'block';
+  updateQueueDisplay();
+  fitAll();
+  status(`Generated ${missionQueue.length} missions (base + ${offsets.length} offsets).`, '#27ae60');
+}
+
+// ── Queue navigation ─────────────────────────────────────────────
+function queuePrev() {
+  if (missionQueue.length === 0) return;
+  queueIndex = (queueIndex - 1 + missionQueue.length) % missionQueue.length;
+  waypoints = missionQueue[queueIndex].map(w => ({...w}));
+  updateQueueDisplay();
+  redraw();
+}
+function queueNext() {
+  if (missionQueue.length === 0) return;
+  queueIndex = (queueIndex + 1) % missionQueue.length;
+  waypoints = missionQueue[queueIndex].map(w => ({...w}));
+  updateQueueDisplay();
+  redraw();
+}
+function updateQueueDisplay() {
+  const total = missionQueue.length;
+  document.getElementById('queue-idx').textContent = total ? `${queueIndex + 1} / ${total}` : '0 / 0';
+  document.getElementById('queue-label').textContent = total
+    ? (queueIndex === 0 ? 'Base mission (original)' : `Offset mission #${queueIndex}`)
+    : 'No missions generated';
+  // Progress dots
+  const prog = document.getElementById('queue-progress');
+  let html = '';
+  for (let i = 0; i < total; i++) {
+    let color = '#555';  // pending
+    if (queueRunning && i < queueRunIdx) color = '#444';       // completed
+    if (queueRunning && i === queueRunIdx) color = '#00e676';  // running
+    if (i === queueIndex) color = '#ffea00';                    // previewing
+    html += `<div style="width:14px;height:14px;border-radius:50%;background:${color};border:1px solid #888;cursor:pointer;font-size:8px;text-align:center;line-height:14px;color:#000" onclick="queueJump(${i})" title="Mission ${i + 1}">${i + 1}</div>`;
+  }
+  prog.innerHTML = html;
+  // Show/hide start/stop
+  document.getElementById('btn-queue-start').style.display = queueRunning ? 'none' : 'block';
+  document.getElementById('btn-queue-stop').style.display = queueRunning ? 'block' : 'none';
+}
+function queueJump(idx) {
+  if (idx < 0 || idx >= missionQueue.length) return;
+  queueIndex = idx;
+  waypoints = missionQueue[queueIndex].map(w => ({...w}));
+  updateQueueDisplay();
+  redraw();
+}
+
+function drawQueueGhosts() {
+  if (missionQueue.length < 2) return;
+  missionQueue.forEach((mission, mi) => {
+    if (mi === queueIndex) return;  // skip current (drawn as main route)
+    ctx.save();
+    const done = queueRunning && mi < queueRunIdx;
+    ctx.globalAlpha = done ? 0.12 : 0.25;
+    ctx.strokeStyle = done ? '#555' : QUEUE_COLORS[mi % QUEUE_COLORS.length];
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    mission.forEach((wp, i) => {
+      const p = project(wp.lat, wp.lon);
+      i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+    });
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+// ── Auto-upload queue ────────────────────────────────────────────
+async function uploadQueueMission(idx) {
+  const roverId = parseInt(document.getElementById('queue-rover').value);
+  const ipEl = document.getElementById('r-ip-rv' + roverId);
+  if (!ipEl || !ipEl.value) {
+    status('Set rover IP first.', '#e74c3c');
+    stopQueue();
+    return false;
+  }
+  const rover_ip = ipEl.value;
+  const wsPort = 9090;
+  const mission = missionQueue[idx];
+  status(`Queue: uploading mission ${idx + 1}/${missionQueue.length}...`, '#f39c12');
+
+  try {
+    const ws = await new Promise((resolve, reject) => {
+      const w = new WebSocket(`ws://${rover_ip}:${wsPort}`);
+      w.onopen = () => resolve(w);
+      w.onerror = () => reject(new Error('WebSocket failed'));
+      setTimeout(() => reject(new Error('WebSocket timeout')), 5000);
+    });
+
+    // Build corridor JSON (same as uploadRover)
+    const pts = mission;
+    const corridorData = {
+      corridors: [{
+        corridor_id: 0,
+        centerline: pts.map(p => [p.lat, p.lon]),
+        width: 1.5,
+        speed: 0,
+        speeds: pts.map(p => p.speed),
+        ch5: pts.map(p => (p.servos && (p.servos['5'] || p.servos[5])) || 1500),
+        ch6: pts.map(p => (p.servos && (p.servos['6'] || p.servos[6])) || 1500),
+        ch7: pts.map(p => (p.servos && (p.servos['7'] || p.servos[7])) || 1500),
+        ch8: pts.map(p => (p.servos && (p.servos['8'] || p.servos[8])) || 1500),
+        next_corridor_id: -1,
+        turn_type: 'auto',
+        headland_width: 0
+      }],
+      min_turn_radius: 3.0,
+      headland_width: 0
+    };
+
+    const ns = '/rv' + roverId;
+    // Publish mission
+    ws.send(JSON.stringify({
+      op: 'publish', topic: ns + '/corridor_mission',
+      type: 'std_msgs/msg/String',
+      msg: {data: JSON.stringify(corridorData)}
+    }));
+
+    // Publish obstacles if any
+    if (obstacles.length > 0) {
+      ws.send(JSON.stringify({
+        op: 'publish', topic: ns + '/mission_fence',
+        type: 'std_msgs/msg/String',
+        msg: {data: JSON.stringify({polygons: obstacles})}
+      }));
+    }
+
+    // Wait briefly for navigator to process, then arm
+    await new Promise(r => setTimeout(r, 1500));
+    ws.send(JSON.stringify({
+      op: 'publish', topic: ns + '/armed',
+      type: 'std_msgs/msg/Bool', msg: {data: true}
+    }));
+    await new Promise(r => setTimeout(r, 300));
+    ws.send(JSON.stringify({
+      op: 'publish', topic: ns + '/mode',
+      type: 'std_msgs/msg/String', msg: {data: 'AUTONOMOUS'}
+    }));
+
+    ws.close();
+    status(`Queue: mission ${idx + 1} uploaded and armed.`, '#27ae60');
+    return true;
+  } catch (e) {
+    status(`Queue upload failed: ${e.message}`, '#e74c3c');
+    return false;
+  }
+}
+
+async function startQueue() {
+  if (missionQueue.length === 0) { status('No missions in queue.', '#e74c3c'); return; }
+  queueRunning = true;
+  queueRunIdx = 0;
+  queueIndex = 0;
+  waypoints = missionQueue[0].map(w => ({...w}));
+  updateQueueDisplay();
+  redraw();
+  const ok = await uploadQueueMission(0);
+  if (!ok) stopQueue();
+}
+
+function stopQueue() {
+  queueRunning = false;
+  queueRunIdx = -1;
+  updateQueueDisplay();
+  status('Queue stopped.', '#f39c12');
+}
+
+function pollQueueStatus() {
+  if (!queueRunning || queueRunIdx < 0) return;
+  const roverId = parseInt(document.getElementById('queue-rover').value);
+  const r = liveRovers[roverId] || liveRovers[String(roverId)];
+  if (!r) return;
+  const now = Date.now() / 1000;
+  if (now - r.ts > 10) return;  // stale
+  // Detect mission complete: wp_active == -1 and armed == false
+  if (r.wp_active === -1 && r.armed === false) {
+    const nextIdx = queueRunIdx + 1;
+    if (nextIdx >= missionQueue.length) {
+      queueRunning = false;
+      queueRunIdx = -1;
+      updateQueueDisplay();
+      status('Queue complete! All missions finished.', '#27ae60');
+      return;
+    }
+    queueRunIdx = nextIdx;
+    queueIndex = nextIdx;
+    waypoints = missionQueue[nextIdx].map(w => ({...w}));
+    updateQueueDisplay();
+    redraw();
+    // Small delay before uploading next to let rover settle
+    setTimeout(() => uploadQueueMission(nextIdx), 3000);
+  }
+}
+
 // ── Bulk speed ────────────────────────────────────────────────────
 function applyBulkSpeed() {
   const spd = parseFloat(document.getElementById('bulk-speed').value) || 0;
@@ -3146,6 +3569,7 @@ async function pollLiveRovers() {
     }
     const sl = document.getElementById('servo-live');
     if (sl) sl.innerHTML = servoHtml;
+    pollQueueStatus();
     redraw();
   } catch(e) {}
 }
