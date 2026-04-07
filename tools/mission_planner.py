@@ -448,18 +448,18 @@ def _start_beacon_listener():
             sysid = obj.get('sysid')
             if not sysid:
                 continue
-            lat = obj.get('lat')
-            lon = obj.get('lon')
-            if lat is not None and lon is not None:
-                with _rover_live_lock:
-                    _rover_live[sysid] = {
-                        'lat': lat,
-                        'lon': lon,
-                        'hdg': obj.get('hdg'),
-                        'wp_active': obj.get('wp_active'),
-                        'armed': obj.get('armed'),
-                        'ts': _time.time(),
-                    }
+            with _rover_live_lock:
+                entry = _rover_live.get(sysid, {})
+                entry['ts'] = _time.time()
+                entry['wp_active'] = obj.get('wp_active', entry.get('wp_active'))
+                entry['armed'] = obj.get('armed', entry.get('armed'))
+                lat = obj.get('lat')
+                lon = obj.get('lon')
+                if lat is not None and lon is not None:
+                    entry['lat'] = lat
+                    entry['lon'] = lon
+                    entry['hdg'] = obj.get('hdg')
+                _rover_live[sysid] = entry
     t = _threading.Thread(target=_run, daemon=True, name='beacon-listener')
     t.start()
 
@@ -829,6 +829,8 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-red" onclick="clearAll()">&#10005; Clear</button>
     <button class="btn-orange" onclick="toggleGenPanel()">&#9881; Gen</button>
     <button class="btn-blue" onclick="toggleShiftPanel()" title="Generate offset missions to avoid ruts">&#8644; Shift</button>
+    <button class="btn-green" onclick="goToRover()" title="Center map on live rover position">&#8982; Rover</button>
+    <span id="rover-status" style="font-size:10px;color:#556;align-self:center;margin-left:2px" title="Live rover beacon status"></span>
     <!-- analyze is now a permanent section, no toggle button -->
     <input type="file" id="file-import" accept=".csv" style="display:none" onchange="importCSV(event)">
   </div>
@@ -3554,6 +3556,21 @@ function drawLiveRovers() {
   }
 }
 
+function goToRover() {
+  const now = Date.now() / 1000;
+  for (const [sid, r] of Object.entries(liveRovers)) {
+    if (now - r.ts > 10) continue;
+    if (r.lat != null && r.lon != null) {
+      viewLat = r.lat;
+      viewLon = r.lon;
+      scale = 40;
+      redraw();
+      return;
+    }
+  }
+  alert('No live rover position available.\\nCheck that GPS is running and beacon is broadcasting.');
+}
+
 async function pollLiveRovers() {
   try {
     const resp = await fetch('/rover_live');
@@ -3561,12 +3578,22 @@ async function pollLiveRovers() {
     liveRovers = d;
     const now = Date.now() / 1000;
     let servoHtml = 'Rover: —';
+    // Update rover beacon status indicator
+    const statusEl = document.getElementById('rover-status');
+    let statusParts = [];
     for (const [sid, r] of Object.entries(d)) {
-      if (now - r.ts > 5 || !r.servos) continue;
-      const s = r.servos;
-      servoHtml = `RV${sid}: <span style="color:#5d9">CH5=${s[5]??s['5']??'?'} CH6=${s[6]??s['6']??'?'} CH7=${s[7]??s['7']??'?'} CH8=${s[8]??s['8']??'?'}</span>`;
-      break;
+      const age = now - r.ts;
+      const hasGps = r.lat != null && r.lon != null;
+      const fresh = age < 5;
+      const color = fresh && hasGps ? '#5d5' : fresh ? '#dd5' : '#555';
+      const label = fresh && hasGps ? 'GPS' : fresh ? 'NO GPS' : 'STALE';
+      statusParts.push(`<span style="color:${color}" title="age=${age.toFixed(0)}s lat=${r.lat} lon=${r.lon}">RV${sid}:${label}</span>`);
+      if (fresh && r.servos) {
+        const s = r.servos;
+        servoHtml = `RV${sid}: <span style="color:#5d9">CH5=${s[5]??s['5']??'?'} CH6=${s[6]??s['6']??'?'} CH7=${s[7]??s['7']??'?'} CH8=${s[8]??s['8']??'?'}</span>`;
+      }
     }
+    if (statusEl) statusEl.innerHTML = statusParts.length ? statusParts.join(' ') : '<span style="color:#555">no rovers</span>';
     const sl = document.getElementById('servo-live');
     if (sl) sl.innerHTML = servoHtml;
     pollQueueStatus();

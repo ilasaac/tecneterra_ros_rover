@@ -73,4 +73,8 @@ while True:
     echo "[entrypoint] Discovery beacon started (sysid=$ROVER_ID, port 5555, with GPS)"
 fi
 
-exec "$@"
+# Run main command in background and forward signals so beacon stays alive
+"$@" &
+MAIN_PID=$!
+trap 'kill $MAIN_PID 2>/dev/null; wait $MAIN_PID' TERM INT
+wait $MAIN_PID
