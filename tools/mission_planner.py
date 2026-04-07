@@ -2990,6 +2990,10 @@ function _chaikinSmooth(wps, passes) {
 }
 
 function generateOffsetMissions(baseWps, count, dist, minClearance, smoothPasses, pattern) {
+  // Account for rover physical width — clearance is measured from waypoint (center)
+  // so the rover edge is rover_width/2 closer to the obstacle
+  const roverHalfWidth = 0.5;  // metres (matches rover_width_m=1.0 in navigator params)
+  const effectiveClearance = minClearance + roverHalfWidth;
   const missions = [];
   for (let k = 0; k < count; k++) {
     let offsetDist;
@@ -3014,7 +3018,7 @@ function generateOffsetMissions(baseWps, count, dist, minClearance, smoothPasses
           const tryD = sign * trial;
           const [tLat, tLon] = _perpOffset(wp.lat, wp.lon, brg, tryD);
           const obsDist = _minDistToObstacles(tLat, tLon);
-          if (obsDist >= minClearance && !_pointInAnyObstacle(tLat, tLon)) {
+          if (obsDist >= effectiveClearance && !_pointInAnyObstacle(tLat, tLon)) {
             d = tryD;
             break;
           }
