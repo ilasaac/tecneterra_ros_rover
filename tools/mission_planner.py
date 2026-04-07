@@ -3578,14 +3578,18 @@ async function pollLiveRovers() {
   try {
     const resp = await fetch('/rover_live');
     const d = await resp.json();
-    liveRovers = d;
+    // Merge beacon data with existing liveRovers (preserve rosbridge GPS data)
+    for (const [sid, r] of Object.entries(d)) {
+      const existing = liveRovers[sid] || {};
+      liveRovers[sid] = Object.assign(existing, r);
+    }
     const now = Date.now() / 1000;
     let servoHtml = 'Rover: —';
     // Update rover beacon status indicator
     const statusEl = document.getElementById('rover-status');
     let statusParts = [];
-    for (const [sid, r] of Object.entries(d)) {
-      const age = now - r.ts;
+    for (const [sid, r] of Object.entries(liveRovers)) {
+      const age = now - (r.ts || 0);
       const hasGps = r.lat != null && r.lon != null;
       const fresh = age < 5;
       const color = fresh && hasGps ? '#5d5' : fresh ? '#dd5' : '#555';
@@ -3631,7 +3635,16 @@ function connectRoverGps(sid, ip, port) {
         liveRovers[sid] = r;
         redraw();
       } else if (m.topic.endsWith('/heading') && m.msg) {
-        r.hdg = m.msg.data;
+        // Smooth heading with circular EMA to avoid jitter when stationary
+        const raw = m.msg.data;
+        if (r.hdg != null) {
+          let diff = raw - r.hdg;
+          if (diff > 180) diff -= 360;
+          if (diff < -180) diff += 360;
+          r.hdg = (r.hdg + diff * 0.15 + 360) % 360;  // alpha=0.15
+        } else {
+          r.hdg = raw;
+        }
         liveRovers[sid] = r;
       } else if (m.topic.endsWith('/wp_active') && m.msg) {
         r.wp_active = m.msg.data;
