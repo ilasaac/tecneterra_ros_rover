@@ -10,9 +10,9 @@ if ros2 pkg list 2>/dev/null | grep -q rosbridge_server; then
     echo "[entrypoint] rosbridge_server started on port 9090"
 fi
 
-# Discovery beacon — broadcast rover identity on UDP 5555 every 2s.
-# GQC and mission_planner listen for this to auto-discover rover IPs.
-# Extracts rover_id from the launch command (rover1 → 1, rover2 → 2).
+# Discovery beacon — broadcast rover identity + GPS position on UDP 5555 every 2s.
+# GQC and mission_planner listen for this to auto-discover rover IPs and track position.
+# Subscribes to local ROS2 fix/heading topics (DDS loopback — no network traffic).
 ROVER_ID=0
 case "$@" in
     *rover1*) ROVER_ID=1 ;;
@@ -20,19 +20,47 @@ case "$@" in
     *sim_harness*) ROVER_ID=0 ;;
 esac
 if [ "$ROVER_ID" -gt 0 ]; then
-    (while true; do
-        echo -n "{\"sysid\":$ROVER_ID,\"rosbridge\":9090}" | \
-            socat - UDP-DATAGRAM:255.255.255.255:5555,broadcast 2>/dev/null || \
-        python3 -c "
-import socket,time
-s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-s.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1)
-s.sendto(b'{\"sysid\":$ROVER_ID,\"rosbridge\":9090}',('255.255.255.255',5555))
-s.close()
-" 2>/dev/null
-        sleep 2
-    done) &
-    echo "[entrypoint] Discovery beacon started (sysid=$ROVER_ID, port 5555)"
+    python3 -u -c "
+import socket, time, json, threading
+
+sysid = $ROVER_ID
+ns = '/rv$ROVER_ID'
+pos = {}  # {lat, lon, hdg}
+
+def ros_listener():
+    import rclpy
+    from rclpy.node import Node
+    from sensor_msgs.msg import NavSatFix
+    from std_msgs.msg import Float32
+    rclpy.init()
+    node = rclpy.create_node('beacon_$ROVER_ID')
+    def on_fix(msg):
+        if msg.latitude != 0.0:
+            pos['lat'] = msg.latitude
+            pos['lon'] = msg.longitude
+    def on_hdg(msg):
+        pos['hdg'] = msg.data
+    node.create_subscription(NavSatFix, ns + '/fix', on_fix, 10)
+    node.create_subscription(Float32, ns + '/heading', on_hdg, 10)
+    rclpy.spin(node)
+
+t = threading.Thread(target=ros_listener, daemon=True)
+t.start()
+time.sleep(1)  # let ROS2 init
+
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+while True:
+    pkt = {'sysid': sysid, 'rosbridge': 9090}
+    if 'lat' in pos:
+        pkt['lat'] = round(pos['lat'], 8)
+        pkt['lon'] = round(pos['lon'], 8)
+    if 'hdg' in pos:
+        pkt['hdg'] = round(pos['hdg'], 2)
+    s.sendto(json.dumps(pkt).encode(), ('255.255.255.255', 5555))
+    time.sleep(2)
+" &
+    echo "[entrypoint] Discovery beacon started (sysid=$ROVER_ID, port 5555, with GPS)"
 fi
 
 exec "$@"

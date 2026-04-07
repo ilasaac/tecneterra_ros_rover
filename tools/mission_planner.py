@@ -420,6 +420,47 @@ _snooped_lock: _threading.Lock = _threading.Lock()
 _rover_live:   dict             = {}   # sysid → {lat, lon, hdg, ts}
 _rover_live_lock: _threading.Lock = _threading.Lock()
 
+# ── Beacon listener (UDP 5555) — passive rover position tracking ──────────────
+def _start_beacon_listener():
+    """Listen for rover discovery beacons on UDP 5555. Zero extra network traffic."""
+    def _run():
+        import json as _json
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(('', 5555))
+        except OSError as e:
+            print(f'[beacon] Cannot bind :5555 ({e})', flush=True)
+            return
+        print('[beacon] Listening on :5555 for rover beacons', flush=True)
+        sock.settimeout(2.0)
+        while True:
+            try:
+                data, _ = sock.recvfrom(512)
+            except _socket.timeout:
+                continue
+            except Exception:
+                break
+            try:
+                obj = _json.loads(data)
+            except Exception:
+                continue
+            sysid = obj.get('sysid')
+            if not sysid:
+                continue
+            lat = obj.get('lat')
+            lon = obj.get('lon')
+            if lat is not None and lon is not None:
+                with _rover_live_lock:
+                    _rover_live[sysid] = {
+                        'lat': lat,
+                        'lon': lon,
+                        'hdg': obj.get('hdg'),
+                        'ts': _time.time(),
+                    }
+    t = _threading.Thread(target=_run, daemon=True, name='beacon-listener')
+    t.start()
+
 def _parse_fence_buf(fence_buf: list) -> list:
     """[(lat, lon, n), ...] → [[[lat,lon],...], ...] grouped by vertex count."""
     polys, i = [], 0
@@ -4217,6 +4258,7 @@ if __name__ == '__main__':
     print('Ctrl+C to stop')
 
     _start_snooper()
+    _start_beacon_listener()
 
     import threading, webbrowser
     threading.Timer(0.5, lambda: webbrowser.open(url)).start()
