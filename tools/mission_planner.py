@@ -1158,21 +1158,32 @@ tr:hover td{background:#1e1e3a}
     <b style="color:#fff;font-size:12px">&#9776; Lane Map</b>
     <button onclick="toggleLaneMode()" style="background:none;border:none;color:#aaa;font-size:15px;cursor:pointer;padding:0 3px">&#10005;</button>
   </div>
-  <div style="margin-bottom:5px;color:#888" id="lane-status">Click canvas to place lane start, then end. Arrow shows direction.</div>
+  <div style="margin-bottom:5px;color:#888" id="lane-status">Select tag, then click canvas to place points.</div>
+  <div style="margin-bottom:5px">
+    <b style="color:#aaa;font-size:10px">Point tag:</b>
+    <div style="display:flex;gap:2px;flex-wrap:wrap;margin-top:3px">
+      <button id="lt-rs" class="btn-orange" style="flex:1;padding:3px;font-size:10px;opacity:1" onclick="setLaneTag('row-start')">Row Start</button>
+      <button id="lt-re" class="btn-orange" style="flex:1;padding:3px;font-size:10px;opacity:0.5" onclick="setLaneTag('row-end')">Row End</button>
+    </div>
+    <div style="display:flex;gap:2px;flex-wrap:wrap;margin-top:2px">
+      <button id="lt-hs" class="btn-blue" style="flex:1;padding:3px;font-size:10px;opacity:0.5" onclick="setLaneTag('headland-start')">Hdl Start</button>
+      <button id="lt-he" class="btn-blue" style="flex:1;padding:3px;font-size:10px;opacity:0.5" onclick="setLaneTag('headland-end')">Hdl End</button>
+    </div>
+    <div style="display:flex;gap:2px;flex-wrap:wrap;margin-top:2px">
+      <button id="lt-mid" class="btn-green" style="flex:1;padding:3px;font-size:10px;opacity:0.5" onclick="setLaneTag('midpoint')">+ Midpoint</button>
+      <button id="lt-base" class="btn-red" style="flex:1;padding:3px;font-size:10px;opacity:0.5" onclick="setLaneTag('base')">Base</button>
+    </div>
+  </div>
   <label>Default speed (m/s)</label>
   <input id="lane-speed" type="number" value="0.8" min="0.1" max="3" step="0.1">
-  <label>Lane type</label>
-  <select id="lane-type">
-    <option value="row">Row</option>
-    <option value="headland">Headland</option>
-  </select>
   <label>Turn radius (m)</label>
   <input id="lane-radius" type="number" value="2.0" min="0.5" max="5" step="0.5">
   <label>Auto-connect snap (m)</label>
   <input id="lane-snap" type="number" value="2.0" min="0.5" max="5" step="0.5">
   <div style="margin-top:5px;display:flex;gap:3px;flex-wrap:wrap">
-    <button class="btn-red" style="flex:1;padding:3px;font-size:10px" onclick="clearLanes()">Clear All</button>
+    <button class="btn-orange" style="flex:1;padding:3px;font-size:10px" onclick="buildLanesFromPoints()">&#9881; Build Lanes</button>
     <button class="btn-orange" style="flex:1;padding:3px;font-size:10px" onclick="undoLastLane()">Undo</button>
+    <button class="btn-red" style="flex:1;padding:3px;font-size:10px" onclick="clearLanes()">Clear</button>
   </div>
   <div style="margin-top:5px;display:flex;gap:3px;flex-wrap:wrap">
     <button class="btn-blue" style="flex:1;padding:3px;font-size:10px" onclick="saveLaneMap()">Save</button>
@@ -1182,7 +1193,7 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-green" style="flex:1;padding:4px" onclick="uploadLaneMap(1)">&#9650; RV1</button>
     <button class="btn-blue" style="flex:1;padding:4px" onclick="uploadLaneMap(2)">&#9650; RV2</button>
   </div>
-  <div style="margin-top:4px;font-size:9px;color:#666" id="lane-count">0 lanes, 0 connections</div>
+  <div style="margin-top:4px;font-size:9px;color:#666" id="lane-count">0 pts, 0 lanes, 0 connections</div>
 </div>
 <div id="queue-panel" style="display:none;position:fixed;left:318px;bottom:10px;z-index:2000;background:#1a1a2e;border:1px solid #0f3460;border-radius:4px;padding:10px;width:260px;font-size:11px;color:#ddd;box-shadow:0 4px 14px rgba(0,0,0,.8)">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
@@ -1260,11 +1271,11 @@ let liveRovers    = {};   // sysid → {lat, lon, hdg, ts, ip, rosbridge}
 let roverWs       = {};   // sysid → WebSocket (persistent rosbridge subscription)
 let analyzeResult = null;
 // Lane map state
-let laneMode      = false;    // drawing lanes on canvas
-let laneDrawStart = null;     // {lat, lon} of current lane start (waiting for end click)
+let laneMode      = false;
+let laneTag       = 'row-start';  // current tag for placed points
+let lanePoints    = [];           // [{lat, lon, tag}, ...] all placed points
 let laneMap       = { lanes: [], connections: [], base_lane: '', base_position: [0,0], min_turn_radius: 2.0 };
 let laneIdCounter = 0;
-let laneCurPoints = [];   // points being drawn for current lane (polyline)
 let logFileData   = null;
 let fetchedMission = null;  // mission metadata from rover run (corridor_mode, algorithm)
 let originalCorridors = null;  // raw corridor vertices from rover (with speed markers)
@@ -1870,22 +1881,8 @@ canvas.addEventListener('click', e => {
   }
 });
 
-canvas.addEventListener('dblclick', e => {
-  if (laneMode && laneCurPoints.length >= 2) {
-    // Remove last point (added by the second click of the double-click)
-    laneCurPoints.pop();
-    _finishLane();
-  }
-});
-
 canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
-  if (laneMode && laneCurPoints.length > 0) {
-    // Right-click finishes lane or cancels if only 1 point
-    if (laneCurPoints.length >= 2) _finishLane();
-    else { laneCurPoints = []; redraw(); document.getElementById('lane-status').textContent = 'Cancelled. Click to start a new lane.'; }
-    return;
-  }
   const {offsetX: x, offsetY: y} = e;
   const wi = hitWaypoint(x, y);
   if (wi >= 0) { removeWp(wi); return; }
@@ -3736,29 +3733,16 @@ function toggleLaneMode() {
   const btn = document.getElementById('btn-lanes');
   panel.style.display = laneMode ? 'block' : 'none';
   btn.style.background = laneMode ? '#e74c3c' : '';
-  if (!laneMode) laneDrawStart = null;
   redraw();
 }
 
-function _laneStart(lane) { return lane.centerline ? lane.centerline[0] : lane.start; }
-function _laneEnd(lane) { return lane.centerline ? lane.centerline[lane.centerline.length-1] : lane.end; }
-
-function _autoConnectLanes() {
-  // Auto-generate connections between lanes whose endpoints are within snap distance
-  const snap = parseFloat(document.getElementById('lane-snap').value) || 2.0;
-  const radius = parseFloat(document.getElementById('lane-radius').value) || 2.0;
-  laneMap.connections = [];
-  for (const a of laneMap.lanes) {
-    for (const b of laneMap.lanes) {
-      if (a.id === b.id) continue;
-      const aEnd = _laneEnd(a), bStart = _laneStart(b);
-      const d = _haversineLane(aEnd[0], aEnd[1], bStart[0], bStart[1]);
-      if (d < snap) {
-        laneMap.connections.push({ from: a.id, to: b.id, turn_radius: radius });
-      }
-    }
-  }
-  _updateLaneCount();
+function setLaneTag(tag) {
+  laneTag = tag;
+  for (const id of ['lt-rs','lt-re','lt-hs','lt-he','lt-mid','lt-base'])
+    document.getElementById(id).style.opacity = '0.5';
+  const map = {'row-start':'lt-rs','row-end':'lt-re','headland-start':'lt-hs','headland-end':'lt-he','midpoint':'lt-mid','base':'lt-base'};
+  if (map[tag]) document.getElementById(map[tag]).style.opacity = '1';
+  document.getElementById('lane-status').textContent = `Placing: ${tag}. Click canvas.`;
 }
 
 function _haversineLane(lat1, lon1, lat2, lon2) {
@@ -3770,121 +3754,163 @@ function _haversineLane(lat1, lon1, lat2, lon2) {
 
 function _updateLaneCount() {
   const el = document.getElementById('lane-count');
-  if (el) el.textContent = `${laneMap.lanes.length} lanes, ${laneMap.connections.length} connections`;
+  if (el) el.textContent = `${lanePoints.length} pts, ${laneMap.lanes.length} lanes, ${laneMap.connections.length} connections`;
 }
 
 function _onLaneClick(lat, lon) {
-  laneCurPoints.push([lat, lon]);
-  if (laneCurPoints.length === 1) {
-    document.getElementById('lane-status').textContent = 'Click to add points. Double-click to finish lane.';
+  if (laneTag === 'base') {
+    laneMap.base_position = [lat, lon];
+    document.getElementById('lane-status').textContent = `Base set at (${lat.toFixed(6)}, ${lon.toFixed(6)})`;
+  } else {
+    lanePoints.push({ lat, lon, tag: laneTag });
+    const hint = {'row-start':'Add midpoints or Row End','row-end':'Next Row Start or Hdl Start',
+                  'headland-start':'Add midpoints or Hdl End','headland-end':'Next Row Start or Hdl Start',
+                  'midpoint':'Continue midpoints or place End'}[laneTag] || '';
+    document.getElementById('lane-status').textContent = `${laneTag} #${lanePoints.length}. ${hint}`;
   }
+  _updateLaneCount();
   redraw();
 }
 
-function _finishLane() {
-  if (laneCurPoints.length < 2) { laneCurPoints = []; redraw(); return; }
-  const id = 'L' + (++laneIdCounter);
+function buildLanesFromPoints() {
+  laneMap.lanes = [];
+  laneMap.connections = [];
+  laneIdCounter = 0;
   const speed = parseFloat(document.getElementById('lane-speed').value) || 0.8;
-  const type = document.getElementById('lane-type').value;
-  laneMap.lanes.push({ id, centerline: laneCurPoints.slice(), speed, type });
-  laneCurPoints = [];
-  _autoConnectLanes();
-  document.getElementById('lane-status').textContent = `Lane ${id} added (${laneMap.lanes[laneMap.lanes.length-1].centerline.length} pts). Click to start next.`;
+  const snap = parseFloat(document.getElementById('lane-snap').value) || 2.0;
+  const radius = parseFloat(document.getElementById('lane-radius').value) || 2.0;
+
+  let curType = null;
+  let curPts = [];
+  function flush(type) {
+    if (curPts.length >= 2) {
+      const id = (type === 'headland' ? 'H' : 'R') + (++laneIdCounter);
+      laneMap.lanes.push({ id, centerline: curPts.slice(), speed, type });
+    }
+    curPts = []; curType = null;
+  }
+  for (const pt of lanePoints) {
+    if (pt.tag === 'row-start') {
+      flush(curType);
+      curType = 'row'; curPts = [[pt.lat, pt.lon]];
+    } else if (pt.tag === 'headland-start') {
+      flush(curType);
+      curType = 'headland'; curPts = [[pt.lat, pt.lon]];
+    } else if (pt.tag === 'midpoint') {
+      if (curPts.length > 0) curPts.push([pt.lat, pt.lon]);
+    } else if (pt.tag === 'row-end') {
+      curPts.push([pt.lat, pt.lon]);
+      flush('row');
+    } else if (pt.tag === 'headland-end') {
+      curPts.push([pt.lat, pt.lon]);
+      flush('headland');
+    }
+  }
+  flush(curType || 'row');
+
+  // Auto-connect: any lane end within snap of another lane start
+  for (const a of laneMap.lanes) {
+    const aEnd = a.centerline[a.centerline.length - 1];
+    for (const b of laneMap.lanes) {
+      if (a.id === b.id) continue;
+      const bStart = b.centerline[0];
+      if (_haversineLane(aEnd[0], aEnd[1], bStart[0], bStart[1]) < snap)
+        laneMap.connections.push({ from: a.id, to: b.id, turn_radius: radius });
+    }
+  }
+
+  // Find base lane
+  if (laneMap.base_position[0] !== 0) {
+    let bestD = Infinity, bestId = '';
+    for (const l of laneMap.lanes)
+      for (const p of l.centerline) {
+        const d = _haversineLane(p[0], p[1], laneMap.base_position[0], laneMap.base_position[1]);
+        if (d < bestD) { bestD = d; bestId = l.id; }
+      }
+    laneMap.base_lane = bestId;
+  }
+
+  laneMap.min_turn_radius = radius;
+  _updateLaneCount();
   redraw();
+  status(`Built ${laneMap.lanes.length} lanes, ${laneMap.connections.length} connections from ${lanePoints.length} points.`, '#27ae60');
 }
 
 function clearLanes() {
+  lanePoints = [];
   laneMap = { lanes: [], connections: [], base_lane: '', base_position: [0,0], min_turn_radius: 2.0 };
   laneIdCounter = 0;
-  laneCurPoints = [];
   _updateLaneCount();
   redraw();
 }
 
 function undoLastLane() {
-  if (laneCurPoints.length) { laneCurPoints.pop(); redraw(); return; }
-  if (laneMap.lanes.length) {
-    laneMap.lanes.pop();
-    _autoConnectLanes();
-    redraw();
-  }
+  if (lanePoints.length) { lanePoints.pop(); _updateLaneCount(); redraw(); }
 }
 
 function drawLanes() {
-  if (!laneMap.lanes.length && !laneCurPoints.length) return;
-  const COLORS = { row: '#f0a030', headland: '#30d0f0' };
-  // Draw connections as thin dashed lines
+  const TAG_COLORS = {
+    'row-start': '#f0a030', 'row-end': '#f07030',
+    'headland-start': '#30d0f0', 'headland-end': '#3070f0',
+    'midpoint': '#aaa', 'base': '#ff3030'
+  };
+  const LANE_COLORS = { row: '#f0a030', headland: '#30d0f0' };
+
+  // Draw connections as dashed lines
   for (const conn of laneMap.connections) {
-    const fromLane = laneMap.lanes.find(l => l.id === conn.from);
-    const toLane = laneMap.lanes.find(l => l.id === conn.to);
-    if (!fromLane || !toLane) continue;
-    const fe = _laneEnd(fromLane), ts = _laneStart(toLane);
-    const p1 = project(fe[0], fe[1]);
-    const p2 = project(ts[0], ts[1]);
-    ctx.save();
-    ctx.setLineDash([3, 3]);
-    ctx.strokeStyle = '#8888';
-    ctx.lineWidth = 1;
+    const a = laneMap.lanes.find(l => l.id === conn.from);
+    const b = laneMap.lanes.find(l => l.id === conn.to);
+    if (!a || !b) continue;
+    const p1 = project(a.centerline[a.centerline.length-1][0], a.centerline[a.centerline.length-1][1]);
+    const p2 = project(b.centerline[0][0], b.centerline[0][1]);
+    ctx.save(); ctx.setLineDash([3,3]); ctx.strokeStyle = '#8888'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
     ctx.restore();
   }
-  // Draw lanes (polylines)
+
+  // Draw built lanes
   for (const lane of laneMap.lanes) {
-    const cl = lane.centerline || [lane.start, lane.end];
-    const color = COLORS[lane.type] || '#aaa';
-    // Lane polyline
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    const cl = lane.centerline;
+    const color = LANE_COLORS[lane.type] || '#aaa';
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
     ctx.beginPath();
     for (let i = 0; i < cl.length; i++) {
       const p = project(cl[i][0], cl[i][1]);
       if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
     }
     ctx.stroke();
-    // Direction arrow at midpoint
-    const mi = Math.floor(cl.length / 2);
-    const mi2 = Math.min(mi + 1, cl.length - 1);
-    const pm1 = project(cl[mi][0], cl[mi][1]);
-    const pm2 = project(cl[mi2][0], cl[mi2][1]);
-    const ang = Math.atan2(pm2.y - pm1.y, pm2.x - pm1.x);
-    ctx.save();
-    ctx.translate(pm1.x, pm1.y);
-    ctx.rotate(ang);
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(6, 0); ctx.lineTo(-4, -4); ctx.lineTo(-4, 4); ctx.closePath();
-    ctx.fill();
+    // Direction arrow
+    const mi = Math.floor(cl.length / 2), mi2 = Math.min(mi+1, cl.length-1);
+    const pm1 = project(cl[mi][0], cl[mi][1]), pm2 = project(cl[mi2][0], cl[mi2][1]);
+    const ang = Math.atan2(pm2.y-pm1.y, pm2.x-pm1.x);
+    ctx.save(); ctx.translate(pm1.x, pm1.y); ctx.rotate(ang);
+    ctx.fillStyle = color; ctx.beginPath();
+    ctx.moveTo(7,0); ctx.lineTo(-4,-4); ctx.lineTo(-4,4); ctx.closePath(); ctx.fill();
     ctx.restore();
-    // Start dot (green) and end dot (red)
-    const ps = project(cl[0][0], cl[0][1]);
-    const pe = project(cl[cl.length-1][0], cl[cl.length-1][1]);
-    ctx.fillStyle = '#0f0';
-    ctx.beginPath(); ctx.arc(ps.x, ps.y, 3, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#f00';
-    ctx.beginPath(); ctx.arc(pe.x, pe.y, 3, 0, Math.PI*2); ctx.fill();
     // Label
-    ctx.fillStyle = color;
-    ctx.font = '9px sans-serif';
-    ctx.fillText(lane.id, pm1.x + 8, pm1.y - 4);
+    ctx.fillStyle = color; ctx.font = '9px sans-serif';
+    ctx.fillText(lane.id, pm1.x+8, pm1.y-4);
   }
-  // Draw in-progress polyline
-  if (laneCurPoints.length) {
-    ctx.strokeStyle = '#0f0';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 3]);
-    ctx.beginPath();
-    for (let i = 0; i < laneCurPoints.length; i++) {
-      const p = project(laneCurPoints[i][0], laneCurPoints[i][1]);
-      if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
-    }
-    ctx.stroke();
-    ctx.setLineDash([]);
-    // Dots on each point
-    for (const pt of laneCurPoints) {
-      const p = project(pt[0], pt[1]);
-      ctx.fillStyle = '#0f0';
-      ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2); ctx.fill();
-    }
+
+  // Draw tagged points (before build, or always for reference)
+  for (let i = 0; i < lanePoints.length; i++) {
+    const pt = lanePoints[i];
+    const p = project(pt.lat, pt.lon);
+    const col = TAG_COLORS[pt.tag] || '#aaa';
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = '8px sans-serif';
+    const label = pt.tag.replace('headland-','H').replace('row-','R').replace('midpoint','M').replace('start','S').replace('end','E');
+    ctx.fillText(label, p.x+5, p.y-3);
+  }
+
+  // Draw base marker
+  if (laneMap.base_position[0] !== 0) {
+    const p = project(laneMap.base_position[0], laneMap.base_position[1]);
+    ctx.fillStyle = '#ff3030'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 9px sans-serif';
+    ctx.fillText('BASE', p.x+8, p.y+3);
   }
 }
 
