@@ -784,7 +784,8 @@ class NavigatorNode(Node):
                    for p in poly] if self._expanded_polygons else None
             obs_polys = [[(p[0], p[1]) for p in poly]
                          for poly in self._expanded_polygons] if self._expanded_polygons else None
-            clearance = self._obstacle_clearance + self._rover_width / 2.0
+            clearance = (self.get_parameter('obstacle_clearance_m').value
+                        + self.get_parameter('rover_width_m').value / 2.0)
             compute_all_arcs(self._lane_map, obs_polys, clearance)
             n_lanes = len(self._lane_map.lanes)
             n_conns = len(self._lane_map.connections)
