@@ -1133,18 +1133,20 @@ tr:hover td{background:#1e1e3a}
     <b style="color:#fff;font-size:12px">&#8644; Path Shift</b>
     <button onclick="toggleShiftPanel()" style="background:none;border:none;color:#aaa;font-size:15px;cursor:pointer;padding:0 3px">&#10005;</button>
   </div>
-  <label>Number of missions</label>
+  <label>Number of passes</label>
   <input id="shift-count" type="number" value="6" min="1" max="20">
-  <label>Offset distance (m)</label>
+  <label>Max offset X (m)</label>
   <input id="shift-dist" type="number" value="1.0" min="0.1" max="5" step="0.1">
+  <label>Step per pass Y (m) — 0 = auto (X/count)</label>
+  <input id="shift-step" type="number" value="0" min="0" max="2" step="0.05">
   <label>Min obstacle clearance (m)</label>
   <input id="shift-clearance" type="number" value="0.5" min="0.1" max="3" step="0.1">
   <label>Smoothing passes</label>
   <input id="shift-smooth" type="number" value="2" min="0" max="5">
-  <label>Pattern</label>
-  <select id="shift-pattern">
-    <option value="alternate">Alternate (+d, -d, +d, -d...)</option>
-    <option value="graduated">Graduated (+d, -d, +d/2, -d/2...)</option>
+  <label>Direction (relative to path)</label>
+  <select id="shift-dir">
+    <option value="left">Left (inside)</option>
+    <option value="right">Right (inside)</option>
   </select>
   <div class="grow" style="margin-top:7px">
     <button class="btn-green" style="flex:1;padding:4px" onclick="runPathShift()">&#9654; Generate</button>
@@ -2989,23 +2991,18 @@ function _chaikinSmooth(wps, passes) {
   return pts;
 }
 
-function generateOffsetMissions(baseWps, count, dist, minClearance, smoothPasses, pattern) {
+function generateOffsetMissions(baseWps, count, maxDist, step, minClearance, smoothPasses, direction) {
   // Account for rover physical width — clearance is measured from waypoint (center)
   // so the rover edge is rover_width/2 closer to the obstacle
   const roverHalfWidth = 0.5;  // metres (matches rover_width_m=1.0 in navigator params)
   const effectiveClearance = minClearance + roverHalfWidth;
+  // Step per pass: auto = maxDist / count, or user-specified
+  const stepY = step > 0 ? step : maxDist / count;
+  // Direction sign: left = positive perpendicular, right = negative
+  const dirSign = direction === 'right' ? -1 : 1;
   const missions = [];
   for (let k = 0; k < count; k++) {
-    let offsetDist;
-    if (pattern === 'graduated') {
-      // +d, -d, +d/2, -d/2, +d/3, -d/3 ...
-      const tier = Math.floor(k / 2) + 1;
-      const sign = (k % 2 === 0) ? 1 : -1;
-      offsetDist = sign * dist / tier;
-    } else {
-      // alternate: +d, -d, +d, -d ...
-      offsetDist = (k % 2 === 0) ? dist : -dist;
-    }
+    let offsetDist = dirSign * Math.min((k + 1) * stepY, maxDist);
 
     const offsetWps = baseWps.map((wp, i) => {
       const brg = _pathTangent(baseWps, i);
@@ -3042,13 +3039,14 @@ function runPathShift() {
     return;
   }
   const count     = parseInt(document.getElementById('shift-count').value) || 6;
-  const dist      = parseFloat(document.getElementById('shift-dist').value) || 1.0;
+  const maxDist   = parseFloat(document.getElementById('shift-dist').value) || 1.0;
+  const step      = parseFloat(document.getElementById('shift-step').value) || 0;
   const clearance = parseFloat(document.getElementById('shift-clearance').value) || 0.5;
   const smooth    = parseInt(document.getElementById('shift-smooth').value) || 2;
-  const pattern   = document.getElementById('shift-pattern').value;
+  const direction = document.getElementById('shift-dir').value;
 
   baseMission = waypoints.map(w => ({...w, servos: w.servos ? {...w.servos} : {}}));
-  const offsets = generateOffsetMissions(baseMission, count, dist, clearance, smooth, pattern);
+  const offsets = generateOffsetMissions(baseMission, count, maxDist, step, clearance, smooth, direction);
   missionQueue = [baseMission, ...offsets];
   queueIndex = 0;
   queueRunIdx = -1;
