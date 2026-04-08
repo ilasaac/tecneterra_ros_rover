@@ -1264,6 +1264,7 @@ let laneMode      = false;    // drawing lanes on canvas
 let laneDrawStart = null;     // {lat, lon} of current lane start (waiting for end click)
 let laneMap       = { lanes: [], connections: [], base_lane: '', base_position: [0,0], min_turn_radius: 2.0 };
 let laneIdCounter = 0;
+let laneCurPoints = [];   // points being drawn for current lane (polyline)
 let logFileData   = null;
 let fetchedMission = null;  // mission metadata from rover run (corridor_mode, algorithm)
 let originalCorridors = null;  // raw corridor vertices from rover (with speed markers)
@@ -1856,8 +1857,10 @@ canvas.addEventListener('click', e => {
     return;
   }
   if (laneMode) {
+    // Single click handled below; double-click finishes lane
     const ll = unproject(x, y);
     _onLaneClick(ll.lat, ll.lon);
+    return;
   } else if (addMode) {
     const ll = unproject(x, y);
     addWp(ll.lat, ll.lon);
@@ -1867,8 +1870,22 @@ canvas.addEventListener('click', e => {
   }
 });
 
+canvas.addEventListener('dblclick', e => {
+  if (laneMode && laneCurPoints.length >= 2) {
+    // Remove last point (added by the second click of the double-click)
+    laneCurPoints.pop();
+    _finishLane();
+  }
+});
+
 canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
+  if (laneMode && laneCurPoints.length > 0) {
+    // Right-click finishes lane or cancels if only 1 point
+    if (laneCurPoints.length >= 2) _finishLane();
+    else { laneCurPoints = []; redraw(); document.getElementById('lane-status').textContent = 'Cancelled. Click to start a new lane.'; }
+    return;
+  }
   const {offsetX: x, offsetY: y} = e;
   const wi = hitWaypoint(x, y);
   if (wi >= 0) { removeWp(wi); return; }
@@ -3723,6 +3740,9 @@ function toggleLaneMode() {
   redraw();
 }
 
+function _laneStart(lane) { return lane.centerline ? lane.centerline[0] : lane.start; }
+function _laneEnd(lane) { return lane.centerline ? lane.centerline[lane.centerline.length-1] : lane.end; }
+
 function _autoConnectLanes() {
   // Auto-generate connections between lanes whose endpoints are within snap distance
   const snap = parseFloat(document.getElementById('lane-snap').value) || 2.0;
@@ -3731,8 +3751,8 @@ function _autoConnectLanes() {
   for (const a of laneMap.lanes) {
     for (const b of laneMap.lanes) {
       if (a.id === b.id) continue;
-      // Connect end of A → start of B if within snap distance
-      const d = _haversineLane(a.end[0], a.end[1], b.start[0], b.start[1]);
+      const aEnd = _laneEnd(a), bStart = _laneStart(b);
+      const d = _haversineLane(aEnd[0], aEnd[1], bStart[0], bStart[1]);
       if (d < snap) {
         laneMap.connections.push({ from: a.id, to: b.id, turn_radius: radius });
       }
@@ -3754,34 +3774,35 @@ function _updateLaneCount() {
 }
 
 function _onLaneClick(lat, lon) {
-  if (!laneDrawStart) {
-    laneDrawStart = { lat, lon };
-    document.getElementById('lane-status').textContent = 'Click to place lane end point.';
-  } else {
-    const id = 'L' + (++laneIdCounter);
-    const speed = parseFloat(document.getElementById('lane-speed').value) || 0.8;
-    const type = document.getElementById('lane-type').value;
-    laneMap.lanes.push({
-      id, start: [laneDrawStart.lat, laneDrawStart.lon],
-      end: [lat, lon], speed, type
-    });
-    laneDrawStart = null;
-    _autoConnectLanes();
-    document.getElementById('lane-status').textContent = `Lane ${id} added. Click to start next lane.`;
-    redraw();
+  laneCurPoints.push([lat, lon]);
+  if (laneCurPoints.length === 1) {
+    document.getElementById('lane-status').textContent = 'Click to add points. Double-click to finish lane.';
   }
+  redraw();
+}
+
+function _finishLane() {
+  if (laneCurPoints.length < 2) { laneCurPoints = []; redraw(); return; }
+  const id = 'L' + (++laneIdCounter);
+  const speed = parseFloat(document.getElementById('lane-speed').value) || 0.8;
+  const type = document.getElementById('lane-type').value;
+  laneMap.lanes.push({ id, centerline: laneCurPoints.slice(), speed, type });
+  laneCurPoints = [];
+  _autoConnectLanes();
+  document.getElementById('lane-status').textContent = `Lane ${id} added (${laneMap.lanes[laneMap.lanes.length-1].centerline.length} pts). Click to start next.`;
+  redraw();
 }
 
 function clearLanes() {
   laneMap = { lanes: [], connections: [], base_lane: '', base_position: [0,0], min_turn_radius: 2.0 };
   laneIdCounter = 0;
-  laneDrawStart = null;
+  laneCurPoints = [];
   _updateLaneCount();
   redraw();
 }
 
 function undoLastLane() {
-  if (laneDrawStart) { laneDrawStart = null; redraw(); return; }
+  if (laneCurPoints.length) { laneCurPoints.pop(); redraw(); return; }
   if (laneMap.lanes.length) {
     laneMap.lanes.pop();
     _autoConnectLanes();
@@ -3790,15 +3811,16 @@ function undoLastLane() {
 }
 
 function drawLanes() {
-  if (!laneMap.lanes.length && !laneDrawStart) return;
+  if (!laneMap.lanes.length && !laneCurPoints.length) return;
   const COLORS = { row: '#f0a030', headland: '#30d0f0' };
-  // Draw connections (arcs) as thin dashed lines
+  // Draw connections as thin dashed lines
   for (const conn of laneMap.connections) {
     const fromLane = laneMap.lanes.find(l => l.id === conn.from);
     const toLane = laneMap.lanes.find(l => l.id === conn.to);
     if (!fromLane || !toLane) continue;
-    const p1 = project(fromLane.end[0], fromLane.end[1]);
-    const p2 = project(toLane.start[0], toLane.start[1]);
+    const fe = _laneEnd(fromLane), ts = _laneStart(toLane);
+    const p1 = project(fe[0], fe[1]);
+    const p2 = project(ts[0], ts[1]);
     ctx.save();
     ctx.setLineDash([3, 3]);
     ctx.strokeStyle = '#8888';
@@ -3806,20 +3828,27 @@ function drawLanes() {
     ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
     ctx.restore();
   }
-  // Draw lanes
+  // Draw lanes (polylines)
   for (const lane of laneMap.lanes) {
-    const p1 = project(lane.start[0], lane.start[1]);
-    const p2 = project(lane.end[0], lane.end[1]);
+    const cl = lane.centerline || [lane.start, lane.end];
     const color = COLORS[lane.type] || '#aaa';
-    // Lane line
+    // Lane polyline
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+    ctx.beginPath();
+    for (let i = 0; i < cl.length; i++) {
+      const p = project(cl[i][0], cl[i][1]);
+      if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
     // Direction arrow at midpoint
-    const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
-    const ang = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    const mi = Math.floor(cl.length / 2);
+    const mi2 = Math.min(mi + 1, cl.length - 1);
+    const pm1 = project(cl[mi][0], cl[mi][1]);
+    const pm2 = project(cl[mi2][0], cl[mi2][1]);
+    const ang = Math.atan2(pm2.y - pm1.y, pm2.x - pm1.x);
     ctx.save();
-    ctx.translate(mx, my);
+    ctx.translate(pm1.x, pm1.y);
     ctx.rotate(ang);
     ctx.fillStyle = color;
     ctx.beginPath();
@@ -3827,23 +3856,35 @@ function drawLanes() {
     ctx.fill();
     ctx.restore();
     // Start dot (green) and end dot (red)
+    const ps = project(cl[0][0], cl[0][1]);
+    const pe = project(cl[cl.length-1][0], cl[cl.length-1][1]);
     ctx.fillStyle = '#0f0';
-    ctx.beginPath(); ctx.arc(p1.x, p1.y, 3, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(ps.x, ps.y, 3, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = '#f00';
-    ctx.beginPath(); ctx.arc(p2.x, p2.y, 3, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(pe.x, pe.y, 3, 0, Math.PI*2); ctx.fill();
     // Label
     ctx.fillStyle = color;
     ctx.font = '9px sans-serif';
-    ctx.fillText(lane.id, mx + 8, my - 4);
+    ctx.fillText(lane.id, pm1.x + 8, pm1.y - 4);
   }
-  // Draw in-progress lane start
-  if (laneDrawStart) {
-    const p = project(laneDrawStart.lat, laneDrawStart.lon);
-    ctx.fillStyle = '#0f0';
-    ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.font = '10px sans-serif';
-    ctx.fillText('start', p.x + 7, p.y - 2);
+  // Draw in-progress polyline
+  if (laneCurPoints.length) {
+    ctx.strokeStyle = '#0f0';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    for (let i = 0; i < laneCurPoints.length; i++) {
+      const p = project(laneCurPoints[i][0], laneCurPoints[i][1]);
+      if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Dots on each point
+    for (const pt of laneCurPoints) {
+      const p = project(pt[0], pt[1]);
+      ctx.fillStyle = '#0f0';
+      ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2); ctx.fill();
+    }
   }
 }
 

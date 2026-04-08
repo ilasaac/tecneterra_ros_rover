@@ -36,22 +36,36 @@ M_PER_DEG_LAT = 111_320.0
 @dataclass
 class Lane:
     id: str
-    start: tuple[float, float]  # (lat, lon)
-    end: tuple[float, float]    # (lat, lon)
-    speed: float = 0.8          # m/s
-    lane_type: str = 'row'      # 'row' | 'headland'
+    centerline: list[tuple[float, float]]  # [(lat, lon), ...] — polyline (>=2 points)
+    speed: float = 0.8                      # m/s
+    lane_type: str = 'row'                  # 'row' | 'headland'
+
+    @property
+    def start(self) -> tuple[float, float]:
+        return self.centerline[0]
+
+    @property
+    def end(self) -> tuple[float, float]:
+        return self.centerline[-1]
 
     def length(self) -> float:
-        return _haversine(self.start[0], self.start[1],
-                          self.end[0], self.end[1])
+        total = 0.0
+        for i in range(1, len(self.centerline)):
+            total += _haversine(self.centerline[i - 1][0], self.centerline[i - 1][1],
+                                self.centerline[i][0], self.centerline[i][1])
+        return total
 
     def start_bearing(self) -> float:
-        return _bearing_to(self.start[0], self.start[1],
-                           self.end[0], self.end[1])
+        cl = self.centerline
+        if len(cl) < 2:
+            return 0.0
+        return _bearing_to(cl[0][0], cl[0][1], cl[1][0], cl[1][1])
 
     def end_bearing(self) -> float:
-        return _bearing_to(self.start[0], self.start[1],
-                           self.end[0], self.end[1])
+        cl = self.centerline
+        if len(cl) < 2:
+            return 0.0
+        return _bearing_to(cl[-2][0], cl[-2][1], cl[-1][0], cl[-1][1])
 
 
 @dataclass
@@ -85,12 +99,16 @@ def lane_map_from_json(raw: str) -> LaneMap:
     lm.base_position = (bp[0], bp[1])
 
     for ld in d.get('lanes', []):
-        s = ld['start']
-        e = ld['end']
+        # Support polyline centerline or legacy start/end
+        if 'centerline' in ld:
+            cl = [(p[0], p[1]) for p in ld['centerline']]
+        else:
+            s = ld['start']
+            e = ld['end']
+            cl = [(s[0], s[1]), (e[0], e[1])]
         lane = Lane(
             id=ld['id'],
-            start=(s[0], s[1]),
-            end=(e[0], e[1]),
+            centerline=cl,
             speed=ld.get('speed', 0.8),
             lane_type=ld.get('type', 'row'),
         )
@@ -113,8 +131,7 @@ def lane_map_to_json(lm: LaneMap) -> str:
     for lane in lm.lanes.values():
         lanes.append({
             'id': lane.id,
-            'start': list(lane.start),
-            'end': list(lane.end),
+            'centerline': [list(p) for p in lane.centerline],
             'speed': lane.speed,
             'type': lane.lane_type,
         })
@@ -233,20 +250,17 @@ def compute_all_arcs(lm: LaneMap,
                 if conn.blocked:
                     break
 
-    # Also check lane segments against obstacles
+    # Also check lane centerline points against obstacles
     for lane in lm.lanes.values():
         lane._blocked = False  # type: ignore
         if obs:
             cos_lat = math.cos(math.radians(lane.start[0]))
-            # Sample points along lane
-            length = lane.length()
-            n_samples = max(2, int(length / 0.5) + 1)
-            for i in range(n_samples):
-                frac = i / (n_samples - 1)
-                lat = lane.start[0] + frac * (lane.end[0] - lane.start[0])
-                lon = lane.start[1] + frac * (lane.end[1] - lane.start[1])
+            for pt in lane.centerline:
                 for poly in obs:
-                    if _point_in_polygon(lat, lon, poly):
+                    if _point_in_polygon(pt[0], pt[1], poly):
+                        lane._blocked = True  # type: ignore
+                        break
+                    if _seg_min_dist_to_polygon(pt[0], pt[1], poly, cos_lat) < clearance_m:
                         lane._blocked = True  # type: ignore
                         break
                 if getattr(lane, '_blocked', False):
@@ -270,26 +284,31 @@ def find_nearest_lane(lm: LaneMap, lat: float, lon: float
     for lane in lm.lanes.values():
         if getattr(lane, '_blocked', False):
             continue
-        # Project point onto lane segment (flat-earth)
-        ax = lane.start[1] * M_PER_DEG_LAT * cos_lat
-        ay = lane.start[0] * M_PER_DEG_LAT
-        bx = lane.end[1] * M_PER_DEG_LAT * cos_lat
-        by = lane.end[0] * M_PER_DEG_LAT
+        # Project point onto each segment of the polyline
+        cl = lane.centerline
+        total_len = lane.length()
+        cum_len = 0.0
         px = lon * M_PER_DEG_LAT * cos_lat
         py = lat * M_PER_DEG_LAT
-        dx, dy = bx - ax, by - ay
-        seg_len2 = dx * dx + dy * dy
-        if seg_len2 < 1e-10:
-            frac = 0.0
-            d = math.hypot(px - ax, py - ay)
-        else:
-            t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg_len2))
-            d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
-            frac = t
-        if d < best_dist:
-            best_dist = d
-            best_id = lane.id
-            best_frac = frac
+        for si in range(len(cl) - 1):
+            ax = cl[si][1] * M_PER_DEG_LAT * cos_lat
+            ay = cl[si][0] * M_PER_DEG_LAT
+            bx = cl[si + 1][1] * M_PER_DEG_LAT * cos_lat
+            by = cl[si + 1][0] * M_PER_DEG_LAT
+            dx, dy = bx - ax, by - ay
+            seg_len2 = dx * dx + dy * dy
+            seg_len = math.sqrt(seg_len2) if seg_len2 > 1e-10 else 0.0
+            if seg_len2 < 1e-10:
+                d = math.hypot(px - ax, py - ay)
+                t = 0.0
+            else:
+                t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg_len2))
+                d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+            if d < best_dist:
+                best_dist = d
+                best_id = lane.id
+                best_frac = (cum_len + t * seg_len) / max(total_len, 1e-6)
+            cum_len += seg_len
 
     return best_id, best_frac
 
@@ -379,9 +398,9 @@ def path_to_waypoints(lm: LaneMap, lane_ids: list[str],
 
         speed = lane.speed if lane.speed > 0 else default_speed
 
-        # Add lane start and end
-        waypoints.append((lane.start[0], lane.start[1], speed))
-        waypoints.append((lane.end[0], lane.end[1], speed))
+        # Add all centerline points (polyline — supports curved lanes)
+        for pt in lane.centerline:
+            waypoints.append((pt[0], pt[1], speed))
 
         # Add arc turn to next lane (if not the last)
         if i < len(lane_ids) - 1:
