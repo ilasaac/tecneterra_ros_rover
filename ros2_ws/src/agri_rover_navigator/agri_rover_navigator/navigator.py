@@ -529,6 +529,9 @@ class NavigatorNode(Node):
         # Initialized here so _control_loop never hits AttributeError on first tick.
         self._spin_target_brg:  float | None = None
 
+        # Lane graph for grid-based routing (berry fields)
+        self._lane_map = None   # LaneMap instance (from lane_graph.py)
+
         # Resource management state machine: 'normal' → 'going_to_base' → 'at_base' → 'normal'
         self._resource_state:  str        = 'normal'
         self._resource_reason: str | None = None       # 'battery' | 'tank'
@@ -565,6 +568,7 @@ class NavigatorNode(Node):
         self.create_subscription(SensorData,      'sensors',       self._cb_sensors,       10)
         self.create_subscription(RoverStatus,     'status',        self._cb_status,        10)
         self.create_subscription(String,          'station_update', self._cb_station_update, 10)
+        self.create_subscription(String,          'lane_map',       self._cb_lane_map,       10)
 
         # ── Inter-rover proximity subscriptions (cross-namespace, absolute paths) ──
         peer_ns = self.get_parameter('peer_rover_ns').value
@@ -767,6 +771,29 @@ class NavigatorNode(Node):
                 self.get_logger().info(f'[TEST] battery={self._test_batt:.0f}%')
         except Exception as e:
             self.get_logger().warn(f'station_update parse error: {e}')
+
+    def _cb_lane_map(self, msg: String):
+        """Receive lane map JSON and build the directed lane graph."""
+        try:
+            from agri_rover_navigator.lane_graph import (
+                lane_map_from_json, compute_all_arcs,
+            )
+            self._lane_map = lane_map_from_json(msg.data)
+            # Compute arcs and check obstacles
+            obs = [(p[0], p[1]) for poly in self._expanded_polygons
+                   for p in poly] if self._expanded_polygons else None
+            obs_polys = [[(p[0], p[1]) for p in poly]
+                         for poly in self._expanded_polygons] if self._expanded_polygons else None
+            clearance = self._obstacle_clearance + self._rover_width / 2.0
+            compute_all_arcs(self._lane_map, obs_polys, clearance)
+            n_lanes = len(self._lane_map.lanes)
+            n_conns = len(self._lane_map.connections)
+            n_blocked = sum(1 for c in self._lane_map.connections if c.blocked)
+            self.get_logger().info(
+                f'[LANE] Map loaded: {n_lanes} lanes, {n_conns} connections '
+                f'({n_blocked} blocked by obstacles)')
+        except Exception as e:
+            self.get_logger().warn(f'[LANE] Parse error: {e}')
 
     def _cb_mode(self, msg: String):
         self._mode = msg.data
@@ -2971,23 +2998,48 @@ class NavigatorNode(Node):
         self._saved_fence         = list(self._expanded_polygons)
         self._resource_state      = 'going_to_base'
 
-        # Build 2-WP base trip: current position -> station
+        # Build base trip: lane-graph route if available, else direct 2-WP
         rlat, rlon = self._center_pos()
-        wp_here = MissionWaypoint()
-        wp_here.seq               = 0
-        wp_here.latitude          = rlat
-        wp_here.longitude         = rlon
-        wp_here.speed             = self._base_speed
-        wp_here.acceptance_radius = self._base_accept
-        wp_here.hold_secs         = 0.0
+        base_wps: list[MissionWaypoint] = []
 
-        wp_base = MissionWaypoint()
-        wp_base.seq               = 1
-        wp_base.latitude          = station_lat
-        wp_base.longitude         = station_lon
-        wp_base.speed             = self._base_speed
-        wp_base.acceptance_radius = self._base_accept
-        wp_base.hold_secs         = 0.0
+        if self._lane_map is not None:
+            try:
+                from agri_rover_navigator.lane_graph import route_to_base
+                route = route_to_base(self._lane_map, rlat, rlon,
+                                      station_lat, station_lon)
+                if route:
+                    for i, (lat, lon, spd) in enumerate(route):
+                        wp = MissionWaypoint()
+                        wp.seq = i
+                        wp.latitude = lat
+                        wp.longitude = lon
+                        wp.speed = spd if spd > 0 else self._base_speed
+                        wp.acceptance_radius = self._base_accept
+                        wp.hold_secs = 0.0
+                        base_wps.append(wp)
+                    self.get_logger().info(
+                        f'[RESOURCE] Lane-routed base trip: {len(base_wps)} waypoints')
+            except Exception as e:
+                self.get_logger().warn(f'[RESOURCE] Lane routing failed: {e}')
+
+        # Fallback: direct 2-WP path
+        if not base_wps:
+            wp_here = MissionWaypoint()
+            wp_here.seq               = 0
+            wp_here.latitude          = rlat
+            wp_here.longitude         = rlon
+            wp_here.speed             = self._base_speed
+            wp_here.acceptance_radius = self._base_accept
+            wp_here.hold_secs         = 0.0
+
+            wp_base = MissionWaypoint()
+            wp_base.seq               = 1
+            wp_base.latitude          = station_lat
+            wp_base.longitude         = station_lon
+            wp_base.speed             = self._base_speed
+            wp_base.acceptance_radius = self._base_accept
+            wp_base.hold_secs         = 0.0
+            base_wps = [wp_here, wp_base]
 
         # Replace current path with base trip
         self._path.clear()
@@ -2996,8 +3048,8 @@ class NavigatorNode(Node):
         self._bypass_indices.clear()
 
         self._path_origin_lat, self._path_origin_lon = rlat, rlon
-        self._path.extend([wp_here, wp_base])
-        self._path_original.extend([wp_here, wp_base])
+        self._path.extend(base_wps)
+        self._path_original.extend(base_wps)
         self._path_s = self._rebuild_path_s(self._path, rlat, rlon)
         self._path_idx = 0
         self._holding = False
@@ -3006,7 +3058,8 @@ class NavigatorNode(Node):
 
         # Reroute base trip around obstacles (keep saved polygons active)
         self._expanded_polygons = list(self._saved_fence)
-        if self._expanded_polygons:
+        if self._expanded_polygons and self._lane_map is None:
+            # Only reroute if not using lane graph (lanes already avoid obstacles)
             self._reroute_path()
             self.get_logger().info(
                 f'[RESOURCE] Base trip rerouted around {len(self._expanded_polygons)} obstacle(s)')

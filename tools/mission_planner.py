@@ -831,6 +831,7 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-red" onclick="clearAll()">&#10005; Clear</button>
     <button class="btn-orange" onclick="toggleGenPanel()">&#9881; Gen</button>
     <button class="btn-blue" onclick="toggleShiftPanel()" title="Generate offset missions to avoid ruts">&#8644; Shift</button>
+    <button id="btn-lanes" class="btn-orange" onclick="toggleLaneMode()" title="Draw directed lanes for grid navigation">&#9776; Lanes</button>
     <button class="btn-green" onclick="goToRover()" title="Center map on live rover position">&#8982; Rover</button>
     <span id="rover-status" style="font-size:10px;color:#556;align-self:center;margin-left:2px" title="Live rover beacon status"></span>
     <!-- analyze is now a permanent section, no toggle button -->
@@ -1152,6 +1153,37 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-green" style="flex:1;padding:4px" onclick="runPathShift()">&#9654; Generate</button>
   </div>
 </div>
+<div id="lane-panel" style="display:none;position:fixed;left:318px;top:45px;z-index:2000;background:#1a1a2e;border:1px solid #0f3460;border-radius:4px;padding:10px;width:260px;font-size:11px;color:#ddd;box-shadow:0 4px 14px rgba(0,0,0,.8)">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+    <b style="color:#fff;font-size:12px">&#9776; Lane Map</b>
+    <button onclick="toggleLaneMode()" style="background:none;border:none;color:#aaa;font-size:15px;cursor:pointer;padding:0 3px">&#10005;</button>
+  </div>
+  <div style="margin-bottom:5px;color:#888" id="lane-status">Click canvas to place lane start, then end. Arrow shows direction.</div>
+  <label>Default speed (m/s)</label>
+  <input id="lane-speed" type="number" value="0.8" min="0.1" max="3" step="0.1">
+  <label>Lane type</label>
+  <select id="lane-type">
+    <option value="row">Row</option>
+    <option value="headland">Headland</option>
+  </select>
+  <label>Turn radius (m)</label>
+  <input id="lane-radius" type="number" value="2.0" min="0.5" max="5" step="0.5">
+  <label>Auto-connect snap (m)</label>
+  <input id="lane-snap" type="number" value="2.0" min="0.5" max="5" step="0.5">
+  <div style="margin-top:5px;display:flex;gap:3px;flex-wrap:wrap">
+    <button class="btn-red" style="flex:1;padding:3px;font-size:10px" onclick="clearLanes()">Clear All</button>
+    <button class="btn-orange" style="flex:1;padding:3px;font-size:10px" onclick="undoLastLane()">Undo</button>
+  </div>
+  <div style="margin-top:5px;display:flex;gap:3px;flex-wrap:wrap">
+    <button class="btn-blue" style="flex:1;padding:3px;font-size:10px" onclick="saveLaneMap()">Save</button>
+    <button class="btn-blue" style="flex:1;padding:3px;font-size:10px" onclick="loadLaneMap()">Load</button>
+  </div>
+  <div style="margin-top:5px;display:flex;gap:3px">
+    <button class="btn-green" style="flex:1;padding:4px" onclick="uploadLaneMap(1)">&#9650; RV1</button>
+    <button class="btn-blue" style="flex:1;padding:4px" onclick="uploadLaneMap(2)">&#9650; RV2</button>
+  </div>
+  <div style="margin-top:4px;font-size:9px;color:#666" id="lane-count">0 lanes, 0 connections</div>
+</div>
 <div id="queue-panel" style="display:none;position:fixed;left:318px;bottom:10px;z-index:2000;background:#1a1a2e;border:1px solid #0f3460;border-radius:4px;padding:10px;width:260px;font-size:11px;color:#ddd;box-shadow:0 4px 14px rgba(0,0,0,.8)">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
     <b style="color:#fff;font-size:12px">&#9776; Mission Queue</b>
@@ -1227,6 +1259,11 @@ let obsCurPts     = [];
 let liveRovers    = {};   // sysid → {lat, lon, hdg, ts, ip, rosbridge}
 let roverWs       = {};   // sysid → WebSocket (persistent rosbridge subscription)
 let analyzeResult = null;
+// Lane map state
+let laneMode      = false;    // drawing lanes on canvas
+let laneDrawStart = null;     // {lat, lon} of current lane start (waiting for end click)
+let laneMap       = { lanes: [], connections: [], base_lane: '', base_position: [0,0], min_turn_radius: 2.0 };
+let laneIdCounter = 0;
 let logFileData   = null;
 let fetchedMission = null;  // mission metadata from rover run (corridor_mode, algorithm)
 let originalCorridors = null;  // raw corridor vertices from rover (with speed markers)
@@ -1295,6 +1332,7 @@ function redraw() {
   drawRover();
   if (showReal) drawAnalyzeTrack();
   drawQueueGhosts();
+  drawLanes();
   drawLiveRovers();
   drawGpsSurvey();
   drawMeasureOverlay();
@@ -1817,7 +1855,10 @@ canvas.addEventListener('click', e => {
     }
     return;
   }
-  if (addMode) {
+  if (laneMode) {
+    const ll = unproject(x, y);
+    _onLaneClick(ll.lat, ll.lon);
+  } else if (addMode) {
     const ll = unproject(x, y);
     addWp(ll.lat, ll.lon);
   } else if (obsMode) {
@@ -3671,6 +3712,194 @@ setInterval(() => {
   }
 }, 3000);
 
+// ── Lane map editor ───────────────────────────────────────────────
+function toggleLaneMode() {
+  laneMode = !laneMode;
+  const panel = document.getElementById('lane-panel');
+  const btn = document.getElementById('btn-lanes');
+  panel.style.display = laneMode ? 'block' : 'none';
+  btn.style.background = laneMode ? '#e74c3c' : '';
+  if (!laneMode) laneDrawStart = null;
+  redraw();
+}
+
+function _autoConnectLanes() {
+  // Auto-generate connections between lanes whose endpoints are within snap distance
+  const snap = parseFloat(document.getElementById('lane-snap').value) || 2.0;
+  const radius = parseFloat(document.getElementById('lane-radius').value) || 2.0;
+  laneMap.connections = [];
+  for (const a of laneMap.lanes) {
+    for (const b of laneMap.lanes) {
+      if (a.id === b.id) continue;
+      // Connect end of A → start of B if within snap distance
+      const d = _haversineLane(a.end[0], a.end[1], b.start[0], b.start[1]);
+      if (d < snap) {
+        laneMap.connections.push({ from: a.id, to: b.id, turn_radius: radius });
+      }
+    }
+  }
+  _updateLaneCount();
+}
+
+function _haversineLane(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = (lat2-lat1)*Math.PI/180, dLon = (lon2-lon1)*Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(a));
+}
+
+function _updateLaneCount() {
+  const el = document.getElementById('lane-count');
+  if (el) el.textContent = `${laneMap.lanes.length} lanes, ${laneMap.connections.length} connections`;
+}
+
+function _onLaneClick(lat, lon) {
+  if (!laneDrawStart) {
+    laneDrawStart = { lat, lon };
+    document.getElementById('lane-status').textContent = 'Click to place lane end point.';
+  } else {
+    const id = 'L' + (++laneIdCounter);
+    const speed = parseFloat(document.getElementById('lane-speed').value) || 0.8;
+    const type = document.getElementById('lane-type').value;
+    laneMap.lanes.push({
+      id, start: [laneDrawStart.lat, laneDrawStart.lon],
+      end: [lat, lon], speed, type
+    });
+    laneDrawStart = null;
+    _autoConnectLanes();
+    document.getElementById('lane-status').textContent = `Lane ${id} added. Click to start next lane.`;
+    redraw();
+  }
+}
+
+function clearLanes() {
+  laneMap = { lanes: [], connections: [], base_lane: '', base_position: [0,0], min_turn_radius: 2.0 };
+  laneIdCounter = 0;
+  laneDrawStart = null;
+  _updateLaneCount();
+  redraw();
+}
+
+function undoLastLane() {
+  if (laneDrawStart) { laneDrawStart = null; redraw(); return; }
+  if (laneMap.lanes.length) {
+    laneMap.lanes.pop();
+    _autoConnectLanes();
+    redraw();
+  }
+}
+
+function drawLanes() {
+  if (!laneMap.lanes.length && !laneDrawStart) return;
+  const COLORS = { row: '#f0a030', headland: '#30d0f0' };
+  // Draw connections (arcs) as thin dashed lines
+  for (const conn of laneMap.connections) {
+    const fromLane = laneMap.lanes.find(l => l.id === conn.from);
+    const toLane = laneMap.lanes.find(l => l.id === conn.to);
+    if (!fromLane || !toLane) continue;
+    const p1 = project(fromLane.end[0], fromLane.end[1]);
+    const p2 = project(toLane.start[0], toLane.start[1]);
+    ctx.save();
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = '#8888';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+    ctx.restore();
+  }
+  // Draw lanes
+  for (const lane of laneMap.lanes) {
+    const p1 = project(lane.start[0], lane.start[1]);
+    const p2 = project(lane.end[0], lane.end[1]);
+    const color = COLORS[lane.type] || '#aaa';
+    // Lane line
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+    // Direction arrow at midpoint
+    const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+    const ang = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    ctx.save();
+    ctx.translate(mx, my);
+    ctx.rotate(ang);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(6, 0); ctx.lineTo(-4, -4); ctx.lineTo(-4, 4); ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    // Start dot (green) and end dot (red)
+    ctx.fillStyle = '#0f0';
+    ctx.beginPath(); ctx.arc(p1.x, p1.y, 3, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#f00';
+    ctx.beginPath(); ctx.arc(p2.x, p2.y, 3, 0, Math.PI*2); ctx.fill();
+    // Label
+    ctx.fillStyle = color;
+    ctx.font = '9px sans-serif';
+    ctx.fillText(lane.id, mx + 8, my - 4);
+  }
+  // Draw in-progress lane start
+  if (laneDrawStart) {
+    const p = project(laneDrawStart.lat, laneDrawStart.lon);
+    ctx.fillStyle = '#0f0';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = '10px sans-serif';
+    ctx.fillText('start', p.x + 7, p.y - 2);
+  }
+}
+
+async function saveLaneMap() {
+  const name = prompt('Lane map name:', 'field1');
+  if (!name) return;
+  laneMap.min_turn_radius = parseFloat(document.getElementById('lane-radius').value) || 2.0;
+  const resp = await fetch('/save_lane_map', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name, data: laneMap })
+  });
+  if (resp.ok) status(`Lane map "${name}" saved.`, '#27ae60');
+  else status('Save failed.', '#e74c3c');
+}
+
+async function loadLaneMap() {
+  const name = prompt('Lane map name to load:', 'field1');
+  if (!name) return;
+  const resp = await fetch(`/load_lane_map?name=${encodeURIComponent(name)}`);
+  if (resp.ok) {
+    laneMap = await resp.json();
+    laneIdCounter = laneMap.lanes.reduce((mx, l) => {
+      const n = parseInt(l.id.replace(/\D/g, '')) || 0;
+      return Math.max(mx, n);
+    }, 0);
+    _updateLaneCount();
+    redraw();
+    status(`Lane map "${name}" loaded.`, '#27ae60');
+  } else status('Load failed — not found.', '#e74c3c');
+}
+
+async function uploadLaneMap(roverId) {
+  if (!laneMap.lanes.length) { status('No lanes to upload.', '#e74c3c'); return; }
+  const rover_ip = document.getElementById(`r-ip-rv${roverId}`).value.trim();
+  if (!rover_ip) { status(`Enter RV${roverId} IP.`, '#e74c3c'); return; }
+  const ns = `/rv${roverId}`;
+  laneMap.min_turn_radius = parseFloat(document.getElementById('lane-radius').value) || 2.0;
+  try {
+    const ws = new WebSocket(`ws://${rover_ip}:9090`);
+    await new Promise((resolve, reject) => {
+      ws.onopen = resolve;
+      ws.onerror = () => reject(new Error('WebSocket failed'));
+      setTimeout(() => reject(new Error('Timeout')), 5000);
+    });
+    ws.send(JSON.stringify({
+      op: 'publish', topic: `${ns}/lane_map`,
+      type: 'std_msgs/msg/String',
+      msg: { data: JSON.stringify(laneMap) },
+    }));
+    ws.close();
+    status(`Lane map uploaded to RV${roverId} (${laneMap.lanes.length} lanes)`, '#27ae60');
+  } catch(e) {
+    status(`Upload failed: ${e.message}`, '#e74c3c');
+  }
+}
+
 // ── Mission analyzer ──────────────────────────────────────────────
 
 function cteColor(v) {
@@ -4205,6 +4434,16 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_error(404, f'Mission not found: {name}')
 
 
+        elif self.path.startswith('/load_lane_map?name='):
+            name = _unquote(self.path.split('=', 1)[1])
+            lane_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions', 'lanes')
+            fpath = os.path.join(lane_dir, f'{name}.json')
+            try:
+                with open(fpath) as f:
+                    self._json(json.load(f))
+            except FileNotFoundError:
+                self.send_error(404, f'Lane map not found: {name}')
+
         elif self.path == '/snooped_mission':
             with _snooped_lock:
                 data = dict(_snooped)
@@ -4313,6 +4552,19 @@ class _Handler(BaseHTTPRequestHandler):
             print(f'[save] {path}', flush=True)
             self._json({'ok': True, 'name': name})
 
+
+        elif self.path == '/save_lane_map':
+            data = json.loads(raw)
+            name = data.get('name', '').strip().replace('/', '_').replace('\\', '_')
+            if not name:
+                self._json({'error': 'name required'}); return
+            lane_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'missions', 'lanes')
+            os.makedirs(lane_dir, exist_ok=True)
+            fpath = os.path.join(lane_dir, f'{name}.json')
+            with open(fpath, 'w') as f:
+                json.dump(data.get('data', {}), f, indent=2)
+            print(f'[lane] Saved {fpath}', flush=True)
+            self._json({'ok': True, 'name': name})
 
         elif self.path == '/upload_rover_ssh':
             import subprocess, tempfile
