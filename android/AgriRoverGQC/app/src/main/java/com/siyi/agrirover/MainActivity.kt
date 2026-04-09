@@ -704,10 +704,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             return
         }
         val colorHex = when {
-            ls.startsWith("row:")      -> "#4CAF50"  // green for rows
-            ls.startsWith("headland:") -> "#2196F3"  // blue for headlands
+            ls.startsWith("R")         -> "#4CAF50"  // green for rows (R1, R2...)
+            ls.startsWith("HD")        -> "#2196F3"  // blue for headlands (HD1, HD2...)
             ls == "no GPS"             -> "#888888"
-            else                       -> "#FFC107"  // yellow for other
+            else                       -> "#FFC107"
         }
         view.text = ls
         view.setTextColor(Color.parseColor(colorHex))

@@ -650,8 +650,8 @@ class NavigatorNode(Node):
                 lid, frac = find_nearest_lane(self._lane_map, rlat, rlon)
                 if lid:
                     lane = self._lane_map.lanes.get(lid)
-                    ltype = lane.lane_type if lane else '?'
-                    ls = f'{ltype}:{lid} ({frac:.0%})'
+                    # Short label: R1, HD1, etc. (ID already encodes type)
+                    ls = f'{lid} ({frac:.0%})'
                 else:
                     ls = 'none'
             except Exception:
