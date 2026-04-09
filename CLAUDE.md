@@ -51,8 +51,8 @@ ros_agri_rover/
 | Layer     | Protocol           | Path                                           | Rate   | Purpose               |
 |-----------|--------------------| -----------------------------------------------|--------|-----------------------|
 | RC        | SBUS → SX1278 LoRa | MK32→HM30→RP2040(master)→SX1278→RP2040(slave) | 25 Hz  | Manual control/safety |
-| MAVLink   | UDP / WiFi         | Android GQC ↔ Each Jetson                      | 10 Hz  | Telemetry (being replaced by rosbridge) |
-| rosbridge | WebSocket / WiFi   | GQC/PC ↔ Each Jetson (port 9090/9091)          | varies | Mission upload, telemetry (Phase 1: upload) |
+| MAVLink   | UDP / WiFi         | (deprecated — nodes no longer launched)        | —      | `mavlink_bridge` removed from both rover1.launch.py and rover2.launch.py; sources remain for reference only. GQC has a last-resort single-shot MAVLink fallback in `sendCommand()` but with no rover-side listener it's a no-op. |
+| rosbridge | WebSocket / WiFi   | GQC/PC ↔ Each Jetson (port 9090)               | varies | Primary transport — mission upload, telemetry, commands, station updates. Started from docker-entrypoint.sh. |
 | Video     | RTSP / WiFi        | Each Jetson → GQC                              | 30 fps | Camera feeds          |
 | ROS2      | DDS / WiFi         | Jetson ↔ Jetson (same domain)                  | varies | Autonomy              |
 

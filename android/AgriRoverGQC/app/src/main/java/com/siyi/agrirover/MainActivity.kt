@@ -120,6 +120,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var nextWaypointIndex = 0
     private var waterPoint:       LatLng? = null
     private var batteryPoint:     LatLng? = null
+    // Per-session guard: each rover gets stations sent at most once per app launch
+    // (cleared on app pause/resume so re-opening the app re-sends).
+    // Prevents the flood when rosbridge flaps and onConnectionChange fires repeatedly.
+    private val stationsSentToRover = HashMap<Int, Boolean>()
     private var isReturningHome   = false
     private val routeOverlays     = mutableListOf<Any>()
     private var isFollowingRover  = false
@@ -652,14 +656,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun sendSavedStations(sysId: Int) {
+        // Once per app session per rover. Cleared on onPause so re-opening the
+        // app re-sends. Prevents log floods when rosbridge WS flaps and
+        // onConnectionChange(true) fires repeatedly.
+        if (stationsSentToRover[sysId] == true) return
         val bp: LatLng? = batteryPoint
+        val wp: LatLng? = waterPoint
+        if (bp == null && wp == null) return
         if (bp != null) {
             roverManager.sendCommand(sysId, 50001, (bp.latitude * 1e5).toFloat(), (bp.longitude * 1e5).toFloat())
         }
-        val wp: LatLng? = waterPoint
         if (wp != null) {
             roverManager.sendCommand(sysId, 50002, (wp.latitude * 1e5).toFloat(), (wp.longitude * 1e5).toFloat())
         }
+        stationsSentToRover[sysId] = true
     }
 
     // ─── Per-rover HUD helpers ───────────────────────────────────────────────

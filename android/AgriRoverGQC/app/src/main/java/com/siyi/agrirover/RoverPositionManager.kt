@@ -607,19 +607,18 @@ class RoverPositionManager(
                 50003 -> { rosbridgeRerouteResponse(t, p1 >= 1f); return }
             }
         }
-        // Fallback: MAVLink (only if rosbridge not connected)
+        // Fallback: MAVLink single-shot (only if rosbridge not connected).
+        // Safety-critical commands (E-STOP, disarm) use sendCriticalCommand,
+        // which has its own 3x retry. Non-critical commands rely on rosbridge/TCP
+        // when available, so a single MAVLink shot is enough as last-resort.
         scope.launch {
-            val ip = roverIp(sysId)
-            repeat(2) { attempt ->
-                sendMavlinkTo(ip, CommandLong.builder()
-                    .targetSystem(sysId).targetComponent(1)
-                    .command(EnumValue.create(MavCmd::class.java, commandId))
-                    .confirmation(attempt)
-                    .param1(p1).param2(p2).param3(0f).param4(0f)
-                    .param5(0f).param6(0f).param7(0f)
-                    .build())
-                if (attempt < 1) delay(80L)
-            }
+            sendMavlinkTo(roverIp(sysId), CommandLong.builder()
+                .targetSystem(sysId).targetComponent(1)
+                .command(EnumValue.create(MavCmd::class.java, commandId))
+                .confirmation(0)
+                .param1(p1).param2(p2).param3(0f).param4(0f)
+                .param5(0f).param6(0f).param7(0f)
+                .build())
         }
     }
 
