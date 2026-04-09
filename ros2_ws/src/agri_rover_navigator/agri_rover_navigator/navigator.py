@@ -847,9 +847,34 @@ class NavigatorNode(Node):
                 self.get_logger().info(
                     f'Re-armed at waiting point WP{wp.seq} — advancing')
                 self._advance_path()
-        # Resume from base on re-arm
+        # Resume from base on re-arm — only if charge levels are sufficient
         if msg.data and not was_armed and self._resource_state == 'at_base':
+            test_tank_param = self.get_parameter('test_tank_pct').value
+            test_batt_param = self.get_parameter('test_batt_pct').value
+            batt = (test_batt_param if test_batt_param >= 0
+                    else self._test_batt if self._test_batt is not None
+                    else self._battery_pct)
+            tank = (test_tank_param if test_tank_param >= 0
+                    else self._test_tank if self._test_tank is not None
+                    else self._tank_pct)
+            batt_ok = batt is None or batt >= self._battery_low_pct
+            tank_ok = tank is None or tank >= self._tank_low_pct
+            if not batt_ok or not tank_ok:
+                reason = f'battery {batt:.0f}%' if not batt_ok else f'tank {tank:.0f}%'
+                self.get_logger().warn(
+                    f'[RESOURCE] Cannot resume — {reason} still low. '
+                    f'Refill and re-arm.')
+                self._armed = False
+                a = Bool(); a.data = False
+                self.armed_pub.publish(a)
+                cm = String()
+                cm.data = f'Cannot resume: {reason} still low. Refill and re-arm.'
+                self.confirm_message_pub.publish(cm)
+                return
             self._resource_state = 'normal'
+            # Clear test injection so it doesn't re-trigger immediately
+            self._test_tank = None
+            self._test_batt = None
             self.get_logger().info('[RESOURCE] Re-armed at base — resuming mission')
 
     def _plan_approach_path(self, rover_lat: float, rover_lon: float):
