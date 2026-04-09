@@ -82,7 +82,7 @@ python3 tools/rtk_forwarder.py \
     --mountpoint  "$NTRIP_MOUNT" \
     --approx-lat  "$APPROX_LAT" \
     --approx-lon  "$APPROX_LON" \
-    --gps-ports /dev/ttyUSB0 /dev/ttyUSB1 \
+    --gps-ports /dev/rv2_gps_pri /dev/rv2_gps_sec \
     --log-file /tmp/rtk_rv2.log &
 RTK_PID=$!
 echo "[rv2] RTK forwarder PID=$RTK_PID  (log: /tmp/rtk_rv2.log)"
