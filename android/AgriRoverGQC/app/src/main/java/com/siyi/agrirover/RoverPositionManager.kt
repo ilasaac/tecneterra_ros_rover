@@ -1,7 +1,6 @@
 package com.siyi.agrirover
 
 import android.content.Context
-import android.net.wifi.WifiManager
 import android.util.Log
 import com.google.android.gms.maps.model.LatLng
 import io.dronefleet.mavlink.MavlinkConnection
@@ -112,7 +111,6 @@ class RoverPositionManager(
     private var isRunning  = false
     private val scope      = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var socket: DatagramSocket? = null
-    private var wifiLock: WifiManager.WifiLock? = null
 
     // Broadcast address — reaches all rovers on the hotspot LAN without knowing their IPs
     private val broadcastAddress: InetAddress = InetAddress.getByName("255.255.255.255")
@@ -458,29 +456,12 @@ class RoverPositionManager(
         if (isRunning) return
         isRunning = true
 
-        // Acquire a high-performance WiFi lock to prevent Android power-save mode from
-        // buffering incoming UDP packets (which causes 50-100ms latency per mission item).
-        ctx?.applicationContext?.let { appCtx ->
-            try {
-                val wm = appCtx.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-                    ?: return@let
-                // WIFI_MODE_FULL_LOW_LATENCY (API 29) is more aggressive than HIGH_PERF
-                // and still effective on Android 12+. HIGH_PERF was deprecated in API 29
-                // and silently does less on newer devices. LOW_LATENCY explicitly requests
-                // the AP not to buffer packets, cutting per-item latency from ~100ms to ~1ms.
-                val lockMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                } else {
-                    @Suppress("DEPRECATION")
-                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                }
-                wifiLock = wm.createWifiLock(lockMode, "AgriRover:UDP")
-                    .also { it.acquire() }
-                Log.i("RoverMgr", "WiFi lock acquired (mode=$lockMode)")
-            } catch (e: Exception) {
-                Log.w("RoverMgr", "WiFi lock unavailable: ${e.message}")
-            }
-        }
+        // NOTE: WifiLock removed. It used to be acquired here in LOW_LATENCY mode to
+        // cut MAVLink mission-upload DTIM latency, but (a) all transport is now
+        // rosbridge/TCP so DTIM no longer matters, and (b) on the SIYI MK32's custom
+        // Android the lock kicks the WiFi radio into a bad state — the SSID disappears
+        // from the scan list and the tablet leaves the AP entirely. See commit f0ea394
+        // for the original EPERM-on-sendto report from the same root cause.
 
         // Discovery beacon listener — rovers broadcast JSON on UDP 5555
         scope.launch {
@@ -537,8 +518,6 @@ class RoverPositionManager(
         rosbridgeWs.values.forEach { it.close(1000, "stopping") }
         rosbridgeWs.clear()
         scope.cancel()
-        wifiLock?.let { if (it.isHeld) it.release() }
-        wifiLock = null
     }
 
     /** Send MANUAL_CONTROL (#69).
