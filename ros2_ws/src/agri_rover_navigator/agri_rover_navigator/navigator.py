@@ -483,15 +483,13 @@ class NavigatorNode(Node):
 
         # Obstacle avoidance state
         # _path_original: clean copy of received mission waypoints (without bypass points).
-        #                 _reroute_path() always rebuilds _path from this — idempotent.
+        #                 Immutable copy of the uploaded mission.
         # _obstacle_polygons: raw fence polygons [(lat,lon), ...] received from mission_fence.
         # _expanded_polygons: _obstacle_polygons each expanded by _clearance metres.
-        # _bypass_indices: set of indices in _path that are synthetic bypass waypoints.
-        #                  _advance_path() skips publishing wp_active for these.
+        #   Used to check if path crosses obstacles (disarm) and for lane graph pruning.
         self._path_original:     list[MissionWaypoint]             = []
         self._obstacle_polygons: list[list[tuple[float, float]]]   = []
         self._expanded_polygons: list[list[tuple[float, float]]]   = []
-        self._bypass_indices:    set[int]                          = set()
 
         # ── Corridor mode state ──────────────────────────────────────────────
         # When a corridor mission is loaded, the navigator converts corridors
@@ -537,7 +535,6 @@ class NavigatorNode(Node):
         self._resource_reason: str | None = None       # 'battery' | 'tank'
         self._saved_path_original: list   = []         # snapshot of _path_original at trigger
         self._saved_wp_idx:    int        = 0          # _path_idx at trigger (next unvisited)
-        self._saved_bypass:    set        = set()      # bypass indices
         self._saved_fence:     list       = []         # expanded polygons
         self._battery_pct:     float | None = None     # latest battery % from real sensors
         self._tank_pct:        float | None = None     # latest tank % from real sensors
@@ -804,20 +801,18 @@ class NavigatorNode(Node):
     def _cb_reroute_response(self, msg: Bool):
         if not self._reroute_pending:
             return
-        was_base_no_lane = self._base_no_lane_pending
         self._reroute_pending = False
         self._base_no_lane_pending = False
         rp = Bool(); rp.data = False
         self.reroute_pending_pub.publish(rp)
         if msg.data:
             self.get_logger().info('Confirmed — resuming navigation')
-        elif was_base_no_lane:
+        else:
             # User rejected direct base trip — cancel base return, restore mission
             self.get_logger().info('Direct base trip rejected — resuming mission')
             self._resource_state = 'normal'
             self._path = list(self._saved_path_original)
             self._path_original = list(self._saved_path_original)
-            self._bypass_indices = set(self._saved_bypass)
             self._expanded_polygons = list(self._saved_fence)
             self._path_idx = self._saved_wp_idx
             olat = self._path[0].latitude if self._path else 0.0
@@ -825,33 +820,10 @@ class NavigatorNode(Node):
             self._path_origin_lat = olat
             self._path_origin_lon = olon
             self._path_s = self._rebuild_path_s(self._path, olat, olon)
-            self._reroute_path()
             self._path_version += 1
             pv = Int32(); pv.data = self._path_version
             self.path_version_pub.publish(pv)
             self._publish_full_path()
-        else:
-            self.get_logger().info('Reroute rejected — reverting to original path')
-            self._path = list(self._path_original)
-            self._bypass_indices = set()
-            # Rebuild arc-lengths
-            self._path_s = []
-            for k, wp in enumerate(self._path):
-                if k == 0:
-                    if self._path_origin_lat is not None:
-                        d = haversine(self._path_origin_lat, self._path_origin_lon,
-                                      wp.latitude, wp.longitude)
-                    else:
-                        d = 0.0
-                    self._path_s.append(d)
-                else:
-                    prev = self._path[k - 1]
-                    d = haversine(prev.latitude, prev.longitude,
-                                  wp.latitude, wp.longitude)
-                    self._path_s.append(self._path_s[-1] + d)
-            self._path_version += 1
-            pv = Int32(); pv.data = self._path_version
-            self.path_version_pub.publish(pv)
 
     def _cb_armed(self, msg: Bool):
         was_armed = self._armed
@@ -938,7 +910,6 @@ class NavigatorNode(Node):
         self._path_origin_lat = rover_lat
         self._path_origin_lon = rover_lon
         self._path_s = self._rebuild_path_s(self._path, rover_lat, rover_lon)
-        self._bypass_indices = set(range(shift))
         # Prepend corridor widths and servo state for approach waypoints
         # Use CTE alarm as approach width; neutral servos (no spraying during approach)
         approach_width = self._stanley_cte_alarm
@@ -1090,9 +1061,9 @@ class NavigatorNode(Node):
         try:
             path_data = [
                 [round(wp.latitude, 7), round(wp.longitude, 7),
-                 1 if k in self._bypass_indices else 0,
+                 0,  # bypass flag (always 0 — rerouting removed)
                  round(wp.speed, 2), round(wp.hold_secs, 1)]
-                for k, wp in enumerate(self._path)
+                for wp in self._path
             ]
             mission_out = {
                 'waypoints': [{'lat': round(wp.latitude, 7),
@@ -1140,7 +1111,6 @@ class NavigatorNode(Node):
         self._path.clear()
         self._path_s.clear()
         self._path_original.clear()
-        self._bypass_indices.clear()
         self._path_idx               = 0
         self._path_origin_lat        = None
         self._path_origin_lon        = None
@@ -1171,7 +1141,6 @@ class NavigatorNode(Node):
             self._path.clear()
             self._path_s.clear()
             self._path_original.clear()
-            self._bypass_indices.clear()
             self._path_idx        = 0
             self._holding         = False
             self._pivoting               = False
@@ -1214,10 +1183,9 @@ class NavigatorNode(Node):
             f'spd={msg.speed:.2f} hold={msg.hold_secs:.1f} '
             f'— {len(self._path)} total, path {self._path_s[-1]:.1f} m')
 
-        # If expanded obstacle polygons are already available (fence arrived before
-        # the last waypoint), reroute incrementally so the final path is correct.
+        # Check if path crosses any obstacle polygon — disarm if so
         if self._expanded_polygons:
-            self._reroute_path()
+            self._check_path_obstacles()
 
     def _collapse_spin_clusters(self):
         """Collapse turn-marked waypoint clusters into single waypoints.
@@ -1253,7 +1221,6 @@ class NavigatorNode(Node):
             # Rebuild path and arc-lengths from optimized list
             self._path_original = result
             self._path = list(result)
-            self._bypass_indices.clear()
             self._path_s = self._rebuild_path_s(
                 self._path, self._path_origin_lat, self._path_origin_lon)
             # Re-number sequences
@@ -1326,19 +1293,14 @@ class NavigatorNode(Node):
                 exp_str = '  '.join(f'{lat:.7f},{lon:.7f}' for lat, lon in exp)
                 self.get_logger().info(f'  poly[{pi}] expanded: {exp_str}')
 
-        # Only reroute if there are actual obstacles — empty fence should not
-        # trigger _reroute_path() because waypoints may still be arriving and
-        # a premature split would scramble the waypoint order.
+        # Check if path crosses any obstacle — disarm if so
         if self._obstacle_polygons and self._path_original:
-            self._reroute_path()
+            self._check_path_obstacles()
         elif self._obstacle_polygons:
-            self.get_logger().warn(
-                'Obstacle fence arrived before waypoints — reroute deferred '
-                '(will trigger on next waypoint via _cb_mission)')
+            self.get_logger().info(
+                'Obstacle fence loaded — will check on next waypoint')
         else:
             self.get_logger().info('Obstacle fence: empty (no polygons)')
-            # No obstacles — publish plain path so mavlink_bridge has the full
-            # path for MSN_ID hash and mission download.
             if self._path:
                 self._publish_full_path()
 
@@ -1477,67 +1439,36 @@ class NavigatorNode(Node):
         hits.sort(key=lambda h: h[0])
         return hits
 
-    def _bypass_arc(
-            self,
-            entry_pt: tuple[float, float],
-            exit_pt: tuple[float, float],
-            entry_edge: int,
-            exit_edge: int,
-            polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
-        """Return the shorter arc path: entry_pt → polygon vertices → exit_pt."""
-        n = len(polygon)
+    def _check_path_obstacles(self):
+        """Check if the current path crosses any obstacle polygon.
 
-        ccw_verts: list[tuple[float, float]] = []
-        idx = (entry_edge + 1) % n
-        for _ in range(n):
-            ccw_verts.append(polygon[idx])
-            if idx == exit_edge:
-                break
-            idx = (idx + 1) % n
-
-        cw_verts: list[tuple[float, float]] = []
-        target = (exit_edge + 1) % n
-        idx = entry_edge
-        for _ in range(n):
-            cw_verts.append(polygon[idx])
-            if idx == target:
-                break
-            idx = (idx - 1 + n) % n
-
-        def path_len(pts: list[tuple[float, float]]) -> float:
-            total = 0.0
-            for k in range(len(pts) - 1):
-                total += haversine(pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1])
-            return total
-
-        ccw_path = [entry_pt] + ccw_verts + [exit_pt]
-        cw_path  = [entry_pt] + cw_verts  + [exit_pt]
-        return ccw_path if path_len(ccw_path) <= path_len(cw_path) else cw_path
-
-    def _bypass_verts(
-            self,
-            a_lat: float, a_lon: float,
-            b_lat: float, b_lon: float,
-            hits: list[tuple[float, int]],
-            polygon: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        If any segment intersects an expanded obstacle, log a warning and
+        disarm the rover.  No rerouting — the user must adjust the mission.
         """
-        Given segment A→B and its sorted intersections with polygon, return a list
-        of (lat, lon) points that detour around the polygon boundary.
-        Returns an empty list if fewer than 2 intersections.
-        """
-        if len(hits) < 2:
-            return []
-        t_entry, entry_edge = hits[0]
-        t_exit,  exit_edge  = hits[-1]
-
-        def interp(t: float) -> tuple[float, float]:
-            return (a_lat + t * (b_lat - a_lat),
-                    a_lon + t * (b_lon - a_lon))
-
-        return self._bypass_arc(interp(t_entry), interp(t_exit),
-                                entry_edge, exit_edge, polygon)
-
-    # ── Corridor mission handling ────────────────────────────────────────────
+        if not self._expanded_polygons or not self._path:
+            return
+        for i in range(len(self._path) - 1):
+            a = self._path[i]
+            b = self._path[i + 1]
+            for pi, poly in enumerate(self._expanded_polygons):
+                hits = self._seg_intersect_polygon(
+                    a.latitude, a.longitude,
+                    b.latitude, b.longitude, poly)
+                if hits:
+                    self.get_logger().error(
+                        f'[OBSTACLE] Path segment {i}→{i+1} crosses '
+                        f'obstacle polygon {pi} — disarming')
+                    self._publish_halt()
+                    self._armed = False
+                    arm_msg = Bool(); arm_msg.data = False
+                    self.armed_pub.publish(arm_msg)
+                    # Notify user
+                    cm = String()
+                    cm.data = f'Path crosses obstacle {pi} at segment {i}. Mission blocked.'
+                    self.confirm_message_pub.publish(cm)
+                    return
+        self.get_logger().info('[OBSTACLE] Path clear — no obstacle intersections')
+        self._publish_full_path()
 
     def _cb_corridor_mission(self, msg: String):
         """Parse corridor mission JSON → build polyline path for Stanley CTE following."""
@@ -1586,7 +1517,6 @@ class NavigatorNode(Node):
             self._path.clear()
             self._path_s.clear()
             self._path_original.clear()
-            self._bypass_indices.clear()
             self._path_idx          = 0
             self._holding           = False
             self._pivoting          = False
@@ -1932,170 +1862,14 @@ class NavigatorNode(Node):
         """
         path_data = [
             [round(wp.latitude, 7), round(wp.longitude, 7),
-             1 if k in self._bypass_indices else 0,
-             round(wp.speed, 2), round(wp.hold_secs, 1)]
-            for k, wp in enumerate(self._path)
+             0, round(wp.speed, 2), round(wp.hold_secs, 1)]
+            for wp in self._path
         ]
         rp_msg = String()
         rp_msg.data = json.dumps(path_data, separators=(',', ':'))
         self.rerouted_pub.publish(rp_msg)
         self._save_run_mission()
 
-    def _smooth_bypass_corners(self):
-        """Replace bypass zones with A-star planned smooth paths.
-
-        For each contiguous group of bypass indices, plans a smooth path
-        from the entry point to the exit point using A-star on a grid
-        with inflated obstacle polygons. The planned path naturally
-        curves around all obstacles simultaneously.
-
-        bypass_arc_radius_m > 0 enables smoothing (0 = disabled).
-        """
-        if not self._bypass_indices or not self._path or not self._path_s:
-            return
-        if self._bypass_arc_radius <= 0:
-            return
-
-        from agri_rover_navigator.grid_planner import plan_around_obstacles
-
-        # Find contiguous bypass groups
-        bp_sorted = sorted(self._bypass_indices)
-        groups = []
-        g_start = bp_sorted[0]
-        g_end = bp_sorted[0]
-        for bp in bp_sorted[1:]:
-            if bp <= g_end + 2:  # within 2 indices = same group
-                g_end = bp
-            else:
-                groups.append((g_start, g_end))
-                g_start = g_end = bp
-        groups.append((g_start, g_end))
-
-        self.get_logger().info(
-            f'A-star smoother: {len(groups)} bypass group(s) to plan')
-
-        # Process groups in reverse order so index shifts don't affect earlier groups
-        new_bypass = set()
-        for g_start, g_end in reversed(groups):
-            # Entry = point before bypass, exit = point after bypass
-            entry_idx = max(0, g_start - 1)
-            exit_idx = min(len(self._path) - 1, g_end + 1)
-            entry_wp = self._path[entry_idx]
-            exit_wp = self._path[exit_idx]
-
-            start_gps = (entry_wp.latitude, entry_wp.longitude)
-            goal_gps = (exit_wp.latitude, exit_wp.longitude)
-
-            planned = plan_around_obstacles(
-                start=start_gps,
-                goal=goal_gps,
-                obstacles=self._obstacle_polygons,
-                clearance_m=self._clearance,
-                resolution_m=0.10,
-                padding_m=self._clearance + 2.0,
-            )
-
-            if not planned or len(planned) < 2:
-                self.get_logger().warn(
-                    f'A-star: no path for group [{g_start}..{g_end}] — keeping bypass')
-                continue
-
-            # Map speeds from nearest original waypoint
-            smooth_wps = []
-            orig_zone = self._path[entry_idx:exit_idx + 1]
-            for lat, lon in planned[1:-1]:  # skip first/last (they're entry/exit)
-                base_spd = self._max_speed
-                best_d = float('inf')
-                for wp in orig_zone:
-                    d = haversine(lat, lon, wp.latitude, wp.longitude)
-                    if d < best_d:
-                        best_d = d
-                        base_spd = wp.speed if wp.speed > 0 else self._max_speed
-                bwp = MissionWaypoint()
-                bwp.seq = -99  # bypass marker
-                bwp.latitude = lat
-                bwp.longitude = lon
-                bwp.speed = base_spd
-                bwp.hold_secs = 0.0
-                bwp.acceptance_radius = self._accept_r
-                smooth_wps.append(bwp)
-
-            # Splice: keep entry + smooth path + exit, remove old bypass
-            before = list(self._path[:entry_idx + 1])
-            after = list(self._path[exit_idx:])
-            self._path = before + smooth_wps + after
-
-            # Track new bypass indices
-            for k in range(len(before), len(before) + len(smooth_wps)):
-                new_bypass.add(k)
-
-            self.get_logger().info(
-                f'A-star: group [{g_start}..{g_end}] → {len(smooth_wps)} smooth pts '
-                f'(was {g_end - g_start + 1} bypass)')
-
-        self._bypass_indices = new_bypass
-        origin_lat = self._path_origin_lat or self._path[0].latitude
-        origin_lon = self._path_origin_lon or self._path[0].longitude
-        self._path_s = self._rebuild_path_s(self._path, origin_lat, origin_lon)
-        self._corridor_turn_indices = set()
-
-        self.get_logger().info(
-            f'A-star smoothed: {len(self._path)} total pts')
-
-        # Run Stanley sim through the A-star+Chaikin path — iterate up to 3x if CTE > 0.30m
-        orig_speeds = [(wp.latitude, wp.longitude,
-                        wp.speed if wp.speed > 0 else self._max_speed)
-                       for wp in self._path]
-        for sim_pass in range(3):
-            result = self._sim_validate_path()
-            max_cte = result.get('max_cte', 99)
-            sim_trace = result.get('sim_path', [])
-            if not sim_trace or len(sim_trace) < 2:
-                break
-            # Replace path with sim trace
-            new_path = []
-            for lat, lon in sim_trace:
-                base_spd = self._max_speed
-                best_d = float('inf')
-                for olat, olon, ospd in orig_speeds:
-                    d = haversine(lat, lon, olat, olon)
-                    if d < best_d:
-                        best_d = d
-                        base_spd = ospd
-                wp = MissionWaypoint()
-                wp.seq = len(new_path)
-                wp.latitude = lat
-                wp.longitude = lon
-                wp.speed = base_spd
-                wp.hold_secs = 0.0
-                wp.acceptance_radius = self._accept_r
-                new_path.append(wp)
-            # Drop sim points inside obstacles
-            clean_path = []
-            for wp in new_path:
-                inside = False
-                for poly in self._expanded_polygons:
-                    if self._point_in_polygon(wp.latitude, wp.longitude, poly):
-                        inside = True
-                        break
-                if not inside:
-                    clean_path.append(wp)
-            if len(clean_path) >= 2:
-                self._path = clean_path
-                self._bypass_indices = set()
-                self._corridor_turn_indices = set()
-                self._path_s = self._rebuild_path_s(
-                    clean_path,
-                    self._path_origin_lat or clean_path[0].latitude,
-                    self._path_origin_lon or clean_path[0].longitude)
-            self.get_logger().info(
-                f'Sim pass {sim_pass}: {len(clean_path)} pts '
-                f'(dropped {len(new_path) - len(clean_path)}), '
-                f'max_cte={max_cte:.3f}m')
-            if max_cte <= 0.30:
-                break
-
-    @staticmethod
     def _point_in_polygon(lat: float, lon: float, poly: list) -> bool:
         """Ray-casting point-in-polygon test."""
         inside = False
@@ -2119,287 +1893,7 @@ class NavigatorNode(Node):
         c.acceptance_radius = wp.acceptance_radius
         return c
 
-    def _reroute_path(self):
-        """
-        Rebuild _path and _path_s from _path_original, inserting bypass waypoints
-        around any expanded obstacle polygon that a path segment intersects.
-
-        Handles polygons that span across a waypoint (entry and exit on different
-        segments) via cross-segment scan-ahead.
-
-        If the rover is actively navigating (armed + AUTONOMOUS + path_idx > 0),
-        the reroute is applied but the rover pauses for user confirmation via GQC.
-        """
-        was_navigating = (self._mode == 'AUTONOMOUS' and self._armed
-                          and self._path_idx > 0)
-
-        if not self._path_original:
-            return
-
-        new_wps: list[MissionWaypoint] = []
-        new_bypass_indices: set[int]   = set()
-
-        def make_bypass_wp(lat: float, lon: float,
-                           ref_wp: MissionWaypoint) -> MissionWaypoint:
-            bp = MissionWaypoint()
-            bp.seq               = -99        # bypass marker — filtered in _advance_path
-            bp.latitude          = lat
-            bp.longitude         = lon
-            bp.speed             = ref_wp.speed
-            bp.hold_secs         = 0.0
-            bp.acceptance_radius = self._accept_r
-            return bp
-
-        orig = self._path_original
-
-        # Prepend a synthetic origin waypoint so the rover-start → orig[0]
-        # segment is also checked for obstacle intersections.
-        # It is stripped from new_wps at the end (identified by seq == -9999).
-        _ORIGIN_SEQ = -9999
-        if self._path_origin_lat is not None and orig:
-            origin_wp = MissionWaypoint()
-            origin_wp.seq               = _ORIGIN_SEQ
-            origin_wp.latitude          = self._path_origin_lat
-            origin_wp.longitude         = self._path_origin_lon
-            origin_wp.speed             = orig[0].speed
-            origin_wp.hold_secs         = 0.0
-            origin_wp.acceptance_radius = self._accept_r
-            all_wps = [origin_wp] + list(orig)
-        else:
-            all_wps = list(orig)
-
-        i = 0
-        while i < len(all_wps):
-            if not new_wps:
-                new_wps.append(all_wps[i])
-                i += 1
-                continue
-
-            prev     = new_wps[-1]
-            wp       = all_wps[i]
-            a_lat, a_lon = prev.latitude, prev.longitude
-            b_lat, b_lon = wp.latitude, wp.longitude
-
-            # Compute intersections with all polygons for this segment
-            seg_hits: list[tuple[int, list]] = []
-            for poly_idx, poly in enumerate(self._expanded_polygons):
-                hits = self._seg_intersect_polygon(a_lat, a_lon, b_lat, b_lon, poly)
-                if hits:
-                    seg_hits.append((poly_idx, hits))
-
-            # Case 1: complete in-segment crossing (>=2 hits)
-            complete = [(pi, h) for pi, h in seg_hits if len(h) >= 2]
-            if complete:
-                complete.sort(key=lambda x: x[1][0][0])
-                best_pi, best_hits = complete[0]
-                poly   = self._expanded_polygons[best_pi]
-                bypass = self._bypass_verts(a_lat, a_lon, b_lat, b_lon, best_hits, poly)
-                for bp_lat, bp_lon in bypass:
-                    idx = len(new_wps)
-                    new_bypass_indices.add(idx)
-                    new_wps.append(make_bypass_wp(bp_lat, bp_lon, wp))
-                new_wps.append(wp)
-                i += 1
-                continue
-
-            # Case 2: 1-hit entry — polygon spans across a waypoint, scan ahead
-            entries = [(pi, h[0]) for pi, h in seg_hits if len(h) == 1]
-            if entries:
-                entries.sort(key=lambda x: x[1][0])
-                entry_pi, (entry_t, entry_edge) = entries[0]
-                poly = self._expanded_polygons[entry_pi]
-                entry_pt = (a_lat + entry_t * (b_lat - a_lat),
-                            a_lon + entry_t * (b_lon - a_lon))
-
-                # Scan ahead through all_wps to find the exit crossing
-                j = i + 1
-                found_exit = False
-                while j < len(all_wps):
-                    c_lat = all_wps[j - 1].latitude
-                    c_lon = all_wps[j - 1].longitude
-                    d_lat = all_wps[j].latitude
-                    d_lon = all_wps[j].longitude
-                    exit_hits = self._seg_intersect_polygon(c_lat, c_lon, d_lat, d_lon, poly)
-                    if exit_hits:
-                        exit_t, exit_edge = exit_hits[0]
-                        exit_pt = (c_lat + exit_t * (d_lat - c_lat),
-                                   c_lon + exit_t * (d_lon - c_lon))
-                        bypass = self._bypass_arc(entry_pt, exit_pt,
-                                                  entry_edge, exit_edge, poly)
-                        self.get_logger().info(
-                            f'Cross-segment bypass: {len(bypass)} pts, '
-                            f'poly[{entry_pi}] spans wps {i}..{j-1}')
-                        for bp_lat, bp_lon in bypass:
-                            idx = len(new_wps)
-                            new_bypass_indices.add(idx)
-                            new_wps.append(make_bypass_wp(bp_lat, bp_lon, all_wps[j]))
-                        new_wps.append(all_wps[j])
-                        i = j + 1
-                        found_exit = True
-                        break
-                    j += 1
-
-                if not found_exit:
-                    new_wps.append(wp)
-                    i += 1
-                continue
-
-            # No intersection — keep original waypoint
-            new_wps.append(wp)
-            i += 1
-
-        # Strip synthetic origin waypoint (it is not a real mission waypoint)
-        if new_wps and new_wps[0].seq == _ORIGIN_SEQ:
-            new_wps.pop(0)
-            # Shift bypass indices — the origin occupied index 0
-            new_bypass_indices = {idx - 1 for idx in new_bypass_indices if idx > 0}
-
-        # Rebuild path arc-lengths from new_wps
-        new_s: list[float] = []
-        for k, wp in enumerate(new_wps):
-            if k == 0:
-                d = (haversine(self._path_origin_lat, self._path_origin_lon,
-                               wp.latitude, wp.longitude)
-                     if self._path_origin_lat is not None else 0.0)
-            else:
-                prev = new_wps[k - 1]
-                d    = new_s[-1] + haversine(prev.latitude, prev.longitude,
-                                             wp.latitude, wp.longitude)
-            new_s.append(d)
-
-        self._path          = new_wps
-        self._path_s        = new_s
-        self._bypass_indices = new_bypass_indices
-        self._path_idx      = 0
-        self._holding       = False
-        self._pivoting      = False
-
-        # Save entry/exit GPS anchors for final validation
-        _entry_ll = None
-        _exit_ll = None
-        if new_bypass_indices:
-            bp_sorted = sorted(new_bypass_indices)
-            entry_idx = max(0, bp_sorted[0] - 1)
-            exit_idx = min(len(self._path) - 1, bp_sorted[-1] + 1)
-            _entry_ll = (self._path[entry_idx].latitude, self._path[entry_idx].longitude)
-            _exit_ll = (self._path[exit_idx].latitude, self._path[exit_idx].longitude)
-
-        # Reduce redundant bypass points — 3 passes, front to back.
-        if new_bypass_indices:
-            total_removed = 0
-            for reduce_pass in range(3):
-                bp_set = set(self._bypass_indices)
-                if not bp_set:
-                    break
-                bp_sorted = sorted(bp_set)
-                first_bp = bp_sorted[0]
-                last_bp = bp_sorted[-1]
-                # Target: first non-bypass point after the bypass zone
-                exit_idx = last_bp + 1
-                exit_wp = self._path[exit_idx] if exit_idx < len(self._path) else self._path[-1]
-
-                reduced = []
-                i = 0
-                removed = 0
-                while i < len(self._path):
-                    if i not in bp_set:
-                        reduced.append(self._path[i])
-                        i += 1
-                        continue
-                    # Bypass point — check if skipping ahead gets closer to exit
-                    reduced.append(self._path[i])
-                    best_next = i + 1
-                    if i + 1 < len(self._path):
-                        d_next = haversine(self._path[i + 1].latitude, self._path[i + 1].longitude,
-                                           exit_wp.latitude, exit_wp.longitude)
-                        for k in range(2, 6):
-                            if i + k >= len(self._path):
-                                break
-                            if (i + k) not in bp_set:
-                                break  # don't skip over non-bypass points
-                            d_k = haversine(self._path[i + k].latitude, self._path[i + k].longitude,
-                                            exit_wp.latitude, exit_wp.longitude)
-                            if d_k < d_next:
-                                best_next = i + k
-                                d_next = d_k
-                    if best_next > i + 1:
-                        removed += best_next - (i + 1)
-                    i = best_next
-
-                if removed == 0:
-                    break
-                total_removed += removed
-                self._path = reduced
-                # Rebuild bypass indices
-                new_bp = set()
-                for k, wp in enumerate(reduced):
-                    if wp.seq == -99:
-                        new_bp.add(k)
-                self._bypass_indices = new_bp
-                new_bypass_indices = new_bp
-                origin_lat = self._path_origin_lat or reduced[0].latitude
-                origin_lon = self._path_origin_lon or reduced[0].longitude
-                self._path_s = self._rebuild_path_s(reduced, origin_lat, origin_lon)
-
-            if total_removed > 0:
-                self.get_logger().info(
-                    f'Bypass reducer: removed {total_removed} pts in {reduce_pass + 1} passes')
-
-        # Smooth full mission — the sim naturally curves around obstacles
-        if new_bypass_indices:
-            self._smooth_bypass_corners()
-
-        # Final validation: entry/exit GPS anchors must still exist in path
-        if _entry_ll and _exit_ll:
-            entry_ok = any(
-                haversine(wp.latitude, wp.longitude, _entry_ll[0], _entry_ll[1]) < 0.1
-                for wp in self._path)
-            exit_ok = any(
-                haversine(wp.latitude, wp.longitude, _exit_ll[0], _exit_ll[1]) < 0.1
-                for wp in self._path)
-            if entry_ok and exit_ok:
-                self.get_logger().info('Bypass anchors validated: entry/exit GPS intact')
-            else:
-                self.get_logger().warn(
-                    f'Bypass anchor MISMATCH: entry={entry_ok} exit={exit_ok}')
-
-        self._publish_full_path()
-        self._path_version += 1
-        pv = Int32(); pv.data = self._path_version
-        self.path_version_pub.publish(pv)
-
-        n_bypass = len(self._bypass_indices)
-        if n_bypass > 0:
-            self.get_logger().info(
-                f'Path rerouted: {len(self._path_original)} → {len(self._path)} wps '
-                f'({n_bypass} bypass inserted)')
-            for idx in sorted(new_bypass_indices):
-                bp = new_wps[idx]
-                self.get_logger().info(
-                    f'  bypass[{idx}]: {bp.latitude:.7f},{bp.longitude:.7f}')
-        else:
-            self.get_logger().info(
-                f'Reroute complete: {len(self._path_original)} wps, '
-                f'no bypass needed (path does not cross any obstacle)')
-        # Log surrounding waypoints for context
-        for k, wp in enumerate(new_wps):
-            if k in new_bypass_indices or (k > 0 and k - 1 in new_bypass_indices) or (k < len(new_wps) - 1 and k + 1 in new_bypass_indices):
-                tag = 'BYPASS' if k in new_bypass_indices else 'orig'
-                self.get_logger().info(f'  path[{k}] {tag}: seq={wp.seq} {wp.latitude:.7f},{wp.longitude:.7f}')
-
-        self._sim_validate_path()
-
-        # If rover was actively navigating and bypass was inserted, pause for
-        # user confirmation via GQC before proceeding with the new route.
-        if was_navigating and n_bypass > 0:
-            self._reroute_pending = True
-            rp = Bool(); rp.data = True
-            self.reroute_pending_pub.publish(rp)
-            self._publish_halt()
-            self.get_logger().info(
-                'Reroute pending — waiting for user confirmation via GQC')
-
-    # ── Fast internal simulation (preflight CTE check) ─────────────────────
+    # _reroute_path removed — obstacles now disarm the rover instead of rerouting.
 
     def _sim_validate_path(self) -> dict:
         """Run fast offline simulation of the current path using DiffDriveState.
@@ -2941,10 +2435,8 @@ class NavigatorNode(Node):
         if self._path_idx >= len(self._path):
             return
         wp = self._path[self._path_idx]
-        # Only publish real waypoint arrivals — bypass points are transparent to GQC.
-        if self._path_idx not in self._bypass_indices:
-            m = Int32(); m.data = wp.seq
-            self.wp_pub.publish(m)
+        m = Int32(); m.data = wp.seq
+        self.wp_pub.publish(m)
         self._path_idx += 1
         self._pivot_closest_dist = float('inf')   # reset for next waypoint
         self._spin_target_brg    = None            # stale bearing from previous WP approach
@@ -2963,9 +2455,8 @@ class NavigatorNode(Node):
                 self.armed_pub.publish(a)
         else:
             nxt = self._path[self._path_idx]
-            if self._path_idx - 1 not in self._bypass_indices:
-                self.get_logger().info(
-                    f'Waypoint {wp.seq} reached — navigating to {nxt.seq}')
+            self.get_logger().info(
+                f'Waypoint {wp.seq} reached — navigating to {nxt.seq}')
 
     # ── Resource management ──────────────────────────────────────────────────
 
@@ -3020,7 +2511,6 @@ class NavigatorNode(Node):
         # Save current mission for later resume
         self._saved_path_original = list(self._path_original)
         self._saved_wp_idx        = self._path_idx
-        self._saved_bypass        = set(self._bypass_indices)
         self._saved_fence         = list(self._expanded_polygons)
         self._resource_state      = 'going_to_base'
 
@@ -3073,7 +2563,6 @@ class NavigatorNode(Node):
         self._path.clear()
         self._path_s.clear()
         self._path_original.clear()
-        self._bypass_indices.clear()
 
         self._path_origin_lat, self._path_origin_lon = rlat, rlon
         self._path.extend(base_wps)
@@ -3084,13 +2573,8 @@ class NavigatorNode(Node):
         self._pivoting = False
         self._reroute_pending = False
 
-        # Reroute base trip around obstacles (keep saved polygons active)
+        # Restore saved obstacles for lane graph pruning
         self._expanded_polygons = list(self._saved_fence)
-        if self._expanded_polygons and self._lane_map is None:
-            # Only reroute if not using lane graph (lanes already avoid obstacles)
-            self._reroute_path()
-            self.get_logger().info(
-                f'[RESOURCE] Base trip rerouted around {len(self._expanded_polygons)} obstacle(s)')
 
         # Publish status signals
         m = Int32(); m.data = -2  # "going to base" signal
@@ -3164,7 +2648,6 @@ class NavigatorNode(Node):
         self._path.clear()
         self._path_s.clear()
         self._path_original.clear()
-        self._bypass_indices.clear()
 
         self._path_origin_lat = rlat
         self._path_origin_lon = rlon
@@ -3175,10 +2658,9 @@ class NavigatorNode(Node):
         self._holding = False
         self._pivoting = False
 
-        # Restore saved obstacles for resume rerouting
+        # Restore saved obstacles for path check
         if self._saved_fence:
             self._expanded_polygons = list(self._saved_fence)
-            self._reroute_path()
 
         self.get_logger().info(
             f'[RESOURCE] At base ({reason_label}) — resume mission: '
@@ -3403,8 +2885,6 @@ class NavigatorNode(Node):
         rlat, rlon       = self._center_pos()
         flat, flon       = self._front_pos()
         dist_to_wp       = haversine(rlat, rlon, wp.latitude, wp.longitude)
-        is_bypass        = self._path_idx in self._bypass_indices
-
         # Turn detection — use _turn_angle_at() which works on the full path.
         turn_angle = self._turn_angle_at(self._path_idx)
         needs_turn = (turn_angle >= self._pivot_threshold
@@ -3484,12 +2964,11 @@ class NavigatorNode(Node):
                 return thr, steer_ppm
         else:
             # Non-turn waypoint: standard proximity advance
-            past_wp = (not is_bypass
-                       and dist_to_wp < accept * 4.0
+            past_wp = (dist_to_wp < accept * 4.0
                        and self._past_waypoint(rlat, rlon))
             reached = dist_to_wp < accept or past_wp
             if reached:
-                if not is_bypass and wp.hold_secs < 0.0:
+                if wp.hold_secs < 0.0:
                     # Waiting point — signal disarm, keep mission
                     self.get_logger().info(
                         f'AFS wp{wp.seq} reached — WAITING POINT')
@@ -3497,21 +2976,20 @@ class NavigatorNode(Node):
                     m = Int32(); m.data = -(wp.seq + 1000)
                     self.wp_pub.publish(m)
                     return PPM_CENTER, PPM_CENTER
-                if not is_bypass and wp.hold_secs > 0.0:
+                if wp.hold_secs > 0.0:
                     self._holding  = True
                     self._hold_end = time.monotonic() + wp.hold_secs
                     self.get_logger().info(
                         f'AFS wp{wp.seq} reached — holding {wp.hold_secs:.1f}s')
                     self._publish_halt()
                     return PPM_CENTER, PPM_CENTER
-                if not is_bypass:
-                    self.get_logger().info(f'AFS wp{wp.seq} reached ({dist_to_wp:.2f}m)')
+                self.get_logger().info(f'AFS wp{wp.seq} reached ({dist_to_wp:.2f}m)')
                 self._advance_path()
                 return PPM_CENTER, PPM_CENTER
 
         # CTE (front antenna projected onto current segment)
         cte_seg = self._path_idx
-        cte     = 0.0 if is_bypass else self._cte_to_seg(flat, flon, cte_seg)
+        cte     = self._cte_to_seg(flat, flon, cte_seg)
 
         # XTE telemetry
         xte_msg      = Float32()
@@ -3532,10 +3010,7 @@ class NavigatorNode(Node):
         throttle_ppm = max(self._min_throttle_ppm, int(PPM_CENTER + (v_mps / self._max_speed) * 500))
 
         # Lookahead
-        if is_bypass:
-            la_lat, la_lon = wp.latitude, wp.longitude
-        else:
-            la_lat, la_lon = self._point_at_s(s_nearest + self._lookahead)
+        la_lat, la_lon = self._point_at_s(s_nearest + self._lookahead)
 
         target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
 
@@ -3658,7 +3133,7 @@ class NavigatorNode(Node):
                 f'{self._path_origin_lat:.7f},{self._path_origin_lon:.7f} '
                 f'— {step_m:.1f} m behind wp0 on bearing {rev_brg:.0f}°')
             if self._expanded_polygons:
-                self._reroute_path()
+                self._check_path_obstacles()
 
         # ── wp0 degenerate-segment skip ──────────────────────────────────────
         # When path_origin ≈ wp0 (e.g. resume mission where both were captured
@@ -3725,8 +3200,6 @@ class NavigatorNode(Node):
         rlat, rlon  = self._center_pos()
         flat, flon  = self._front_pos()
 
-        is_bypass   = self._path_idx in self._bypass_indices
-
         # Pivot detection — _turn_angle_at() works on the full path.
         turn_angle  = self._turn_angle_at(self._path_idx)
         needs_pivot = (turn_angle >= self._pivot_threshold
@@ -3762,13 +3235,13 @@ class NavigatorNode(Node):
         # spatially close but behind.  Distance advance (dist < accept) is always
         # allowed — if the rover is physically at the WP, it should advance.
         in_spin = self._spin_target_brg is not None
-        past_wp = (not needs_pivot and not is_bypass and not in_spin
+        past_wp = (not needs_pivot and not in_spin
                    and dist_to_wp < accept * 4.0
                    and self._past_waypoint(rlat, rlon))
         reached = dist_to_wp < accept or past_wp or pivot_overshot
 
         if reached:
-            if not is_bypass and wp.hold_secs < 0.0:
+            if wp.hold_secs < 0.0:
                 # Waiting point — signal disarm, keep mission
                 self.get_logger().info(
                     f'Waypoint {wp.seq} reached — WAITING POINT')
@@ -3776,7 +3249,7 @@ class NavigatorNode(Node):
                 m = Int32(); m.data = -(wp.seq + 1000)
                 self.wp_pub.publish(m)
                 return
-            if not is_bypass and wp.hold_secs > 0.0:
+            if wp.hold_secs > 0.0:
                 self.get_logger().info(
                     f'Waypoint {wp.seq} reached — holding {wp.hold_secs:.1f} s')
                 self._holding  = True
@@ -3799,8 +3272,7 @@ class NavigatorNode(Node):
                     f'pivot {turn_angle:.0f}° to {self._pivot_target_hdg:.0f}°')
                 self._publish_halt()
             else:
-                if not is_bypass:
-                    self.get_logger().info(f'Waypoint {wp.seq} reached ({dist_to_wp:.2f} m)')
+                self.get_logger().info(f'Waypoint {wp.seq} reached ({dist_to_wp:.2f} m)')
                 self._advance_path()
             return
 
@@ -3822,14 +3294,6 @@ class NavigatorNode(Node):
                 # Scale speed linearly from target_spd down to min_speed
                 approach_t = dist_to_wp / self._pivot_approach_dist
                 target_spd = max(self._min_speed, target_spd * approach_t)
-        elif is_bypass:
-            # Bypass waypoints: steer directly to the waypoint.
-            # _nearest_on_path can snap to later original-route segments (they are
-            # geometrically closer while the rover is still on the straight original
-            # line), giving a wrong lookahead that makes the rover ignore the detour.
-            # Direct-to-waypoint steering forces the rover to physically follow each
-            # bypass point.  CTE is zeroed — heading error alone is sufficient.
-            la_lat, la_lon = wp.latitude, wp.longitude
         else:
             # Clamp lookahead to not project past current WP when the next
             # segment changes direction — prevents the projected point from
@@ -3844,8 +3308,6 @@ class NavigatorNode(Node):
         if self._log_tick % 125 == 1:
             self.get_logger().info(
                 f'NAV path_idx={self._path_idx}/{len(self._path)} '
-                f'bypass_idx={sorted(self._bypass_indices)} '
-                f'wp_target={"BYPASS" if is_bypass else "orig"} '
                 f'lookahead=({la_lat:.7f},{la_lon:.7f}) '
                 f'rover=({rlat:.7f},{rlon:.7f})')
 
@@ -3866,7 +3328,7 @@ class NavigatorNode(Node):
         # destabilising the PID (especially TTR's cascaded dual-PID).
         # Bypass waypoints: zero CTE — heading error to the bypass point is enough.
         cte_seg = self._path_idx
-        cte = 0.0 if is_bypass else self._cte_to_seg(flat, flon, cte_seg)
+        cte = self._cte_to_seg(flat, flon, cte_seg)
 
         # XTE telemetry
         xte_msg      = Float32()
@@ -3910,8 +3372,8 @@ class NavigatorNode(Node):
                 steer_frac, ttr_v = self._ttr_steer(
                     flat, flon, cte_seg, dist_to_wp, v_mps, heading_err)
                 throttle_ppm = int(PPM_CENTER + (ttr_v / self._max_speed) * 500)
-            elif self._algo == 'mpc' and not is_bypass:
-                # MPC active for all non-bypass segments — including pivot approach.
+            elif self._algo == 'mpc':
+                # MPC active for all segments — including pivot approach.
                 steer_frac = self._mpc_steer(
                     rlat, rlon, self._heading, s_nearest, v_mps)
             else:

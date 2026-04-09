@@ -21,7 +21,7 @@ ros_agri_rover/
 │   ├── agri_rover_rp2040/       ← USB serial bridge node
 │   ├── agri_rover_gps/          ← dual NMEA GPS driver node
 │   ├── agri_rover_mavlink/      ← MAVLink ↔ ROS2 bridge node
-│   ├── agri_rover_navigator/    ← Stanley/MPC/TTR path follower + pivot turns + obstacle reroute
+│   ├── agri_rover_navigator/    ← Stanley/MPC/TTR path follower + pivot turns + obstacle detection
 │   ├── agri_rover_sensors/      ← agricultural sensor node (stub)
 │   ├── agri_rover_video/        ← GStreamer RTSP streamer node
 │   ├── agri_rover_simulator/    ← dead-reckoning GPS simulator + on-Jetson SIL harness
@@ -66,7 +66,7 @@ ros_agri_rover/
 | agri_rover_rp2040     | ament_python | rp2040_bridge   | USB serial ↔ ROS2: reads CH: lines, sends \<HB:\> \<J:\>   |
 | agri_rover_gps        | ament_python | gps_driver      | Dual NMEA serial → NavSatFix + heading Float32               |
 | agri_rover_mavlink    | ament_python | mavlink_bridge  | ROS2 topics ↔ MAVLink UDP to GQC                            |
-| agri_rover_navigator  | ament_python | navigator       | Stanley/MPC/TTR + pivot turns + obstacle pre-reroute; publishes XTE |
+| agri_rover_navigator  | ament_python | navigator       | Stanley/MPC/TTR + pivot turns + obstacle detection (disarm); publishes XTE |
 | agri_rover_sensors    | ament_python | sensor_node     | Tank/temp/humidity/pressure (stub)                          |
 | agri_rover_video      | ament_python | video_streamer  | GStreamer RTSP server                                        |
 | agri_rover_simulator  | ament_python | simulator       | Dead-reckoning GPS simulator (separate Jetson)              |
@@ -381,25 +381,25 @@ Waypoint speed: recorded with timestamps during REC; sent as `z` field of NAV_WA
 
 **Waiting points:** `hold_secs = -1.0` on a MissionWaypoint. `mavlink_bridge` passes through `hold_secs` as-is (including negative values) — no filtering. Navigator publishes `wp_active = -(seq + 1000)`, mavlink_bridge disarms without clearing mission (STATUS stays MSL). On re-arm, navigator advances past the waiting point.
 
-**Reroute confirmation:** When navigator reroutes mid-mission (obstacles), it pauses and publishes `reroute_pending=True`. mavlink_bridge relays as `NAMED_VALUE_FLOAT 'REROUTE' = 1.0`. GQC shows Confirm/Reject dialog. User response sent via `COMMAND_LONG cmd=50003 param1=1|0`. Navigator resumes or reverts to original path.
+**Obstacle detection:** When the uploaded path crosses an obstacle polygon, the navigator disarms immediately and publishes a `confirm_message` explaining which segment is blocked. No rerouting — user must adjust the mission. Obstacle polygons are also used for lane graph connection pruning (base-return routing).
+
+**Base-return confirmation:** When base-return triggers without a lane map, navigator publishes `confirm_message` + `reroute_pending=True`. GQC shows Confirm/Reject dialog via rosbridge. Confirm → direct 2-WP path to base. Reject → cancel base return, resume mission.
 
 **Mission auto-disarm:** `wp_active = -1` → mavlink_bridge auto-disarms, clears mission, publishes MANUAL.
 
-**Waypoint colors:** Planner route = white (not yet uploaded). After upload: pending = full rover color (red RV1, blue RV2), walked = light rover color (light red / light blue), bypass segments = dashed orange (RV1) / cyan (RV2). Bypass waypoint dots in bypass color. All dots visible.
+**Waypoint colors:** Planner route = white (not yet uploaded). After upload: pending = full rover color (red RV1, blue RV2), walked = light rover color (light red / light blue).
 
 **Resource management state machine** (`navigator._check_resources`, 1 Hz):
 ```
 normal → going_to_base → at_base → normal
 ```
-- `normal` + armed + AUTONOMOUS + `path_idx > 0` + (battery < threshold OR tank < threshold) → `going_to_base`. Navigator saves mission state (`_saved_path_original`, `_saved_wp_idx`, `_saved_fence`), builds 2-WP base trip (rover pos → station) internally, restores saved obstacle polygons and reroutes the base trip around them, stays armed+autonomous for seamless path switch. Publishes `wp_active = -2` to signal mavlink_bridge.
+- `normal` + armed + AUTONOMOUS + `path_idx > 0` + (battery < threshold OR tank < threshold) → `going_to_base`. Navigator saves mission state (`_saved_path_original`, `_saved_wp_idx`, `_saved_fence`). If lane map loaded: Dijkstra shortest path through directed lanes. If no lane map: builds 2-WP direct path but asks user confirmation first. Stays armed+autonomous for seamless path switch. Publishes `wp_active = -2`.
 - Battery/tank default 0.0 treated as unknown (skip check) — prevents false-trigger before sensors publish. Test injection via `station_update` topic (`test_tank`, `test_batt` keys) or ROS2 params (`test_tank_pct`, `test_batt_pct`).
-- `going_to_base` + mission complete → `_arrive_at_base()`: builds resume mission (base → remaining saved WPs), restores saved obstacles for rerouting, publishes `wp_active = -3`. mavlink_bridge responds: disarm + MANUAL, keeps `_mission_count > 0` so STATUS=MSL.
+- `going_to_base` + mission complete → `_arrive_at_base()`: builds resume mission (base → remaining saved WPs), restores saved obstacles, publishes `wp_active = -3`. mavlink_bridge responds: disarm + MANUAL, keeps `_mission_count > 0` so STATUS=MSL.
 - `at_base` + ARM → `_resource_state = 'normal'`. Resume mission is already loaded in navigator path — starts when SET_MODE AUTO arrives. GQC START sends ARM + 500 ms + SET_MODE.
 - Station coordinates forwarded from mavlink_bridge to navigator via `station_update` topic (JSON: `{type, lat, lon}`). GQC commands 50001/50002 no longer stored in mavlink_bridge.
 
-**Mission sync (MSN_ID):** navigator publishes full path as JSON `[lat, lon, bypass, speed, hold_secs]` via `rerouted_path` topic. mavlink_bridge computes CRC24 hash → broadcasts as `MSN_ID` at 1 Hz. GQC compares locally; on mismatch → `MISSION_REQUEST_LIST` auto-download of full path (including bypass waypoints). Works for any upload source (GQC, mission_planner, etc.). Mission download sends bypass flag in param2 of MISSION_ITEM_INT.
-
-**Planned path overlay:** navigator path also forwarded via TUNNEL (fast visual update before download completes). GQC renders bypass segments as dashed orange (RV1) / cyan (RV2) lines. Original segments in solid rover color (red/blue).
+**Mission sync (MSN_ID):** navigator publishes full path as JSON `[lat, lon, 0, speed, hold_secs]` via `rerouted_path` topic (bypass flag always 0 — rerouting removed). mavlink_bridge computes CRC24 hash → broadcasts as `MSN_ID` at 1 Hz. GQC compares locally; on mismatch → `MISSION_REQUEST_LIST` auto-download. Works for any upload source (GQC, mission_planner, etc.).
 
 **Map:** default view Jalisco field (20.727715, -103.566782, zoom 18). Satellite default. Markers: red=RV1, blue=RV2; centre dot green=disarmed, orange=armed, yellow=AUTO. Route: green=walked, red=pending. Waypoint dots erased as rover reaches each WP (driven by WP_ACT).
 
@@ -591,6 +591,6 @@ Connect a **u-blox GPS module** via USB serial to the host PC running mission_pl
 - `sensor_node.py`: stub — wire real I2C sensors (BME280, ultrasonic tank)
 - `firmware/*/main.cpp`: needs `pico_sdk_import.cmake` from `$PICO_SDK_PATH/external/`
 - Android GQC: RTSP dual video, settings dialog, STATUSTEXT log screen, **corridor editor** (see android/AgriRoverGQC/README.md)
-- Navigator obstacle avoidance: single-pass per segment — segments intersecting multiple non-adjacent polygons only reroute around the first one.
+- Navigator obstacle handling: obstacles disarm the rover (no rerouting). Lane graph used for base-return routing only.
 - DO_SET_SERVO in missions: applied at upload time, re-published at 25 Hz. Precise per-waypoint timing would need MissionWaypoint interface change or new ServoEvent topic.
 - Corridor resource management: adapt _go_to_base/_arrive_at_base to save/restore corridor position (currently only works with waypoint missions).
