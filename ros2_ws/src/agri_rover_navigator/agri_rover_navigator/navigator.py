@@ -1496,6 +1496,9 @@ class NavigatorNode(Node):
         disarm the rover.  No rerouting — the user must adjust the mission.
         """
         if not self._expanded_polygons or not self._path:
+            self.get_logger().info(
+                f'[OBSTACLE] Skip check: {len(self._expanded_polygons)} polygons, '
+                f'{len(self._path)} waypoints')
             return
         for i in range(len(self._path) - 1):
             a = self._path[i]
@@ -2564,6 +2567,10 @@ class NavigatorNode(Node):
         self._saved_wp_idx        = self._path_idx
         self._saved_fence         = list(self._expanded_polygons)
         self._resource_state      = 'going_to_base'
+        self.get_logger().info(
+            f'[RESOURCE] Saved state: {len(self._saved_path_original)} wps, '
+            f'idx={self._saved_wp_idx}, '
+            f'{len(self._saved_fence)} obstacle polygon(s)')
 
         # Build base trip: lane-graph route if available, else direct 2-WP
         rlat, rlon = self._center_pos()
