@@ -3408,17 +3408,20 @@ function toggleTurnWp(idx) {
 async function sendTestSensors(roverId) {
   const tank = parseFloat(document.getElementById('ts-tank').value);
   const batt = parseFloat(document.getElementById('ts-batt').value);
-  const rover_ip = document.getElementById(`r-ip-rv${roverId}`).value.trim();
-  status(`Sending test sensors to RV${roverId}…`, '#f39c12');
-  try {
-    const resp = await fetch('/send_test_sensors', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({rover_ip, rover_port: 14550, rover_sysid: roverId,
-                            tank_level: tank, batt_pct: batt}),
-    });
-    const d = await resp.json();
-    status(d.message || (d.ok ? 'Sent' : 'Error'), d.ok ? '#27ae60' : '#e74c3c');
-  } catch(e) { status('Network error: ' + e, '#e74c3c'); }
+  // Publish via rosbridge to station_update topic
+  const ns = `/rv${roverId}`;
+  const ws = roverWs[roverId];
+  if (!ws || ws.readyState !== 1) {
+    status(`Not connected to RV${roverId} rosbridge`, '#e74c3c');
+    return;
+  }
+  const msg = {test_tank: tank, test_batt: batt};
+  ws.send(JSON.stringify({
+    op: 'publish', topic: `${ns}/station_update`,
+    type: 'std_msgs/msg/String',
+    msg: {data: JSON.stringify(msg)}
+  }));
+  status(`Test sensors → RV${roverId}: tank=${tank}%  batt=${batt}%`, '#27ae60');
 }
 
 async function importSnooped() {
