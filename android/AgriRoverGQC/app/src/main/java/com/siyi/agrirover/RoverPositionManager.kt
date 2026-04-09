@@ -76,6 +76,8 @@ class RoverPositionManager(
     private val onGpsStatus:        (Int, Int) -> Unit,
     /** Called when NAMED_VALUE_FLOAT "STATUS" is received. status: "NA" | "MSL" | "ARM" */
     private val onNavStatus:        (Int, String) -> Unit,
+    /** Called when lane_status topic is received. status: lane type:id or "no map" */
+    private val onLaneStatus:       (Int, String) -> Unit = { _, _ -> },
     /** Called when SBUS_OK or RF_OK named float is received. type="SBUS"|"RF", ok=true/false */
     private val onLinkStatus:       (Int, String, Boolean) -> Unit,
     /**
@@ -190,7 +192,8 @@ class RoverPositionManager(
                 val topics = listOf("center_pos", "heading", "nav_status",
                     "wp_active", "xte", "armed", "rerouted_path",
                     "rc_input", "cmd_override", "rtk_status", "sensors",
-                    "reroute_pending", "confirm_message", "mission_fence")
+                    "reroute_pending", "confirm_message", "lane_status",
+                    "mission_fence")
                 for (t in topics) {
                     webSocket.send("""{"op":"subscribe","topic":"$ns/$t"}""")
                 }
@@ -274,6 +277,10 @@ class RoverPositionManager(
                                 else -> 0
                             }
                             scope.launch(Dispatchers.Main) { onGpsStatus(sysId, fixType) }
+                        }
+                        topic.endsWith("/lane_status") -> {
+                            val ls = msg.optString("data", "")
+                            scope.launch(Dispatchers.Main) { onLaneStatus(sysId, ls) }
                         }
                         topic.endsWith("/sensors") -> {
                             // SensorData: tank_level, temperature, humidity, pressure

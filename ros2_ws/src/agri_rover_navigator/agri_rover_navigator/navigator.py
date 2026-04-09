@@ -594,7 +594,9 @@ class NavigatorNode(Node):
         self.nav_status_pub     = self.create_publisher(String,   'nav_status',      10)
         self.center_pos_pub     = self.create_publisher(NavSatFix, 'center_pos',     10)
         self.armed_pub          = self.create_publisher(Bool,     'armed',           10)
+        self.lane_status_pub    = self.create_publisher(String,   'lane_status',     10)
         self._last_nav_status   = ''
+        self._last_lane_status  = ''
         self.create_timer(1.0, self._publish_nav_status)
         self.nav_params_pub     = self.create_publisher(String,   'nav_params',      10)
         self.create_subscription(String, 'nav_param_set', self._cb_nav_param_set, 10)
@@ -640,6 +642,29 @@ class NavigatorNode(Node):
         if status != self._last_nav_status:
             self.get_logger().info(f'nav_status: {self._last_nav_status} → {status}')
             self._last_nav_status = status
+        # Lane status: nearest lane ID + type (row/headland)
+        if self._lane_map is not None and self._fix is not None:
+            try:
+                from agri_rover_navigator.lane_graph import find_nearest_lane
+                rlat, rlon = self._center_pos()
+                lid, frac = find_nearest_lane(self._lane_map, rlat, rlon)
+                if lid:
+                    lane = self._lane_map.lanes.get(lid)
+                    ltype = lane.lane_type if lane else '?'
+                    ls = f'{ltype}:{lid} ({frac:.0%})'
+                else:
+                    ls = 'none'
+            except Exception:
+                ls = 'err'
+        elif self._lane_map is not None:
+            ls = 'no GPS'
+        else:
+            ls = 'no map'
+        lm = String(); lm.data = ls
+        self.lane_status_pub.publish(lm)
+        if ls != self._last_lane_status:
+            self.get_logger().info(f'lane_status: {ls}')
+            self._last_lane_status = ls
         # Re-publish path every 5s for late-joining rosbridge clients
         self._status_tick = getattr(self, '_status_tick', 0) + 1
         if self._path and self._status_tick % 5 == 0:

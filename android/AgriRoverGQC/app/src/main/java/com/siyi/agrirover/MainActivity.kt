@@ -94,12 +94,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var txtRv1Temp:  TextView
     private lateinit var txtRv1Tank:  TextView
     private lateinit var txtRv1Rtk:    TextView
+    private lateinit var txtRv1Lane:  TextView
     private lateinit var txtRv1Status: TextView
     private lateinit var txtRv1Wp:    TextView
     private lateinit var txtRv2Bat:   TextView
     private lateinit var txtRv2Temp:  TextView
     private lateinit var txtRv2Tank:  TextView
     private lateinit var txtRv2Rtk:    TextView
+    private lateinit var txtRv2Lane:  TextView
     private lateinit var txtRv2Status: TextView
     private lateinit var txtRv2Wp:    TextView
     private lateinit var txtRcChannels:  TextView   // RC PPM strip
@@ -346,6 +348,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
         },
 
+        onLaneStatus = { sysId, ls ->
+            runOnUiThread { updateLaneStatus(sysId, ls) }
+        },
+
         onLinkStatus = { sysId, type, ok ->
             runOnUiThread { updateLinkIndicator(sysId, type, ok) }
         },
@@ -408,12 +414,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         txtRv1Temp            = findViewById(R.id.txtRv1Temp)
         txtRv1Tank            = findViewById(R.id.txtRv1Tank)
         txtRv1Rtk             = findViewById(R.id.txtRv1Rtk)
+        txtRv1Lane            = findViewById(R.id.txtRv1Lane)
         txtRv1Status          = findViewById(R.id.txtRv1Status)
         txtRv1Wp              = findViewById(R.id.txtRv1Wp)
         txtRv2Bat             = findViewById(R.id.txtRv2Bat)
         txtRv2Temp            = findViewById(R.id.txtRv2Temp)
         txtRv2Tank            = findViewById(R.id.txtRv2Tank)
         txtRv2Rtk             = findViewById(R.id.txtRv2Rtk)
+        txtRv2Lane            = findViewById(R.id.txtRv2Lane)
         txtRv2Status          = findViewById(R.id.txtRv2Status)
         txtRv2Wp              = findViewById(R.id.txtRv2Wp)
         txtRcChannels         = findViewById(R.id.txtRcChannels)
@@ -686,6 +694,22 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val haccStr = if (hacc >= 0f) "  ${hacc.toInt()}mm" else ""
         val view = if (sysId == 1) txtRv1Rtk else txtRv2Rtk
         view.text = text + haccStr
+        view.setTextColor(Color.parseColor(colorHex))
+    }
+
+    private fun updateLaneStatus(sysId: Int, ls: String) {
+        val view = if (sysId == 1) txtRv1Lane else txtRv2Lane
+        if (ls.isEmpty() || ls == "no map") {
+            view.text = ""
+            return
+        }
+        val colorHex = when {
+            ls.startsWith("row:")      -> "#4CAF50"  // green for rows
+            ls.startsWith("headland:") -> "#2196F3"  // blue for headlands
+            ls == "no GPS"             -> "#888888"
+            else                       -> "#FFC107"  // yellow for other
+        }
+        view.text = ls
         view.setTextColor(Color.parseColor(colorHex))
     }
 
