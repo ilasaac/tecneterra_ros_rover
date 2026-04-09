@@ -502,6 +502,8 @@ def _trim_centerline_to(centerline: list[tuple[float, float]],
     return result
 
 
+BASE_ROUTE_MAX_SPEED = 0.8  # m/s — cap speed during base return
+
 def route_to_base(lm: LaneMap, rover_lat: float, rover_lon: float,
                   base_lat: float = 0.0, base_lon: float = 0.0
                   ) -> list[tuple[float, float, float]]:
@@ -529,7 +531,7 @@ def route_to_base(lm: LaneMap, rover_lat: float, rover_lon: float,
     # If already on the base lane, trim from rover to base projection
     if from_id == to_id:
         lane = lm.lanes[from_id]
-        speed = lane.speed if lane.speed > 0 else 0.5
+        speed = min(lane.speed if lane.speed > 0 else 0.5, BASE_ROUTE_MAX_SPEED)
         trimmed = _trim_centerline_from(lane.centerline, rover_lat, rover_lon)
         trimmed = _trim_centerline_to(trimmed, base_lat, base_lon)
         result = [(rover_lat, rover_lon, speed)]
@@ -545,13 +547,13 @@ def route_to_base(lm: LaneMap, rover_lat: float, rover_lon: float,
     # Generate waypoints — trim first lane from rover position,
     # trim last lane at nearest point to base (stop on the lane).
     result: list[tuple[float, float, float]] = []
-    result.append((rover_lat, rover_lon, 0.5))
+    result.append((rover_lat, rover_lon, BASE_ROUTE_MAX_SPEED))
 
     for i, lid in enumerate(lane_path):
         lane = lm.lanes.get(lid)
         if not lane:
             continue
-        speed = lane.speed if lane.speed > 0 else 0.5
+        speed = min(lane.speed if lane.speed > 0 else 0.5, BASE_ROUTE_MAX_SPEED)
         cl = lane.centerline
 
         if i == 0:
