@@ -413,12 +413,105 @@ def path_to_waypoints(lm: LaneMap, lane_ids: list[str],
     return waypoints
 
 
+def _trim_centerline_from(centerline: list[tuple[float, float]],
+                          lat: float, lon: float
+                          ) -> list[tuple[float, float]]:
+    """Return centerline points from the projection of (lat,lon) onward.
+
+    Finds the nearest segment, projects onto it, and returns
+    [projected_point] + remaining points.  Skips points behind the rover.
+    """
+    if len(centerline) < 2:
+        return list(centerline)
+    cos_lat = math.cos(math.radians(lat))
+    px = lon * M_PER_DEG_LAT * cos_lat
+    py = lat * M_PER_DEG_LAT
+    best_i = 0
+    best_t = 0.0
+    best_d = float('inf')
+    for i in range(len(centerline) - 1):
+        ax = centerline[i][1] * M_PER_DEG_LAT * cos_lat
+        ay = centerline[i][0] * M_PER_DEG_LAT
+        bx = centerline[i + 1][1] * M_PER_DEG_LAT * cos_lat
+        by = centerline[i + 1][0] * M_PER_DEG_LAT
+        dx, dy = bx - ax, by - ay
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-10:
+            t = 0.0
+            d = math.hypot(px - ax, py - ay)
+        else:
+            t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
+            d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+        if d < best_d:
+            best_d = d
+            best_i = i
+            best_t = t
+    # Projected point on the segment
+    a = centerline[best_i]
+    b = centerline[best_i + 1]
+    proj = (a[0] + best_t * (b[0] - a[0]),
+            a[1] + best_t * (b[1] - a[1]))
+    result = [proj]
+    # Add remaining points after the projection segment
+    for j in range(best_i + 1, len(centerline)):
+        result.append(centerline[j])
+    return result
+
+
+def _trim_centerline_to(centerline: list[tuple[float, float]],
+                        lat: float, lon: float
+                        ) -> list[tuple[float, float]]:
+    """Return centerline points up to the projection of (lat,lon).
+
+    Finds the nearest segment, projects onto it, and returns
+    points up to [projected_point].  Skips points past the base.
+    """
+    if len(centerline) < 2:
+        return list(centerline)
+    cos_lat = math.cos(math.radians(lat))
+    px = lon * M_PER_DEG_LAT * cos_lat
+    py = lat * M_PER_DEG_LAT
+    best_i = 0
+    best_t = 0.0
+    best_d = float('inf')
+    for i in range(len(centerline) - 1):
+        ax = centerline[i][1] * M_PER_DEG_LAT * cos_lat
+        ay = centerline[i][0] * M_PER_DEG_LAT
+        bx = centerline[i + 1][1] * M_PER_DEG_LAT * cos_lat
+        by = centerline[i + 1][0] * M_PER_DEG_LAT
+        dx, dy = bx - ax, by - ay
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-10:
+            t = 0.0
+            d = math.hypot(px - ax, py - ay)
+        else:
+            t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
+            d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+        if d < best_d:
+            best_d = d
+            best_i = i
+            best_t = t
+    a = centerline[best_i]
+    b = centerline[best_i + 1]
+    proj = (a[0] + best_t * (b[0] - a[0]),
+            a[1] + best_t * (b[1] - a[1]))
+    result = []
+    for j in range(best_i + 1):
+        result.append(centerline[j])
+    result.append(proj)
+    return result
+
+
 def route_to_base(lm: LaneMap, rover_lat: float, rover_lon: float,
                   base_lat: float = 0.0, base_lon: float = 0.0
                   ) -> list[tuple[float, float, float]]:
     """Compute a lane-based route from rover position to base station.
 
     Returns list of (lat, lon, speed) waypoints, or empty if no route.
+    The first lane is trimmed from the rover's projected position onward.
+    The last lane is trimmed up to the base's projected position.
+    Arc turns at junctions are replaced by direct lane-end→lane-start
+    waypoints — the Stanley controller handles smooth curves naturally.
     """
     # Use lane map base position if not specified
     if base_lat == 0.0 and base_lon == 0.0:
@@ -437,23 +530,39 @@ def route_to_base(lm: LaneMap, rover_lat: float, rover_lon: float,
     if from_id == to_id:
         lane = lm.lanes[from_id]
         speed = lane.speed if lane.speed > 0 else 0.5
-        return [
-            (rover_lat, rover_lon, speed),
-            (base_lat, base_lon, speed),
-        ]
+        trimmed = _trim_centerline_from(lane.centerline, rover_lat, rover_lon)
+        trimmed = _trim_centerline_to(trimmed, base_lat, base_lon)
+        result = [(rover_lat, rover_lon, speed)]
+        for pt in trimmed:
+            result.append((pt[0], pt[1], speed))
+        result.append((base_lat, base_lon, speed))
+        return result
 
     # Find shortest lane path
     lane_path = shortest_path(lm, from_id, to_id)
     if not lane_path:
         return []
 
-    # Generate waypoints
-    wps = path_to_waypoints(lm, lane_path)
+    # Generate waypoints — trim first/last lane, no arc turns
+    result: list[tuple[float, float, float]] = []
+    result.append((rover_lat, rover_lon, 0.5))
 
-    # Prepend rover position, append base position
-    if wps:
-        result = [(rover_lat, rover_lon, wps[0][2])]
-        result.extend(wps)
-        result.append((base_lat, base_lon, wps[-1][2]))
-        return result
-    return []
+    for i, lid in enumerate(lane_path):
+        lane = lm.lanes.get(lid)
+        if not lane:
+            continue
+        speed = lane.speed if lane.speed > 0 else 0.5
+        cl = lane.centerline
+
+        if i == 0:
+            # First lane: start from rover's projected position
+            cl = _trim_centerline_from(cl, rover_lat, rover_lon)
+        if i == len(lane_path) - 1:
+            # Last lane: end at base's projected position
+            cl = _trim_centerline_to(cl, base_lat, base_lon)
+
+        for pt in cl:
+            result.append((pt[0], pt[1], speed))
+
+    result.append((base_lat, base_lon, result[-1][2] if result else 0.5))
+    return result
