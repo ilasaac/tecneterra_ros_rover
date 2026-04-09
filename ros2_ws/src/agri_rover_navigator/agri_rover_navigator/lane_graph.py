@@ -526,15 +526,15 @@ def route_to_base(lm: LaneMap, rover_lat: float, rover_lon: float,
     if not from_id or not to_id:
         return []
 
-    # If already on the base lane, follow it to the end then go to base
+    # If already on the base lane, trim from rover to base projection
     if from_id == to_id:
         lane = lm.lanes[from_id]
         speed = lane.speed if lane.speed > 0 else 0.5
         trimmed = _trim_centerline_from(lane.centerline, rover_lat, rover_lon)
+        trimmed = _trim_centerline_to(trimmed, base_lat, base_lon)
         result = [(rover_lat, rover_lon, speed)]
         for pt in trimmed:
             result.append((pt[0], pt[1], speed))
-        result.append((base_lat, base_lon, speed))
         return result
 
     # Find shortest lane path
@@ -542,8 +542,8 @@ def route_to_base(lm: LaneMap, rover_lat: float, rover_lon: float,
     if not lane_path:
         return []
 
-    # Generate waypoints — trim first lane from rover position, follow
-    # remaining lanes fully, then append base position at the end.
+    # Generate waypoints — trim first lane from rover position,
+    # trim last lane at nearest point to base (stop on the lane).
     result: list[tuple[float, float, float]] = []
     result.append((rover_lat, rover_lon, 0.5))
 
@@ -557,10 +557,11 @@ def route_to_base(lm: LaneMap, rover_lat: float, rover_lon: float,
         if i == 0:
             # First lane: start from rover's projected position onward
             cl = _trim_centerline_from(cl, rover_lat, rover_lon)
+        if i == len(lane_path) - 1:
+            # Last lane: stop at nearest point to base (stay on lane)
+            cl = _trim_centerline_to(cl, base_lat, base_lon)
 
         for pt in cl:
             result.append((pt[0], pt[1], speed))
 
-    # Append base position as final waypoint
-    result.append((base_lat, base_lon, result[-1][2] if result else 0.5))
     return result
