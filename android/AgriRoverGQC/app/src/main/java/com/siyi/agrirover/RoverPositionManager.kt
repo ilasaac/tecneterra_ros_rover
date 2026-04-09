@@ -170,10 +170,18 @@ class RoverPositionManager(
     // ─── rosbridge WebSocket telemetry ──────────────────────────────────────
     // Persistent WebSocket per rover — subscribes to ROS2 topics via rosbridge.
     // Auto-connects when rover IP is discovered from MAVLink, reconnects on failure.
+    //
+    // pingInterval(10s): okhttp sends a WS-level ping every 10 seconds and
+    // triggers onFailure if no pong arrives. Without this, a half-open TCP
+    // (e.g. tablet briefly loses WiFi, recovers on a different link) can
+    // leave us receiving zero messages while the socket still "looks" alive.
+    // With the ping, dead connections are detected within ~10 s and a clean
+    // reconnect fires instead of a stall.
     private val rosbridgeWs = HashMap<Int, okhttp3.WebSocket>()
     private val rosbridgeClient = okhttp3.OkHttpClient.Builder()
         .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(0, java.util.concurrent.TimeUnit.SECONDS)  // no read timeout for persistent sub
+        .pingInterval(10, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
     private fun connectRosbridge(sysId: Int, ip: InetAddress) {
