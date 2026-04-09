@@ -1497,9 +1497,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun showRerouteConfirmation(sysId: Int) {
+        val customMsg = roverManager.confirmMessages.remove(sysId)
+        val title = if (customMsg != null) "Confirmation Required" else "Route Changed"
+        val body = customMsg
+            ?: "Rover $sysId has recalculated its route around an obstacle.\nConfirm to proceed with new route."
         AlertDialog.Builder(this)
-            .setTitle("Route Changed")
-            .setMessage("Rover $sysId has recalculated its route around an obstacle.\nConfirm to proceed with new route.")
+            .setTitle(title)
+            .setMessage(body)
             .setPositiveButton("Confirm") { _, _ ->
                 roverManager.sendCommand(sysId, 50003, 1f, 0f)
             }

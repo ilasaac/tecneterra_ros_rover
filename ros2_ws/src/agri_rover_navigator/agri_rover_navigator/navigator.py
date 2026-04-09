@@ -590,8 +590,10 @@ class NavigatorNode(Node):
         self.path_version_pub   = self.create_publisher(Int32,    'path_version',    10)
         self._path_version      = 0
         self.reroute_pending_pub = self.create_publisher(Bool,    'reroute_pending', 10)
+        self.confirm_message_pub = self.create_publisher(String,  'confirm_message', 10)
         self.create_subscription(Bool, 'reroute_response', self._cb_reroute_response, 10)
         self._reroute_pending    = False
+        self._base_no_lane_pending = False  # True when reroute_pending is for no-lane base trip
         self.nav_status_pub     = self.create_publisher(String,   'nav_status',      10)
         self.center_pos_pub     = self.create_publisher(NavSatFix, 'center_pos',     10)
         self.armed_pub          = self.create_publisher(Bool,     'armed',           10)
@@ -802,11 +804,32 @@ class NavigatorNode(Node):
     def _cb_reroute_response(self, msg: Bool):
         if not self._reroute_pending:
             return
+        was_base_no_lane = self._base_no_lane_pending
         self._reroute_pending = False
+        self._base_no_lane_pending = False
         rp = Bool(); rp.data = False
         self.reroute_pending_pub.publish(rp)
         if msg.data:
-            self.get_logger().info('Reroute confirmed — resuming navigation')
+            self.get_logger().info('Confirmed — resuming navigation')
+        elif was_base_no_lane:
+            # User rejected direct base trip — cancel base return, restore mission
+            self.get_logger().info('Direct base trip rejected — resuming mission')
+            self._resource_state = 'normal'
+            self._path = list(self._saved_path_original)
+            self._path_original = list(self._saved_path_original)
+            self._bypass_indices = set(self._saved_bypass)
+            self._expanded_polygons = list(self._saved_fence)
+            self._path_idx = self._saved_wp_idx
+            olat = self._path[0].latitude if self._path else 0.0
+            olon = self._path[0].longitude if self._path else 0.0
+            self._path_origin_lat = olat
+            self._path_origin_lon = olon
+            self._path_s = self._rebuild_path_s(self._path, olat, olon)
+            self._reroute_path()
+            self._path_version += 1
+            pv = Int32(); pv.data = self._path_version
+            self.path_version_pub.publish(pv)
+            self._publish_full_path()
         else:
             self.get_logger().info('Reroute rejected — reverting to original path')
             self._path = list(self._path_original)
@@ -1131,6 +1154,7 @@ class NavigatorNode(Node):
         self._expanded_polygons      = []
         self._obstacle_polygons      = []
         self._reroute_pending        = False
+        self._base_no_lane_pending   = False
         self._approach_planned       = False
         self._servo_ch               = [1061, 1061, PPM_CENTER, PPM_CENTER]  # CH5,CH6=off CH7,CH8=neutral
         clr_msg = String(); clr_msg.data = '[]'
@@ -1159,6 +1183,7 @@ class NavigatorNode(Node):
             self._expanded_polygons      = []
             self._obstacle_polygons      = []
             self._reroute_pending        = False
+            self._base_no_lane_pending   = False
             self._approach_planned       = False
             # Record rover centre as path origin (start of virtual segment → wp[0]).
             if self._fix is not None:
@@ -3023,8 +3048,10 @@ class NavigatorNode(Node):
             except Exception as e:
                 self.get_logger().warn(f'[RESOURCE] Lane routing failed: {e}')
 
-        # Fallback: direct 2-WP path
+        # Fallback: direct 2-WP path — ask user for confirmation first
+        no_lane_fallback = False
         if not base_wps:
+            no_lane_fallback = True
             wp_here = MissionWaypoint()
             wp_here.seq               = 0
             wp_here.latitude          = rlat
@@ -3079,6 +3106,19 @@ class NavigatorNode(Node):
         pv = Int32(); pv.data = self._path_version
         self.path_version_pub.publish(pv)
         self._publish_full_path()
+
+        # No lane map — ask user to confirm direct path to base
+        if no_lane_fallback:
+            self._base_no_lane_pending = True
+            self._reroute_pending = True
+            cm = String()
+            cm.data = f'No lane map loaded. Proceed with direct path to base? ({label})'
+            self.confirm_message_pub.publish(cm)
+            rp = Bool(); rp.data = True
+            self.reroute_pending_pub.publish(rp)
+            self._publish_halt()
+            self.get_logger().info(
+                '[RESOURCE] No lane map — waiting for user confirmation')
 
     def _arrive_at_base(self):
         """Base trip complete. Build resume mission, disarm, wait for re-arm."""

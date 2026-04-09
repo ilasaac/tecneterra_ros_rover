@@ -157,6 +157,9 @@ class RoverPositionManager(
     private data class TunnelAssembly(val total: Int, val chunks: HashMap<Int, ByteArray>)
     private val tunnelBuf = HashMap<Int, TunnelAssembly>()
 
+    // Last confirm_message per rover (used for dialog text)
+    val confirmMessages = HashMap<Int, String>()
+
     // Mission download state (rover → GQC, triggered by MSN_ID change)
     private val roverMsnId           = HashMap<Int, Int>()                        // sysId → last known MSN_ID
     private val missionDownloadItems = HashMap<Int, HashMap<Int, Triple<Double, Double, Boolean>>>() // sysId → seq → (lat, lon, bypass)
@@ -187,7 +190,7 @@ class RoverPositionManager(
                 val topics = listOf("center_pos", "heading", "nav_status",
                     "wp_active", "xte", "armed", "rerouted_path",
                     "rc_input", "cmd_override", "rtk_status", "sensors",
-                    "reroute_pending", "mission_fence")
+                    "reroute_pending", "confirm_message", "mission_fence")
                 for (t in topics) {
                     webSocket.send("""{"op":"subscribe","topic":"$ns/$t"}""")
                 }
@@ -281,6 +284,10 @@ class RoverPositionManager(
                             scope.launch(Dispatchers.Main) {
                                 onSensorUpdate(sysId, 0f, temp, tank, humid)
                             }
+                        }
+                        topic.endsWith("/confirm_message") -> {
+                            val text = msg.optString("data", "")
+                            if (text.isNotEmpty()) confirmMessages[sysId] = text
                         }
                         topic.endsWith("/reroute_pending") -> {
                             val pending = msg.optBoolean("data", false)
