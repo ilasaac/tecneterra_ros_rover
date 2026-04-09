@@ -2138,16 +2138,24 @@ function importCSV(event) {
   const reader = new FileReader();
   reader.onload = e => {
     const lines = e.target.result.trim().split('\n');
-    const hdr = lines[0].toLowerCase().split(',');
+    const hdr = lines[0].toLowerCase().split(',').map(s => s.trim());
     const li = hdr.indexOf('lat'), loi = hdr.indexOf('lon');
     const si = hdr.indexOf('speed'), hi = hdr.indexOf('hold_secs');
+    const c5 = hdr.indexOf('ch5'), c6 = hdr.indexOf('ch6');
+    const c7 = hdr.indexOf('ch7'), c8 = hdr.indexOf('ch8');
     if (li < 0 || loi < 0) { status('CSV must have lat,lon columns', '#e74c3c'); return; }
     waypoints = [];
     for (let i = 1; i < lines.length; i++) {
       const c = lines[i].split(','); if (c.length < 2) continue;
+      const servos = {};
+      if (c5 >= 0 && c[c5] !== undefined && c[c5].trim() !== '') servos['5'] = Math.round(+c[c5]) || 1500;
+      if (c6 >= 0 && c[c6] !== undefined && c[c6].trim() !== '') servos['6'] = Math.round(+c[c6]) || 1500;
+      if (c7 >= 0 && c[c7] !== undefined && c[c7].trim() !== '') servos['7'] = Math.round(+c[c7]) || 1500;
+      if (c8 >= 0 && c[c8] !== undefined && c[c8].trim() !== '') servos['8'] = Math.round(+c[c8]) || 1500;
       waypoints.push({lat: +c[li], lon: +c[loi],
                       speed: si >= 0 ? +c[si] || 0 : 0,
-                      hold_secs: hi >= 0 ? +c[hi] || 0 : 0});
+                      hold_secs: hi >= 0 ? +c[hi] || 0 : 0,
+                      servos});
     }
     refresh();
     if (waypoints.length) {
@@ -5014,12 +5022,18 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == '/export_csv':
             data = json.loads(raw)
             buf = io.StringIO()
-            w = csv.DictWriter(buf, fieldnames=['lat', 'lon', 'speed', 'hold_secs'])
+            w = csv.DictWriter(buf, fieldnames=['lat', 'lon', 'speed', 'hold_secs',
+                                                 'ch5', 'ch6', 'ch7', 'ch8'])
             w.writeheader()
             for wp in data.get('waypoints', []):
+                servos = wp.get('servos') or {}
+                def _ch(n):
+                    return int(servos.get(str(n)) or servos.get(n) or 1500)
                 w.writerow({'lat': wp['lat'], 'lon': wp['lon'],
                             'speed': wp.get('speed', 0) or 0,
-                            'hold_secs': wp.get('hold_secs', 0) or 0})
+                            'hold_secs': wp.get('hold_secs', 0) or 0,
+                            'ch5': _ch(5), 'ch6': _ch(6),
+                            'ch7': _ch(7), 'ch8': _ch(8)})
             body = buf.getvalue().encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/csv')

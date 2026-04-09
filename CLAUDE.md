@@ -584,6 +584,8 @@ Connect a **u-blox GPS module** via USB serial to the host PC running mission_pl
 - **Save/Load** preserves all layers including `real_track`, `original_corridors`, `optimized_path`
 - Layer visibility toggled via checkboxes; all layers overlay on the same map
 
+**CSV import/export** (toolbar ↓CSV button + file picker): round-trips waypoints through Excel. Columns: `lat,lon,speed,hold_secs,ch5,ch6,ch7,ch8`. Servo channels are dense-filled with `1500` (neutral) when unset, so every row has all four servo values. Import accepts the same header (servo columns optional — blank cells skipped). `tools/mission_uploader.py` (CLI uploader) still uses its own minimal CSV format `lat,lon,speed,acceptance_radius` and does not read servo columns.
+
 ---
 
 ## Known TODOs
