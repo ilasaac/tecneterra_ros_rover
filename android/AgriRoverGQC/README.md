@@ -25,7 +25,7 @@ MainActivity
 - Broadcasts GCS heartbeat to **255.255.255.255:14550** at 1 Hz.
 - Rover IPs are **auto-discovered** from the first inbound packet of each sysid.
 - GQC identifies rovers by **sysid in HEARTBEAT** (RV1=1, RV2=2), not by port.
-- **No WifiLock.** Held earlier in `WIFI_MODE_FULL_LOW_LATENCY` to cut MAVLink mission-upload DTIM latency, but on the SIYI MK32's custom Android the lock destabilises the WiFi radio — the SSID drops out of the scan list and the tablet leaves the AP entirely while other devices stay associated. All telemetry/upload is now over rosbridge/TCP, which doesn't suffer from DTIM buffering, so the lock is no longer needed. See commit `f0ea394` for the original EPERM-on-sendto report from the same root cause.
+- **WiFi lock:** `WIFI_MODE_FULL_LOW_LATENCY` (API 29+) WifiLock acquired on `startListening()`, falling back to `WIFI_MODE_FULL_HIGH_PERF` on older devices. Prevents Android WiFi power-save from batching UDP packets. Released on `stopListening()`. `WIFI_MODE_FULL_HIGH_PERF` was deprecated in API 29 and silently less effective on Android 12+.
 
 ## App Modes
 
