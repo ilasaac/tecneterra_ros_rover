@@ -10,8 +10,8 @@
 
 /rv2/gps_driver:
   ros__parameters:
-    primary_port:   /tmp/rv2_gps_pri   # real HW: /dev/ttyUSB0  sim: symlink from nmea_wifi_rx.py
-    secondary_port: /tmp/rv2_gps_sec   # real HW: /dev/ttyUSB1  sim: symlink from nmea_wifi_rx.py
+    primary_port:   /dev/ttyUSB0       # real HW: /dev/ttyUSB0  sim: /tmp/rv2_gps_pri
+    secondary_port: /dev/ttyUSB1       # real HW: /dev/ttyUSB1  sim: /tmp/rv2_gps_sec
     baud:           115200
     publish_rate:   25.0
 
