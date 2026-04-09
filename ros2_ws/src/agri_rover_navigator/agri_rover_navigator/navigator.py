@@ -1870,6 +1870,7 @@ class NavigatorNode(Node):
         self.rerouted_pub.publish(rp_msg)
         self._save_run_mission()
 
+    @staticmethod
     def _point_in_polygon(lat: float, lon: float, poly: list) -> bool:
         """Ray-casting point-in-polygon test."""
         inside = False
