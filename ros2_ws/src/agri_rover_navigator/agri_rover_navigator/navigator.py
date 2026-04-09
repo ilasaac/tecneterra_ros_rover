@@ -2624,8 +2624,10 @@ class NavigatorNode(Node):
         self._pivoting = False
         self._reroute_pending = False
 
-        # Restore saved obstacles for lane graph pruning
+        # Restore saved obstacles — check base trip doesn't cross them
         self._expanded_polygons = list(self._saved_fence)
+        if self._expanded_polygons:
+            self._check_path_obstacles()
 
         # Publish status signals
         m = Int32(); m.data = -2  # "going to base" signal
