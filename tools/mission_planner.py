@@ -828,6 +828,8 @@ tr:hover td{background:#1e1e3a}
     <button id="btn-tag-row" class="btn-green" onclick="applyTag('row')" style="display:none" title="Set selected waypoints to Row">Row</button>
     <button id="btn-tag-hd" class="btn-orange" onclick="applyTag('hd')" style="display:none" title="Set selected waypoints to HD">HD</button>
     <button id="btn-tag-clear" class="btn-red" onclick="applyTag('')" style="display:none" title="Clear tag from selected">Clr</button>
+    <button id="btn-station-bat" class="btn-orange" onclick="toggleStationPick('battery')" title="Set Battery station — click here, then click on the map">&#9889; Bat</button>
+    <button id="btn-station-water" class="btn-blue" onclick="toggleStationPick('water')" title="Set Water station — click here, then click on the map">&#128167; Water</button>
     <button id="btn-meas" class="btn-blue" onclick="toggleMeasureMode()" title="Measure distance from cursor to planned route">&#8614; Dist</button>
     <button class="btn-green" onclick="runSimulate()">&#9654; Simulate</button>
     <button class="btn-orange" onclick="exportCSV()">&#8595; CSV</button>
@@ -1274,6 +1276,16 @@ let obsCurPts     = [];
 // TAG mode — click waypoints to select, Row/HD buttons assign lane_tag
 let tagMode       = false;
 let tagSelected   = new Set();   // waypoint indices currently selected
+// Station picker — when active, next map click sets the named station
+let stationPickType = null;      // 'battery' | 'water' | null
+let stationBattery  = null;      // {lat, lon}
+let stationWater    = null;      // {lat, lon}
+try {
+  const sb = localStorage.getItem('mp_station_battery');
+  const sw = localStorage.getItem('mp_station_water');
+  if (sb) stationBattery = JSON.parse(sb);
+  if (sw) stationWater = JSON.parse(sw);
+} catch (e) {}
 let liveRovers    = {};   // sysid → {lat, lon, hdg, ts, ip, rosbridge}
 let roverWs       = {};   // sysid → WebSocket (persistent rosbridge subscription)
 let analyzeResult = null;
@@ -1355,6 +1367,7 @@ function redraw() {
   drawLiveRovers();
   drawGpsSurvey();
   drawMeasureOverlay();
+  drawStations();
   drawTagRect();
 }
 
@@ -2016,6 +2029,15 @@ canvas.addEventListener('click', e => {
     }
     return;
   }
+  if (stationPickType) {
+    const ll = unproject(x, y);
+    setStation(stationPickType, ll.lat, ll.lon);
+    stationPickType = null;
+    document.getElementById('btn-station-bat').classList.remove('btn-active');
+    document.getElementById('btn-station-water').classList.remove('btn-active');
+    canvas.style.cursor = 'default';
+    return;
+  }
   if (laneMode) {
     // Single click handled below; double-click finishes lane
     const ll = unproject(x, y);
@@ -2430,6 +2452,72 @@ function applyTag(tag) {
 function _updateTagStatus() {
   if (!tagMode) return;
   status(`Tag mode: ${tagSelected.size} waypoint(s) selected. Choose Row / HD / Clr.`, '#f39c12');
+}
+
+// ── Stations (battery / water) ────────────────────────────────────
+function toggleStationPick(type) {
+  if (stationPickType === type) {
+    stationPickType = null;
+    document.getElementById('btn-station-bat').classList.remove('btn-active');
+    document.getElementById('btn-station-water').classList.remove('btn-active');
+    canvas.style.cursor = 'default';
+    status('Station pick cancelled.', '#888');
+    return;
+  }
+  stationPickType = type;
+  document.getElementById('btn-station-bat').classList.toggle('btn-active', type === 'battery');
+  document.getElementById('btn-station-water').classList.toggle('btn-active', type === 'water');
+  canvas.style.cursor = 'crosshair';
+  const label = type === 'battery' ? 'Battery' : 'Water';
+  status(`Click on the map to set the ${label} station.`, '#f39c12');
+}
+
+function setStation(type, lat, lon) {
+  if (type === 'battery') {
+    stationBattery = {lat, lon};
+    try { localStorage.setItem('mp_station_battery', JSON.stringify(stationBattery)); } catch (e) {}
+  } else {
+    stationWater = {lat, lon};
+    try { localStorage.setItem('mp_station_water', JSON.stringify(stationWater)); } catch (e) {}
+  }
+  // Push to both rovers via rosbridge station_update topic
+  const payload = JSON.stringify({type, lat, lon});
+  let sent = 0;
+  for (const sysid of [1, 2]) {
+    const ws = roverWs[sysid];
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({
+        op: 'publish',
+        topic: `/rv${sysid}/station_update`,
+        type: 'std_msgs/msg/String',
+        msg: {data: payload},
+      }));
+      sent++;
+    }
+  }
+  redraw();
+  const label = type === 'battery' ? 'Battery' : 'Water';
+  status(`${label} station set (${lat.toFixed(6)}, ${lon.toFixed(6)}) — pushed to ${sent} rover(s)`, '#27ae60');
+}
+
+function drawStations() {
+  const drawOne = (st, color, label) => {
+    if (!st) return;
+    const p = project(st.lat, st.lon);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 11, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, p.x, p.y);
+  };
+  drawOne(stationBattery, 'rgba(255,140,0,0.9)', 'B');
+  drawOne(stationWater,   'rgba(33,150,243,0.9)', 'W');
 }
 
 // ── GPS Survey ───────────────────────────────────────────────────
