@@ -1358,6 +1358,65 @@ function redraw() {
   drawTagRect();
 }
 
+function drawTagDirection() {
+  if (!waypoints || waypoints.length < 2) return;
+  // Walk waypoints, group contiguous same-tag runs (row/hd only).
+  // For each run, draw a thick semi-transparent line in the tag color
+  // and an arrow head at every Kth segment showing the direction.
+  let runStart = -1;
+  let runTag = '';
+  const flush = (start, end, tag) => {
+    if (start < 0 || end <= start || !tag) return;
+    const color = tag === 'row' ? 'rgba(76,175,80,0.45)' : 'rgba(255,140,0,0.45)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    const p0 = project(waypoints[start].lat, waypoints[start].lon);
+    ctx.moveTo(p0.x, p0.y);
+    for (let i = start + 1; i <= end; i++) {
+      const p = project(waypoints[i].lat, waypoints[i].lon);
+      ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+    // Arrow heads every ~20% along the run
+    const step = Math.max(1, Math.floor((end - start) / 5));
+    for (let i = start + step; i <= end; i += step) {
+      const a = project(waypoints[i - 1].lat, waypoints[i - 1].lon);
+      const b = project(waypoints[i].lat, waypoints[i].lon);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 4) continue;
+      const ux = dx / len, uy = dy / len;
+      const tipX = b.x, tipY = b.y;
+      const baseX = tipX - ux * 10, baseY = tipY - uy * 10;
+      const leftX = baseX - uy * 5, leftY = baseY + ux * 5;
+      const rightX = baseX + uy * 5, rightY = baseY - ux * 5;
+      ctx.fillStyle = tag === 'row' ? '#4CAF50' : '#FF8C00';
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(leftX, leftY);
+      ctx.lineTo(rightX, rightY);
+      ctx.closePath();
+      ctx.fill();
+    }
+  };
+  for (let i = 0; i < waypoints.length; i++) {
+    const tag = waypoints[i].lane_tag || '';
+    if (tag === 'row' || tag === 'hd') {
+      if (tag !== runTag) {
+        flush(runStart, i - 1, runTag);
+        runStart = i;
+        runTag = tag;
+      }
+    } else {
+      flush(runStart, i - 1, runTag);
+      runStart = -1;
+      runTag = '';
+    }
+  }
+  flush(runStart, waypoints.length - 1, runTag);
+}
+
 function drawTagRect() {
   if (!tagMode || !_drag || _drag.type !== 'tag_rect' || !_didDrag) return;
   const x0 = Math.min(_drag.sx, _drag.ex);
@@ -1522,6 +1581,8 @@ function drawPivotMarkers() {
 }
 
 function drawWaypoints() {
+  // Draw direction arrows on contiguous row/hd tag runs first (under the dots)
+  drawTagDirection();
   // Draw waypoints 1..N first so waypoint 0 is always on top
   waypoints.forEach((wp, i) => {
     if (i === 0) return;

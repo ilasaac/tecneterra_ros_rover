@@ -2639,7 +2639,51 @@ class NavigatorNode(Node):
         rlat, rlon = self._center_pos()
         base_wps: list[MissionWaypoint] = []
 
-        if self._lane_map is not None:
+        # Tagged-path base return: if the active mission has lane tags
+        # (row/hd), walk the existing _path from the current index to the
+        # waypoint nearest the station. The arcs at row<->hd transitions
+        # are already in _path so we get them for free in either direction.
+        has_tags = (
+            len(self._path_tags) == len(self._path)
+            and any(t for t in self._path_tags)
+        )
+        if has_tags and self._path:
+            # Find waypoint nearest the station
+            base_idx = 0
+            best_d = float('inf')
+            for i, wp in enumerate(self._path):
+                d = haversine(wp.latitude, wp.longitude, station_lat, station_lon)
+                if d < best_d:
+                    best_d = d
+                    base_idx = i
+            cur_idx = max(0, min(self._path_idx, len(self._path) - 1))
+            if base_idx == cur_idx:
+                # Already at the base waypoint — no trip needed, just stop
+                self.get_logger().info(
+                    f'[RESOURCE] Already at base waypoint (idx={base_idx})')
+            else:
+                if base_idx < cur_idx:
+                    # Walk backwards through the existing path
+                    indices = list(range(cur_idx, base_idx - 1, -1))
+                else:
+                    indices = list(range(cur_idx, base_idx + 1))
+                for new_seq, src_idx in enumerate(indices):
+                    src = self._path[src_idx]
+                    wp = MissionWaypoint()
+                    wp.seq               = new_seq
+                    wp.latitude          = src.latitude
+                    wp.longitude         = src.longitude
+                    wp.speed             = min(src.speed if src.speed > 0 else self._base_speed,
+                                              self._base_speed)
+                    wp.acceptance_radius = self._base_accept
+                    wp.hold_secs         = 0.0
+                    base_wps.append(wp)
+                self.get_logger().info(
+                    f'[RESOURCE] Tagged-path base trip: {len(base_wps)} waypoints '
+                    f'(idx {cur_idx} -> {base_idx}, '
+                    f'{"reverse" if base_idx < cur_idx else "forward"})')
+
+        if not base_wps and self._lane_map is not None:
             try:
                 from agri_rover_navigator.lane_graph import route_to_base
                 route = route_to_base(self._lane_map, rlat, rlon,
