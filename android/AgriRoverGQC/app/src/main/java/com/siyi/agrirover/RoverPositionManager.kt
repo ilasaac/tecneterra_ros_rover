@@ -20,9 +20,13 @@ import java.io.ByteArrayOutputStream
  */
 sealed class MissionAction {
     /** speed: m/s at record time (0f = use navigator default max_speed).
-     *  holdSecs: seconds to wait after arriving (0f = no hold). */
+     *  holdSecs: seconds to wait after arriving (0f = no hold).
+     *  laneTag: "row" | "hd" | "" — set when REC was started in row or hd mode.
+     *           Travels with the waypoint into the corridor upload JSON; the
+     *           navigator uses row<->hd transitions to insert tangent arcs. */
     data class Waypoint(val lat: Double, val lon: Double,
-                        val speed: Float = 0f, val holdSecs: Float = 0f) : MissionAction()
+                        val speed: Float = 0f, val holdSecs: Float = 0f,
+                        val laneTag: String = "") : MissionAction()
     /** servo: 5–8 (PPM CH5–CH8).  pwm: µs value to set on that channel. */
     data class ServoCmd(val servo: Int, val pwm: Int) : MissionAction()
 }
@@ -820,6 +824,7 @@ class RoverPositionManager(
                 val lats = mutableListOf<Double>()
                 val lons = mutableListOf<Double>()
                 val speeds = mutableListOf<Float>()
+                val tags = mutableListOf<String>()
                 val ch5 = mutableListOf<Int>(); val ch6 = mutableListOf<Int>()
                 val ch7 = mutableListOf<Int>(); val ch8 = mutableListOf<Int>()
                 var curServo = intArrayOf(1500, 1500, 1500, 1500)  // running state
@@ -829,6 +834,7 @@ class RoverPositionManager(
                         is MissionAction.Waypoint -> {
                             lats.add(action.lat); lons.add(action.lon)
                             speeds.add(action.speed)
+                            tags.add(action.laneTag)
                             // Snapshot current servo state for this point
                             ch5.add(curServo[0]); ch6.add(curServo[1])
                             ch7.add(curServo[2]); ch8.add(curServo[3])
@@ -858,9 +864,13 @@ class RoverPositionManager(
                     return@launch
                 }
 
-                // Build single-corridor JSON (rover will auto-split at turn markers)
+                // Build single-corridor JSON (rover will auto-split at turn markers).
+                // tags: per-vertex lane tag ("row" | "hd" | ""). When non-empty,
+                // the rover bypasses heading-based auto-split and uses the tag
+                // boundaries to insert tangent-circle arcs at row<->hd transitions.
                 val centerline = lats.zip(lons).joinToString(",") { "[${it.first},${it.second}]" }
-                val corridorJson = """{"corridors":[{"corridor_id":0,"centerline":[$centerline],"width":$width,"speed":0,"speeds":[${speeds.joinToString(",")}],"ch5":[${ch5.joinToString(",")}],"ch6":[${ch6.joinToString(",")}],"ch7":[${ch7.joinToString(",")}],"ch8":[${ch8.joinToString(",")}],"next_corridor_id":-1,"turn_type":"auto","headland_width":0}],"min_turn_radius":3.0,"headland_width":0}"""
+                val tagsJson = tags.joinToString(",") { "\"$it\"" }
+                val corridorJson = """{"corridors":[{"corridor_id":0,"centerline":[$centerline],"width":$width,"speed":0,"speeds":[${speeds.joinToString(",")}],"ch5":[${ch5.joinToString(",")}],"ch6":[${ch6.joinToString(",")}],"ch7":[${ch7.joinToString(",")}],"ch8":[${ch8.joinToString(",")}],"tags":[$tagsJson],"next_corridor_id":-1,"turn_type":"auto","headland_width":0}],"min_turn_radius":3.0,"headland_width":0}"""
 
                 // Publish via rosbridge WebSocket
                 val client = okhttp3.OkHttpClient.Builder()

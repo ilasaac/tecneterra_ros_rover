@@ -132,6 +132,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     // recordedMission stores the full sequence including servo commands.
     // routePoints stores only waypoints (for map display and plain uploads).
     private var isRecording = false
+    // Lane tag for the current REC cycle: "row" | "hd" | "".
+    // Set when the user starts recording via REC Row / REC HD. Every Waypoint
+    // appended during this REC carries this tag, so the navigator can detect
+    // row<->hd transitions across multiple REC cycles in the same mission.
+    private var currentRecordTag: String = ""
     private val recordedMission = mutableListOf<MissionAction>()
     // Timestamps (SystemClock.elapsedRealtime()) for each Waypoint in recordedMission.
     // Parallel to waypoint entries only — servo commands have no timestamp.
@@ -182,7 +187,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
                 if (isTurning) {
                     // Always record turn points (no distance check) — speed=-1 = turn marker
-                    recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, -1f))
+                    recordedMission.add(MissionAction.Waypoint(
+                        pos.latitude, pos.longitude, -1f, laneTag = currentRecordTag))
                     // Record actual servo state with every waypoint (no inference)
                     for (i in 0..3) recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = lastAuxPwm[i]))
                     waypointTimestamps.add(SystemClock.elapsedRealtime())
@@ -197,7 +203,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         (dist / dtSec).toFloat().coerceIn(0f, MAX_SPEED_MPS)
                     else 0f
                     lastRecordedPos = pos
-                    recordedMission.add(MissionAction.Waypoint(pos.latitude, pos.longitude, speed))
+                    recordedMission.add(MissionAction.Waypoint(
+                        pos.latitude, pos.longitude, speed, laneTag = currentRecordTag))
                     // Record actual servo state with every waypoint (no inference)
                     for (i in 0..3) recordedMission.add(MissionAction.ServoCmd(servo = i + 5, pwm = lastAuxPwm[i]))
                     waypointTimestamps.add(now)
@@ -482,13 +489,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         // Planner menu (Upload Mission / Save / Load / Clear)
         btnPlannerMenu.setOnClickListener { showPlannerMenu(it) }
 
-        // REC — toggles timed position recording with aux-channel servo capture
+        // REC — toggles timed position recording with aux-channel servo capture.
+        // On START, ask the user whether this segment is a row, a headland, or
+        // untagged. The chosen tag travels with every waypoint recorded during
+        // this REC cycle. Multi-cycle REC accumulates into one mission so the
+        // user can do REC Row -> stop -> REC HD -> stop -> upload.
         btnRec.setOnClickListener {
             if (!hasGoodAccuracy(selectedRoverId)) {
                 Toast.makeText(this, "GPS accuracy insufficient — cannot record", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            if (isRecording) stopRecording() else startRecording()
+            if (isRecording) {
+                stopRecording()
+            } else {
+                showRecordTagPicker()
+            }
         }
 
         // Map Controls
@@ -545,12 +560,34 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     // ─── Recording ───────────────────────────────────────────────────────────
 
-    private fun startRecording() {
+    private fun showRecordTagPicker() {
+        val items = arrayOf("Row", "HD (headland)", "Plain (no tag)")
+        AlertDialog.Builder(this)
+            .setTitle("Record what?")
+            .setItems(items) { _, which ->
+                val tag = when (which) {
+                    0 -> "row"
+                    1 -> "hd"
+                    else -> ""
+                }
+                startRecording(tag)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun startRecording(tag: String = "") {
         isRecording = true
-        routePoints.clear()
-        recordedMission.clear()
+        currentRecordTag = tag
+        // Only clear on first REC of a fresh mission. Subsequent REC cycles
+        // append to the existing recordedMission so the user can build a
+        // multi-tag mission (REC Row -> stop -> REC HD -> stop -> upload).
+        // Use the planner-menu Clear action to wipe everything explicitly.
+        if (recordedMission.isEmpty()) {
+            routePoints.clear()
+            nextWaypointIndex = 0
+        }
         waypointTimestamps.clear()
-        nextWaypointIndex = 0
         lastRecordedPos = null
         // Snapshot current servo state (PPM CH5-CH8) — logical indices [4..7]
         // Each waypoint records full servo state, so no initial ServoCmd needed.
@@ -558,11 +595,18 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         for (i in 0..3) {
             lastAuxPwm[i] = if (ch != null && (i + 4) < ch.size) ch[i + 4] else 1500
         }
-        btnRec.iconTint = ColorStateList.valueOf(Color.parseColor("#FFD600"))
+        // Tint REC button to reflect the tag: green=row, orange=hd, yellow=plain
+        val tintColor = when (tag) {
+            "row" -> "#4CAF50"
+            "hd"  -> "#FF8C00"
+            else  -> "#FFD600"
+        }
+        btnRec.iconTint = ColorStateList.valueOf(Color.parseColor(tintColor))
         btnRec.strokeWidth = (3 * resources.displayMetrics.density + 0.5f).toInt()
         btnRec.strokeColor = ColorStateList.valueOf(Color.WHITE)
         recordHandler.post(recordRunnable)
-        Toast.makeText(this, "Recording…", Toast.LENGTH_SHORT).show()
+        val label = when (tag) { "row" -> "Row"; "hd" -> "HD"; else -> "" }
+        Toast.makeText(this, "Recording $label…".trim(), Toast.LENGTH_SHORT).show()
     }
 
     private fun stopRecording() {
@@ -1660,15 +1704,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         // Build waypoint list from local recording or rover's rerouted path
         val wpList = mutableListOf<org.json.JSONObject>()
         if (routePoints.isNotEmpty()) {
+            val recWps = recordedMission.filterIsInstance<MissionAction.Waypoint>()
             val speeds = if (corridorList.isNotEmpty()) {
                 corridorList.flatten().map { it.second }
             } else {
-                recordedMission.filterIsInstance<MissionAction.Waypoint>().map { it.speed }
+                recWps.map { it.speed }
             }
+            val tags = recWps.map { it.laneTag }
             routePoints.forEachIndexed { i, pt ->
                 val spd = speeds.getOrElse(i) { 0f }
+                val tag = tags.getOrElse(i) { "" }
                 wpList.add(org.json.JSONObject().apply {
                     put("lat", pt.latitude); put("lon", pt.longitude); put("speed", spd.toDouble())
+                    if (tag.isNotEmpty()) put("lane_tag", tag)
                 })
             }
         } else {
@@ -1735,9 +1783,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val lat = wp.getDouble("lat")
                 val lon = wp.getDouble("lon")
                 val spd = wp.optDouble("speed", 0.0).toFloat()
+                val tag = wp.optString("lane_tag", "")
                 routePoints.add(LatLng(lat, lon))
                 loadedSpeeds.add(spd)
-                recordedMission.add(MissionAction.Waypoint(lat, lon, spd))
+                recordedMission.add(MissionAction.Waypoint(lat, lon, spd, laneTag = tag))
             }
             val obs = root.optJSONArray("obstacles")
             if (obs != null) {
