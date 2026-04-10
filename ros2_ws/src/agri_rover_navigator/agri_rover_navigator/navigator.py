@@ -2640,34 +2640,33 @@ class NavigatorNode(Node):
         base_wps: list[MissionWaypoint] = []
 
         # Tagged-path base return: if the active mission has lane tags
-        # (row/hd), walk the existing _path from the current index to the
-        # waypoint nearest the station. The arcs at row<->hd transitions
-        # are already in _path so we get them for free in either direction.
+        # (row/hd), continue FORWARD through the existing _path from the
+        # current index to the waypoint nearest the station. Backwards is
+        # never allowed — if the base is behind the current position the
+        # rover keeps driving forward until it reaches the nearest forward
+        # waypoint to the station. The row<->hd arcs are already in _path
+        # so they're traversed for free.
         has_tags = (
             len(self._path_tags) == len(self._path)
             and any(t for t in self._path_tags)
         )
         if has_tags and self._path:
-            # Find waypoint nearest the station
-            base_idx = 0
+            cur_idx = max(0, min(self._path_idx, len(self._path) - 1))
+            # Find waypoint at or after cur_idx that is nearest the station
+            base_idx = cur_idx
             best_d = float('inf')
-            for i, wp in enumerate(self._path):
+            for i in range(cur_idx, len(self._path)):
+                wp = self._path[i]
                 d = haversine(wp.latitude, wp.longitude, station_lat, station_lon)
                 if d < best_d:
                     best_d = d
                     base_idx = i
-            cur_idx = max(0, min(self._path_idx, len(self._path) - 1))
             if base_idx == cur_idx:
-                # Already at the base waypoint — no trip needed, just stop
                 self.get_logger().info(
-                    f'[RESOURCE] Already at base waypoint (idx={base_idx})')
+                    f'[RESOURCE] Already at base waypoint (idx={base_idx}, '
+                    f'dist={best_d:.1f} m)')
             else:
-                if base_idx < cur_idx:
-                    # Walk backwards through the existing path
-                    indices = list(range(cur_idx, base_idx - 1, -1))
-                else:
-                    indices = list(range(cur_idx, base_idx + 1))
-                for new_seq, src_idx in enumerate(indices):
+                for new_seq, src_idx in enumerate(range(cur_idx, base_idx + 1)):
                     src = self._path[src_idx]
                     wp = MissionWaypoint()
                     wp.seq               = new_seq
@@ -2680,8 +2679,8 @@ class NavigatorNode(Node):
                     base_wps.append(wp)
                 self.get_logger().info(
                     f'[RESOURCE] Tagged-path base trip: {len(base_wps)} waypoints '
-                    f'(idx {cur_idx} -> {base_idx}, '
-                    f'{"reverse" if base_idx < cur_idx else "forward"})')
+                    f'forward (idx {cur_idx} -> {base_idx}, '
+                    f'final dist to station {best_d:.1f} m)')
 
         if not base_wps and self._lane_map is not None:
             try:
