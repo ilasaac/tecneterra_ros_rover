@@ -1355,6 +1355,22 @@ function redraw() {
   drawLiveRovers();
   drawGpsSurvey();
   drawMeasureOverlay();
+  drawTagRect();
+}
+
+function drawTagRect() {
+  if (!tagMode || !_drag || _drag.type !== 'tag_rect' || !_didDrag) return;
+  const x0 = Math.min(_drag.sx, _drag.ex);
+  const x1 = Math.max(_drag.sx, _drag.ex);
+  const y0 = Math.min(_drag.sy, _drag.ey);
+  const y1 = Math.max(_drag.sy, _drag.ey);
+  ctx.fillStyle = 'rgba(255, 242, 0, 0.15)';
+  ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  ctx.strokeStyle = '#fff200';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  ctx.setLineDash([]);
 }
 
 function drawGrid(W, H) {
@@ -1765,6 +1781,13 @@ canvas.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
   _didDrag = false;
   const {offsetX: x, offsetY: y} = e;
+  // TAG mode: drag-rect select. If mousedown lands on a waypoint we still
+  // start a rect — the click-handler will treat a tiny non-drag as a toggle.
+  if (tagMode) {
+    _drag = {type: 'tag_rect', sx: x, sy: y, ex: x, ey: y};
+    canvas.style.cursor = 'crosshair';
+    return;
+  }
   if (!addMode && !obsMode) {
     const wi = hitWaypoint(x, y);
     if (wi >= 0) {
@@ -1794,6 +1817,15 @@ canvas.addEventListener('mousemove', e => {
   // Measure mode: no hover tracking — click-based only
   if (measureMode && !_drag) return;
   if (!_drag) return;
+  // Tag mode rect-select: only mark as drag once cursor moves > 4px so a
+  // tiny mouse jiggle on click still counts as a click-toggle.
+  if (_drag.type === 'tag_rect') {
+    _drag.ex = x; _drag.ey = y;
+    const dx = x - _drag.sx, dy = y - _drag.sy;
+    if (Math.hypot(dx, dy) > 4) _didDrag = true;
+    redraw();
+    return;
+  }
   _didDrag = true;
   if (_drag.type === 'pan') {
     const cosLat = Math.cos(viewLat * Math.PI / 180);
@@ -1826,9 +1858,38 @@ canvas.addEventListener('mousemove', e => {
   }
 });
 
-canvas.addEventListener('mouseup', () => {
+canvas.addEventListener('mouseup', e => {
+  // Tag mode rect-select finalisation: if we actually dragged, find every
+  // waypoint inside the rectangle and add to selection. If it was a tap
+  // (no drag), let the click handler do its toggle.
+  if (_drag && _drag.type === 'tag_rect') {
+    if (_didDrag) {
+      const x0 = Math.min(_drag.sx, _drag.ex);
+      const x1 = Math.max(_drag.sx, _drag.ex);
+      const y0 = Math.min(_drag.sy, _drag.ey);
+      const y1 = Math.max(_drag.sy, _drag.ey);
+      const additive = e && e.shiftKey;
+      if (!additive) tagSelected.clear();
+      let n = 0;
+      waypoints.forEach((wp, i) => {
+        const p = project(wp.lat, wp.lon);
+        if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) {
+          tagSelected.add(i); n++;
+        }
+      });
+      _drag = null;
+      canvas.style.cursor = tagMode ? 'crosshair' : 'default';
+      redraw();
+      _updateTagStatus();
+      return;
+    }
+    // Tap (no drag): leave to click handler — clear drag and let click fire
+    _drag = null;
+    canvas.style.cursor = tagMode ? 'crosshair' : 'default';
+    return;
+  }
   _drag = null;
-  canvas.style.cursor = (addMode || obsMode) ? 'crosshair' : 'default';
+  canvas.style.cursor = (addMode || obsMode || tagMode) ? 'crosshair' : 'default';
 });
 
 canvas.addEventListener('mouseleave', () => {
