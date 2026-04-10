@@ -1,0 +1,99 @@
+# ── Rover 3 (Simulation) parameters ──────────────────────────────────────────
+# Deploy on: third Jetson with NO physical GPS or RP2040 hardware.
+# Identical to rover2 except gps_driver / rp2040_bridge are replaced by
+# sim_harness, which feeds simulated fix/heading/rc_input to the navigator.
+# All other nodes (navigator, sensors, video) run unchanged.
+# Node keys must use fully-qualified names (/rv3/<node>) to match namespaced nodes.
+
+/rv3/sensor_node:
+  ros__parameters:
+    publish_rate: 1.0
+
+/rv3/video_streamer:
+  ros__parameters:
+    rtsp_port:     8556          # different port from RV1/RV2
+    mount_point:   /stream
+    camera_source: test         # csi | usb | test
+    csi_sensor_id: 0
+    width:         1280
+    height:        720
+    framerate:     30
+    bitrate:       2000
+    flip_method:   0
+
+/rv3/navigator:
+  ros__parameters:
+    lookahead_distance:        2.0
+    default_acceptance_radius: 0.5
+    max_speed:                 1.5
+    min_speed:                 0.5
+    max_steering:              0.8
+    control_rate:              25.0
+    gps_timeout:               2.0
+    heading_deadband:          3.0
+    align_threshold:           60.0
+    stanley_k:                 0.3
+    stanley_softening:         0.3
+    stanley_cte_scale_m:       1.0
+    stanley_cte_alarm_m:       1.0
+    min_turn_radius_m:         3.0
+    pivot_threshold:           25.0
+    pivot_approach_dist:       2.0
+    post_turn_speed:           0.5
+    min_pivot_segment_m:       0.3
+    lane_arc_radius_m:         1.0
+    lane_arc_threshold_deg:    15.0
+    rover_width_m:             1.0
+    obstacle_clearance_m:      0.5
+    bypass_arc_radius_m:       0.5
+    bypass_arc_speed_k:        0.7
+    control_algorithm:         stanley
+    min_steer_ppm_delta:    300
+    steer_coast_angle:       5.0
+    mpc_horizon:               5
+    mpc_dt:                    0.1
+    mpc_w_cte:                 5.0
+    mpc_w_heading:             1.0
+    mpc_w_steer:               0.1
+    mpc_w_dsteer:              0.05
+    wheelbase_m:               0.6
+    # Inter-rover proximity disabled in sim (no peer)
+    peer_rover_ns:             ''
+    rover_front_corner_dist_m: 0.6
+    rover_rear_corner_dist_m:  1.0
+    rover_half_width_m:        0.5
+    proximity_slow_m:          1.5
+    proximity_halt_m:          0.75
+    proximity_estop_m:         0.5
+    recharge_lat:      0.0
+    recharge_lon:      0.0
+    water_lat:         0.0
+    water_lon:         0.0
+    battery_low_pct:   15.0
+    tank_low_pct:      5.0
+    base_speed:        0.9
+    base_acceptance_m: 1.5
+    enable_diag_log:           true
+    diag_log_path:             '/tmp/navigator_diag.csv'
+
+/rv3/sim_harness:
+  ros__parameters:
+    physics_rate_hz:             25.0
+    antenna_baseline_m:          1.0
+    arm_delay_s:                 1.0
+    shutdown_delay_s:            2.0
+    max_speed:                   1.5
+    max_steering:                0.8
+    wheelbase_m:                 0.6
+    track_width_m:               0.9
+    max_wheel_mms:               1650.0
+    steering_scale:              0.37
+    accel_cap_mms_per_tick:      7.0
+    decel_divisor:               1.0
+    angular_diff_limit_mms:      275.0
+    smooth_tick_hz:              100.0
+    rotation_center_offset_m:    0.35
+    steer_lag_s:                 0.25
+    # Sim-specific: stay up between missions for iterative testing.
+    # Set to false to mirror the old auto-exit behaviour.
+    persistent:                  true

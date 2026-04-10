@@ -46,3 +46,11 @@ services:
     container_name: agri_rover_rv1_sim
     restart: "no"
     command: ros2 launch agri_rover_bringup sim_harness.launch.py
+
+  rover3:
+    <<: *rover-base
+    container_name: agri_rover_rv3
+    # Third Jetson, no physical GPS / RP2040 hardware. sim_harness feeds
+    # the navigator with virtual GPS + control. Everything else identical
+    # to rover1/rover2 — same rosbridge, same beacon, same mission flow.
+    command: ros2 launch agri_rover_bringup rover3.launch.py camera_source:=${CAMERA_SOURCE:-test}

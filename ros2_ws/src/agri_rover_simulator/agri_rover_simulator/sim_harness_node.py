@@ -54,6 +54,10 @@ class SimHarnessNode(Node):
         self.declare_parameter('smooth_tick_hz', 100.0)
         self.declare_parameter('rotation_center_offset_m', 0.35)
         self.declare_parameter('steer_lag_s', 0.25)
+        # When True, the sim stays up after a mission completes (wp_active=-1)
+        # so the user can iteratively upload new missions for testing. Default
+        # False preserves the original auto-exit behaviour for one-shot SIL.
+        self.declare_parameter('persistent', False)
 
         self._rate = self.get_parameter('physics_rate_hz').value
         self._baseline = self.get_parameter('antenna_baseline_m').value
@@ -62,6 +66,7 @@ class SimHarnessNode(Node):
         self._max_speed = self.get_parameter('max_speed').value
         self._max_steering = self.get_parameter('max_steering').value
         self._wheelbase = self.get_parameter('wheelbase_m').value
+        self._persistent = self.get_parameter('persistent').value
 
         ttr_phys = {
             'track_width_m': self.get_parameter('track_width_m').value,
@@ -96,6 +101,11 @@ class SimHarnessNode(Node):
         self.pub_mode = self.create_publisher(String, 'mode', 10)
         self.pub_armed = self.create_publisher(Bool, 'armed', 10)
         self.pub_servo = self.create_publisher(RCInput, 'servo_state', 10)
+        # rc_input — replaces rp2040_bridge so consumers see a healthy link.
+        # 16 channels, all neutral (1500), SBUS+RF reported OK.
+        self.pub_rc = self.create_publisher(RCInput, 'rc_input', 10)
+        # rtk_status — replaces gps_driver. Always reports RTK_FIX in sim.
+        self.pub_rtk = self.create_publisher(String, 'rtk_status', 10)
 
         # ── Subscribers ─────────────────────────────────────────────────────
         self.create_subscription(RCInput, 'cmd_override', self._cb_cmd, 10)
@@ -122,6 +132,20 @@ class SimHarnessNode(Node):
     def _cb_wp_active(self, msg: Int32):
         """Detect mission complete (wp_active == -1)."""
         if msg.data == -1 and not self._done:
+            if self._persistent:
+                self.get_logger().info(
+                    'Mission complete (wp_active=-1) — staying up for next mission')
+                self._started = False
+                self._armed = False
+                # Reset state so the next mission upload starts fresh
+                self._mission_wps.clear()
+                self._last_mission_time = 0.0
+                self._start_heading = None
+                m = String(); m.data = 'MANUAL'
+                self.pub_mode.publish(m)
+                b = Bool(); b.data = False
+                self.pub_armed.publish(b)
+                return
             self.get_logger().info('Mission complete (wp_active=-1) — shutting down')
             self._done = True
             self._started = False
@@ -266,6 +290,21 @@ class SimHarnessNode(Node):
         h = Float32()
         h.data = self._rover.heading_deg
         self.pub_heading.publish(h)
+
+        # rc_input — replaces rp2040_bridge. 16 channels neutral, link OK.
+        # Mode reflects current sim state; CH9 set to mid (1500) so the GQC
+        # rover-selector logic doesn't pick this rover unintentionally.
+        rc = RCInput()
+        rc.channels = [1500] * 16
+        rc.mode = 'AUTONOMOUS' if self._started else 'MANUAL'
+        rc.sbus_ok = True
+        rc.rf_link_ok = True
+        rc.stamp = stamp
+        self.pub_rc.publish(rc)
+
+        # rtk_status — replaces gps_driver. Always RTK_FIX in sim.
+        rtk = String(); rtk.data = 'RTK_FIX'
+        self.pub_rtk.publish(rtk)
 
 
 def main(args=None):
