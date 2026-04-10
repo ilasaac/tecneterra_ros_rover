@@ -275,7 +275,8 @@ def _save_mission_file(name: str, waypoints: list, obstacles: list,
                        servos: dict | None = None,
                        original_corridors: dict | None = None,
                        optimized_path: list | None = None,
-                       real_track: list | None = None):
+                       real_track: list | None = None,
+                       stations: dict | None = None):
     path = os.path.join(MISSIONS_DIR, f'{name}.json')
     data = {'waypoints': waypoints, 'obstacles': obstacles, 'servos': servos or {}}
     if original_corridors:
@@ -284,6 +285,8 @@ def _save_mission_file(name: str, waypoints: list, obstacles: list,
         data['optimized_path'] = optimized_path
     if real_track:
         data['real_track'] = real_track
+    if stations:
+        data['stations'] = stations
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
     return path
@@ -2843,6 +2846,11 @@ async function saveMission() {
   if (originalCorridors) payload.original_corridors = originalCorridors;
   if (optimizedPath) payload.optimized_path = optimizedPath;
   if (analyzeResult && analyzeResult.track) payload.real_track = analyzeResult.track;
+  if (stationBattery || stationWater) {
+    payload.stations = {};
+    if (stationBattery) payload.stations.battery = stationBattery;
+    if (stationWater)   payload.stations.water   = stationWater;
+  }
   await fetch('/save_mission', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload),
@@ -2899,6 +2907,17 @@ async function loadMission() {
   optimizedPath = d.optimized_path || null;
   if (d.real_track) analyzeResult = {track: d.real_track};
   if (d.servos) setServos(d.servos);
+  // Restore stations if present
+  if (d.stations) {
+    if (d.stations.battery) {
+      stationBattery = d.stations.battery;
+      try { localStorage.setItem('mp_station_battery', JSON.stringify(stationBattery)); } catch (e) {}
+    }
+    if (d.stations.water) {
+      stationWater = d.stations.water;
+      try { localStorage.setItem('mp_station_water', JSON.stringify(stationWater)); } catch (e) {}
+    }
+  }
   refreshTable(); renderAll();
   if (waypoints.length) { viewLat = waypoints[0].lat; viewLon = waypoints[0].lon; fitAll(); }
   document.getElementById('m-name').value = cleanName;
@@ -3033,8 +3052,25 @@ async function uploadRover(roverId) {
         msg: {data: JSON.stringify({polygons: obstacles})},
       }));
     }
+    // Publish stations if set — battery first, then water
+    if (stationBattery) {
+      ws.send(JSON.stringify({
+        op: 'publish', topic: `${ns}/station_update`,
+        type: 'std_msgs/msg/String',
+        msg: {data: JSON.stringify({type: 'battery', lat: stationBattery.lat, lon: stationBattery.lon})},
+      }));
+    }
+    if (stationWater) {
+      ws.send(JSON.stringify({
+        op: 'publish', topic: `${ns}/station_update`,
+        type: 'std_msgs/msg/String',
+        msg: {data: JSON.stringify({type: 'water', lat: stationWater.lat, lon: stationWater.lon})},
+      }));
+    }
     ws.close();
-    status(`Uploaded ${pointCount} points to RV${roverId} via rosbridge`, '#27ae60');
+    const stationLabel = (stationBattery ? 'B' : '') + (stationWater ? 'W' : '');
+    const stationsTxt = stationLabel ? ` + stations[${stationLabel}]` : '';
+    status(`Uploaded ${pointCount} points to RV${roverId} via rosbridge${stationsTxt}`, '#27ae60');
   } catch(e) {
     status(`Upload failed: ${e.message}`, '#e74c3c');
   }
@@ -4933,7 +4969,8 @@ class _Handler(BaseHTTPRequestHandler):
                                       data.get('servos', {}),
                                       data.get('original_corridors'),
                                       data.get('optimized_path'),
-                                      data.get('real_track'))
+                                      data.get('real_track'),
+                                      data.get('stations'))
             print(f'[save] {path}', flush=True)
             self._json({'ok': True, 'name': name})
 
