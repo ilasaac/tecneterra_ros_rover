@@ -3007,10 +3007,7 @@ async function uploadRover(roverId) {
     // Build corridor JSON from optimizedPath (edited table) or waypoints
     let corridorJson;
     let pointCount;
-    // If user tagged any raw waypoints, those wins over optimizedPath —
-    // optimizedPath was generated before tags existed and would lose them.
-    const waypointsHaveTags = waypoints.some(w => w.lane_tag === 'row' || w.lane_tag === 'hd');
-    if (optimizedPath && optimizedPath.length && !waypointsHaveTags) {
+    if (optimizedPath && optimizedPath.length) {
       // Build single-corridor from edited optimized path (what the table shows)
       const cl = optimizedPath.map(pt => [pt.lat, pt.lon]);
       const speeds = optimizedPath.map(pt => pt.speed);
@@ -3018,10 +3015,9 @@ async function uploadRover(roverId) {
       const ch6 = optimizedPath.map(pt => (pt.servo||{})[6]||(pt.servo||{})['6']||1500);
       const ch7 = optimizedPath.map(pt => (pt.servo||{})[7]||(pt.servo||{})['7']||1500);
       const ch8 = optimizedPath.map(pt => (pt.servo||{})[8]||(pt.servo||{})['8']||1500);
-      const tags = optimizedPath.map(pt => pt.lane_tag || '');
       corridorJson = JSON.stringify({corridors:[{
         corridor_id:0, centerline:cl, width:1.5, speed:0,
-        speeds, ch5, ch6, ch7, ch8, tags,
+        speeds, ch5, ch6, ch7, ch8,
         next_corridor_id:-1, turn_type:'auto', headland_width:0
       }], min_turn_radius:3.0, headland_width:0});
       pointCount = optimizedPath.length;
