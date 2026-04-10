@@ -77,6 +77,7 @@ class Corridor:
     ch6: list[int] = field(default_factory=list)
     ch7: list[int] = field(default_factory=list)
     ch8: list[int] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)       # per-vertex lane tag: "row" | "hd" | ""
     next_corridor_id: int = -1               # -1 = last corridor
     turn_type: str = 'auto'                  # 'auto' | 'arc' | 'spin'
     headland_width: float = 0.0              # available turn space in metres (0 = auto)
@@ -215,11 +216,13 @@ def corridors_to_path(
     mission: CorridorMission,
     default_speed: float = 0.0,
     post_turn_speed: float = 0.5,
-) -> list[tuple[float, float, float, float, bool]]:
+) -> list[tuple[float, float, float, float, bool, dict | None, str]]:
     """Convert a corridor mission into a continuous polyline path.
 
-    Returns a list of (lat, lon, speed, corridor_half_width, is_turn) tuples.
-    is_turn=True at corridor boundary points (where rover should stop and spin).
+    Returns a list of (lat, lon, speed, corridor_half_width, is_turn, servo, tag)
+    tuples. is_turn=True at corridor boundary points (where rover should stop
+    and spin). tag is the per-vertex lane tag ("row" | "hd" | "") if the corridor
+    has tags, otherwise "".
     """
     if not mission.corridors:
         return []
@@ -228,7 +231,7 @@ def corridors_to_path(
     by_id = {c.corridor_id: c for c in mission.corridors}
 
     # Walk the corridor chain
-    path: list[tuple[float, float, float, float, bool]] = []
+    path: list[tuple[float, float, float, float, bool, dict | None, str]] = []
     current = mission.corridors[0]
     visited = set()
 
@@ -241,6 +244,7 @@ def corridors_to_path(
 
         # Append centerline points — skip first if duplicate of last in path
         has_ch = len(current.ch5) == len(current.centerline)
+        has_tags = len(current.tags) == len(current.centerline)
         for i, (lat, lon) in enumerate(current.centerline):
             if i == 0 and path and abs(lat - path[-1][0]) < 1e-9 and abs(lon - path[-1][1]) < 1e-9:
                 continue
@@ -250,7 +254,8 @@ def corridors_to_path(
                        and current.turn_type == 'none')
             srv = {5: current.ch5[i], 6: current.ch6[i],
                    7: current.ch7[i], 8: current.ch8[i]} if has_ch else None
-            path.append((lat, lon, spd, current.width, is_turn, srv))
+            tag = current.tags[i] if has_tags else ''
+            path.append((lat, lon, spd, current.width, is_turn, srv, tag))
 
         # Find next corridor
         next_c = by_id.get(current.next_corridor_id)
@@ -275,8 +280,8 @@ def corridors_to_path(
         crossing_width = mission.headland_width if mission.headland_width > 0 else max(current.width, next_c.width) * 2
 
         if turn_type == 'headland':
-            path.append((exit_pt[0], exit_pt[1], 0.0, crossing_width, True, None))
-            path.append((entry_pt[0], entry_pt[1], 0.0, crossing_width, False, None))
+            path.append((exit_pt[0], exit_pt[1], 0.0, crossing_width, True, None, ''))
+            path.append((entry_pt[0], entry_pt[1], 0.0, crossing_width, False, None, ''))
 
         elif turn_type == 'arc':
             arc_pts = compute_turn_arc(
@@ -286,10 +291,10 @@ def corridors_to_path(
             )
             turn_width = min(current.width, next_c.width)
             for lat, lon in arc_pts[1:]:
-                path.append((lat, lon, 0.0, turn_width, False, None))
+                path.append((lat, lon, 0.0, turn_width, False, None, ''))
 
         elif turn_type == 'spin':
-            path.append((exit_pt[0], exit_pt[1], 0.0, crossing_width, True, None))
+            path.append((exit_pt[0], exit_pt[1], 0.0, crossing_width, True, None, ''))
 
         # else: 'none' — corridors connect directly (turn marked inline)
 
@@ -306,15 +311,15 @@ def corridors_to_path(
         vals = [path[j][2] for j in range(lo, hi + 1) if not path[j][4] and path[j][2] > 0]
         if vals:
             smoothed[i] = sum(vals) / len(vals)
-    path = [(lat, lon, smoothed[i], w, t, s) for i, (lat, lon, _, w, t, s) in enumerate(path)]
+    path = [(lat, lon, smoothed[i], w, t, s, tg) for i, (lat, lon, _, w, t, s, tg) in enumerate(path)]
 
     # First point is NOT a turn — approach path handles smooth arrival
 
     # Set first point after each turn to post_turn_speed for alignment
     for i, pt in enumerate(path):
         if pt[4] and i + 1 < len(path):
-            lat, lon, _spd, w, is_t, srv = path[i + 1]
-            path[i + 1] = (lat, lon, post_turn_speed, w, is_t, srv)
+            lat, lon, _spd, w, is_t, srv, tg = path[i + 1]
+            path[i + 1] = (lat, lon, post_turn_speed, w, is_t, srv, tg)
 
     return path
 
@@ -334,6 +339,7 @@ def corridor_mission_to_json(mission: CorridorMission) -> str:
                 'width': c.width,
                 'speed': c.speed,
                 'speeds': c.speeds,
+                'tags': c.tags,
                 'next_corridor_id': c.next_corridor_id,
                 'turn_type': c.turn_type,
                 'headland_width': c.headland_width,
@@ -361,6 +367,7 @@ def corridor_mission_from_json(json_str: str) -> CorridorMission:
             ch6=c.get('ch6', [1500]*n),
             ch7=c.get('ch7', [1500]*n),
             ch8=c.get('ch8', [1500]*n),
+            tags=c.get('tags', ['']*n),
             next_corridor_id=c.get('next_corridor_id', -1),
             turn_type=c.get('turn_type', 'auto'),
             headland_width=c.get('headland_width', 0.0),
@@ -384,6 +391,7 @@ def auto_split_corridors(
     ch6s: list[int] | None = None,
     ch7s: list[int] | None = None,
     ch8s: list[int] | None = None,
+    tags: list[str] | None = None,
 ) -> CorridorMission:
     """Split a raw GPS polyline into corridors at sharp turns.
 
@@ -398,6 +406,7 @@ def auto_split_corridors(
     min_segment_points  : minimum points per corridor (avoids tiny fragments)
     width               : corridor half-width (metres)
     speeds              : per-vertex recorded speeds (parallel to points), or None
+    tags                : per-vertex lane tags ("row" | "hd" | ""), or None
 
     Returns
     -------
@@ -412,6 +421,7 @@ def auto_split_corridors(
     c6 = ch6s if ch6s and len(ch6s) == n else [1500] * n
     c7 = ch7s if ch7s and len(ch7s) == n else [1500] * n
     c8 = ch8s if ch8s and len(ch8s) == n else [1500] * n
+    tg = tags if tags and len(tags) == n else [''] * n
     has_turn_markers = any(s < 0 for s in spd_list)
 
     corridors: list[Corridor] = []
@@ -421,6 +431,7 @@ def auto_split_corridors(
     cur_c6: list[int] = [c6[0]]
     cur_c7: list[int] = [c7[0]]
     cur_c8: list[int] = [c8[0]]
+    cur_tg: list[str] = [tg[0]]
     prev_heading: float | None = None
 
     # Skip leading turn markers — first corridor must start with driving points
@@ -449,13 +460,15 @@ def auto_split_corridors(
                     break
                 current_pts.pop(); current_spd.pop()
                 cur_c5.pop(); cur_c6.pop(); cur_c7.pop(); cur_c8.pop()
+                cur_tg.pop()
             current_pts.append((turn_lat, turn_lon))
             current_spd.append(0.0)
-            # Turn point inherits last servo state
+            # Turn point inherits last servo state and tag
             cur_c5.append(cur_c5[-1] if cur_c5 else 1500)
             cur_c6.append(cur_c6[-1] if cur_c6 else 1500)
             cur_c7.append(cur_c7[-1] if cur_c7 else 1500)
             cur_c8.append(cur_c8[-1] if cur_c8 else 1500)
+            cur_tg.append(cur_tg[-1] if cur_tg else '')
             if len(current_pts) >= 2:
                 corridors.append(Corridor(
                     corridor_id=len(corridors),
@@ -463,6 +476,7 @@ def auto_split_corridors(
                     speeds=list(current_spd),
                     ch5=list(cur_c5), ch6=list(cur_c6),
                     ch7=list(cur_c7), ch8=list(cur_c8),
+                    tags=list(cur_tg),
                     next_corridor_id=len(corridors) + 1,
                     turn_type='none',
                 ))
@@ -470,6 +484,7 @@ def auto_split_corridors(
             current_spd = [0.0]
             cur_c5 = [cur_c5[-1]]; cur_c6 = [cur_c6[-1]]
             cur_c7 = [cur_c7[-1]]; cur_c8 = [cur_c8[-1]]
+            cur_tg = [cur_tg[-1]]
             prev_heading = None
             continue
 
@@ -486,16 +501,19 @@ def auto_split_corridors(
                     speeds=list(current_spd),
                     ch5=list(cur_c5), ch6=list(cur_c6),
                     ch7=list(cur_c7), ch8=list(cur_c8),
+                    tags=list(cur_tg),
                     next_corridor_id=len(corridors) + 1,
                 ))
                 current_pts = [current_pts[-1]]; current_spd = [current_spd[-1]]
                 cur_c5 = [cur_c5[-1]]; cur_c6 = [cur_c6[-1]]
                 cur_c7 = [cur_c7[-1]]; cur_c8 = [cur_c8[-1]]
+                cur_tg = [cur_tg[-1]]
 
         current_pts.append((points[i][0], points[i][1]))
         current_spd.append(spd_list[i])
         cur_c5.append(c5[i]); cur_c6.append(c6[i])
         cur_c7.append(c7[i]); cur_c8.append(c8[i])
+        cur_tg.append(tg[i])
         prev_heading = heading
         i += 1
 
@@ -507,6 +525,7 @@ def auto_split_corridors(
             speeds=list(current_spd),
             ch5=list(cur_c5), ch6=list(cur_c6),
             ch7=list(cur_c7), ch8=list(cur_c8),
+            tags=list(cur_tg),
             next_corridor_id=-1,
         ))
 
@@ -517,6 +536,80 @@ def auto_split_corridors(
         corridors[-1].next_corridor_id = -1
 
     return CorridorMission(corridors=corridors)
+
+
+def insert_lane_arcs(
+    path: list[tuple],
+    radius_m: float = 1.0,
+    threshold_deg: float = 15.0,
+) -> list[tuple]:
+    """Walk a corridor path and splice in tangent-circle arcs at row<->hd transitions.
+
+    For each pair (i, i+1) where path[i].tag != path[i+1].tag (and both non-empty)
+    AND the heading change between the incoming and outgoing segments at point i+1
+    exceeds threshold_deg, generate arc points between path[i] and path[i+1] using
+    compute_turn_arc with the given radius.
+
+    The arcs are inserted between i and i+1 (i.e. after path[i], before path[i+1]).
+    Inserted arc points carry the tag of the OUTGOING side ("hd" if entering hd,
+    "row" if entering row) so the rover transitions smoothly into the new lane.
+
+    No mutation of input. Returns a new list. If no row<->hd transitions exist
+    or radius/threshold is degenerate, returns the path unchanged.
+
+    Parameters
+    ----------
+    path           : list of 7-tuples (lat, lon, speed, width, is_turn, srv, tag)
+    radius_m       : turn radius in metres (default 1.0 — measured from sharp_curves.json)
+    threshold_deg  : minimum heading change to insert an arc (smaller corners pass through unchanged)
+
+    Returns
+    -------
+    New path list with arcs inserted at row<->hd junctions.
+    """
+    if len(path) < 3 or radius_m <= 0:
+        return list(path)
+
+    # Pre-compute incoming/outgoing bearings at each interior point
+    def _seg_bearing(a, b):
+        return _bearing_to(a[0], a[1], b[0], b[1])
+
+    # Pre-check: any row<->hd transitions at all? Bail early if not (no allocation).
+    has_transition = False
+    for i in range(len(path) - 1):
+        ta = path[i][6]; tb = path[i + 1][6]
+        if ta and tb and ta != tb:
+            has_transition = True
+            break
+    if not has_transition:
+        return list(path)
+
+    out: list[tuple] = []
+    i = 0
+    while i < len(path):
+        out.append(path[i])
+        if i + 1 < len(path):
+            ta = path[i][6]; tb = path[i + 1][6]
+            if ta and tb and ta != tb and i > 0 and i + 2 < len(path):
+                # Compute incoming heading from previous segment, outgoing from next
+                in_h = _seg_bearing(path[i - 1], path[i])
+                out_h = _seg_bearing(path[i + 1], path[i + 2])
+                delta = abs(_normalize_angle(out_h - in_h))
+                if delta >= threshold_deg:
+                    arc_pts = compute_turn_arc(
+                        path[i][0], path[i][1], in_h,
+                        path[i + 1][0], path[i + 1][1], out_h,
+                        radius_m,
+                    )
+                    # arc_pts includes start (path[i]) — skip it; rest are interior arc.
+                    # Tag arc points with the OUTGOING tag (rover is entering the new lane).
+                    width_a = path[i][3]
+                    spd_a = path[i + 1][2]  # use entry speed of next lane
+                    srv_a = path[i + 1][5]
+                    for (alat, alon) in arc_pts[1:]:
+                        out.append((alat, alon, spd_a, width_a, False, srv_a, tb))
+        i += 1
+    return out
 
 
 def optimize_corridor_speeds(

@@ -824,6 +824,10 @@ tr:hover td{background:#1e1e3a}
     <span style="font-size:9px;color:#556;margin-right:auto;align-self:center">v=SERVER_VER</span>
     <button class="btn-blue" id="btn-add" onclick="toggleAddMode()">+ Add WP</button>
     <button id="btn-obs" class="btn-red" onclick="toggleObsMode()">&#9632; Obstacle</button>
+    <button id="btn-tag" class="btn-orange" onclick="toggleTagMode()" title="Tag waypoints as Row or HD (rover inserts arc at row<->hd transitions)">&#9873; Tag</button>
+    <button id="btn-tag-row" class="btn-green" onclick="applyTag('row')" style="display:none" title="Set selected waypoints to Row">Row</button>
+    <button id="btn-tag-hd" class="btn-orange" onclick="applyTag('hd')" style="display:none" title="Set selected waypoints to HD">HD</button>
+    <button id="btn-tag-clear" class="btn-red" onclick="applyTag('')" style="display:none" title="Clear tag from selected">Clr</button>
     <button id="btn-meas" class="btn-blue" onclick="toggleMeasureMode()" title="Measure distance from cursor to planned route">&#8614; Dist</button>
     <button class="btn-green" onclick="runSimulate()">&#9654; Simulate</button>
     <button class="btn-orange" onclick="exportCSV()">&#8595; CSV</button>
@@ -1267,6 +1271,9 @@ let simResult     = null;
 let obstacles     = [];
 let obsMode       = false;
 let obsCurPts     = [];
+// TAG mode — click waypoints to select, Row/HD buttons assign lane_tag
+let tagMode       = false;
+let tagSelected   = new Set();   // waypoint indices currently selected
 let liveRovers    = {};   // sysid → {lat, lon, hdg, ts, ip, rosbridge}
 let roverWs       = {};   // sysid → WebSocket (persistent rosbridge subscription)
 let analyzeResult = null;
@@ -1504,16 +1511,36 @@ function drawWaypoints() {
     if (i === 0) return;
     const p = project(wp.lat, wp.lon);
     const isTurn = (wp.speed || 0) < 0;
+    const tag = wp.lane_tag || '';
+    const isSel = tagMode && tagSelected.has(i);
+    // Color by tag: row=green, hd=orange, untagged=default green-ish
+    let fill, stroke;
+    if (tag === 'row') {
+      fill = 'rgba(76,175,80,0.85)';   // bright green
+      stroke = isSel ? '#fff200' : 'rgba(255,255,255,0.9)';
+    } else if (tag === 'hd') {
+      fill = 'rgba(255,140,0,0.85)';   // orange
+      stroke = isSel ? '#fff200' : 'rgba(255,255,255,0.9)';
+    } else if (isTurn) {
+      fill = 'rgba(255,152,0,0.7)';
+      stroke = isSel ? '#fff200' : '#fff';
+    } else {
+      fill = 'rgba(26,122,58,0.6)';
+      stroke = isSel ? '#fff200' : 'rgba(255,255,255,0.7)';
+    }
     ctx.beginPath(); ctx.arc(p.x, p.y, isTurn ? 10 : 8, 0, Math.PI * 2);
-    ctx.fillStyle   = isTurn ? 'rgba(255,152,0,0.7)' : 'rgba(26,122,58,0.6)';
-    ctx.strokeStyle = isTurn ? '#fff' : 'rgba(255,255,255,0.7)';
-    ctx.lineWidth   = isTurn ? 2 : 1;
+    ctx.fillStyle = fill;
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = isSel ? 3 : (isTurn ? 2 : 1);
     ctx.fill(); ctx.stroke();
     ctx.fillStyle    = '#fff';
     ctx.font         = 'bold 9px sans-serif';
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(isTurn ? 'T' : String(i), p.x, p.y);
+    let label = isTurn ? 'T' : String(i);
+    if (tag === 'row') label = 'R';
+    else if (tag === 'hd') label = 'H';
+    ctx.fillText(label, p.x, p.y);
   });
   // Draw waypoint 0 last — larger, yellow, always on top
   if (waypoints.length > 0) {
@@ -1872,6 +1899,21 @@ canvas.addEventListener('click', e => {
     const ll = unproject(x, y);
     _onLaneClick(ll.lat, ll.lon);
     return;
+  } else if (tagMode) {
+    // Click waypoints to toggle selection. Shift-click adds without deselecting others.
+    const wi = hitWaypoint(x, y);
+    if (wi >= 0 && wi < waypoints.length) {
+      if (!e.shiftKey) {
+        // Normal click — toggle this one
+        if (tagSelected.has(wi)) tagSelected.delete(wi);
+        else tagSelected.add(wi);
+      } else {
+        tagSelected.add(wi);
+      }
+      redraw();
+      _updateTagStatus();
+    }
+    return;
   } else if (addMode) {
     const ll = unproject(x, y);
     addWp(ll.lat, ll.lon);
@@ -2143,6 +2185,7 @@ function importCSV(event) {
     const si = hdr.indexOf('speed'), hi = hdr.indexOf('hold_secs');
     const c5 = hdr.indexOf('ch5'), c6 = hdr.indexOf('ch6');
     const c7 = hdr.indexOf('ch7'), c8 = hdr.indexOf('ch8');
+    const ti = hdr.indexOf('lane_tag');
     if (li < 0 || loi < 0) { status('CSV must have lat,lon columns', '#e74c3c'); return; }
     waypoints = [];
     for (let i = 1; i < lines.length; i++) {
@@ -2152,10 +2195,11 @@ function importCSV(event) {
       if (c6 >= 0 && c[c6] !== undefined && c[c6].trim() !== '') servos['6'] = Math.round(+c[c6]) || 1500;
       if (c7 >= 0 && c[c7] !== undefined && c[c7].trim() !== '') servos['7'] = Math.round(+c[c7]) || 1500;
       if (c8 >= 0 && c[c8] !== undefined && c[c8].trim() !== '') servos['8'] = Math.round(+c[c8]) || 1500;
+      const lane_tag = (ti >= 0 && c[ti]) ? c[ti].trim() : '';
       waypoints.push({lat: +c[li], lon: +c[loi],
                       speed: si >= 0 ? +c[si] || 0 : 0,
                       hold_secs: hi >= 0 ? +c[hi] || 0 : 0,
-                      servos});
+                      servos, lane_tag});
     }
     refresh();
     if (waypoints.length) {
@@ -2213,6 +2257,57 @@ function removeObstacle(idx) {
 
 function clearObstacles() {
   obstacles = []; obsCurPts = []; redraw();
+}
+
+// ── TAG mode (lane_tag = "row" | "hd") ────────────────────────────
+function toggleTagMode() {
+  if (tagMode) {
+    tagMode = false;
+    tagSelected.clear();
+    document.getElementById('btn-tag').textContent = '\u2691 Tag';
+    document.getElementById('btn-tag').classList.remove('btn-active');
+    document.getElementById('btn-tag-row').style.display = 'none';
+    document.getElementById('btn-tag-hd').style.display = 'none';
+    document.getElementById('btn-tag-clear').style.display = 'none';
+    canvas.style.cursor = 'default';
+    redraw();
+    status('Tag mode off.', '#888');
+    return;
+  }
+  tagMode = true;
+  addMode = false; obsMode = false; measureMode = false; _measurePos = null;
+  document.getElementById('btn-add').classList.remove('btn-active');
+  document.getElementById('btn-meas').classList.remove('btn-active');
+  document.getElementById('btn-tag').textContent = '\u2713 Tag';
+  document.getElementById('btn-tag').classList.add('btn-active');
+  document.getElementById('btn-tag-row').style.display = '';
+  document.getElementById('btn-tag-hd').style.display = '';
+  document.getElementById('btn-tag-clear').style.display = '';
+  canvas.style.cursor = 'pointer';
+  status('Tag mode: click waypoints to select (shift-click adds), then Row / HD / Clr.', '#f39c12');
+  redraw();
+}
+
+function applyTag(tag) {
+  if (!tagMode) { status('Enable Tag mode first.', '#e74c3c'); return; }
+  if (tagSelected.size === 0) { status('No waypoints selected.', '#e74c3c'); return; }
+  let n = 0;
+  tagSelected.forEach(i => {
+    if (i >= 0 && i < waypoints.length) {
+      waypoints[i].lane_tag = tag;
+      n++;
+    }
+  });
+  tagSelected.clear();
+  redraw();
+  refreshTable && refreshTable();
+  const label = tag || 'cleared';
+  status(`Tagged ${n} waypoint(s) as ${label}.`, '#27ae60');
+}
+
+function _updateTagStatus() {
+  if (!tagMode) return;
+  status(`Tag mode: ${tagSelected.size} waypoint(s) selected. Choose Row / HD / Clr.`, '#f39c12');
 }
 
 // ── GPS Survey ───────────────────────────────────────────────────
@@ -2704,9 +2799,10 @@ async function uploadRover(roverId) {
       const ch6 = waypoints.map(w => (w.servos||{})['6']||1500);
       const ch7 = waypoints.map(w => (w.servos||{})['7']||1500);
       const ch8 = waypoints.map(w => (w.servos||{})['8']||1500);
+      const tags = waypoints.map(w => w.lane_tag || '');
       corridorJson = JSON.stringify({corridors:[{
         corridor_id:0, centerline:cl, width:1.5, speed:0,
-        speeds, ch5, ch6, ch7, ch8,
+        speeds, ch5, ch6, ch7, ch8, tags,
         next_corridor_id:-1, turn_type:'auto', headland_width:0
       }], min_turn_radius:3.0, headland_width:0});
       pointCount = waypoints.length;
@@ -3222,6 +3318,7 @@ async function uploadQueueMission(idx) {
         ch6: pts.map(p => (p.servos && (p.servos['6'] || p.servos[6])) || 1500),
         ch7: pts.map(p => (p.servos && (p.servos['7'] || p.servos[7])) || 1500),
         ch8: pts.map(p => (p.servos && (p.servos['8'] || p.servos[8])) || 1500),
+        tags: pts.map(p => p.lane_tag || ''),
         next_corridor_id: -1,
         turn_type: 'auto',
         headland_width: 0
@@ -5023,7 +5120,7 @@ class _Handler(BaseHTTPRequestHandler):
             data = json.loads(raw)
             buf = io.StringIO()
             w = csv.DictWriter(buf, fieldnames=['lat', 'lon', 'speed', 'hold_secs',
-                                                 'ch5', 'ch6', 'ch7', 'ch8'])
+                                                 'ch5', 'ch6', 'ch7', 'ch8', 'lane_tag'])
             w.writeheader()
             for wp in data.get('waypoints', []):
                 servos = wp.get('servos') or {}
@@ -5033,7 +5130,8 @@ class _Handler(BaseHTTPRequestHandler):
                             'speed': wp.get('speed', 0) or 0,
                             'hold_secs': wp.get('hold_secs', 0) or 0,
                             'ch5': _ch(5), 'ch6': _ch(6),
-                            'ch7': _ch(7), 'ch8': _ch(8)})
+                            'ch7': _ch(7), 'ch8': _ch(8),
+                            'lane_tag': wp.get('lane_tag', '') or ''})
             body = buf.getvalue().encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/csv')

@@ -59,6 +59,9 @@
     pivot_approach_dist:       2.0
     post_turn_speed:           0.5    # m/s — speed at first point after a corridor turn
     min_pivot_segment_m:       0.3   # min adjacent segment length to qualify for pivot detection
+    # Lane-tag arc insertion (row<->hd transitions in tagged corridor missions)
+    lane_arc_radius_m:         1.0    # tangent-circle radius at row<->hd junctions (m)
+    lane_arc_threshold_deg:    15.0   # min heading change to insert an arc (smaller corners pass through)
     rover_width_m:             1.0
     obstacle_clearance_m:      0.5
     bypass_arc_radius_m:       0.5    # smoother sample distance in metres (0 = disabled)

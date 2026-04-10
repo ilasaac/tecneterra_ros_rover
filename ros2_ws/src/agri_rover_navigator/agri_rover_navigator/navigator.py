@@ -285,6 +285,14 @@ class NavigatorNode(Node):
         # RTK precision is < 0.02 m so any segment > 0.3 m has a reliable bearing.
         # Set lower than the densest recorded waypoint spacing in your missions.
         self.declare_parameter('min_pivot_segment_m',        0.3)
+        # Lane-tag arc insertion (row<->hd transitions in tagged corridor missions).
+        # When a corridor mission has per-vertex tags ("row" | "hd"), the navigator
+        # detects each tag flip and splices in a tangent-circle arc whose radius is
+        # lane_arc_radius_m. Smaller corners (heading change < lane_arc_threshold_deg)
+        # pass through unchanged. Default radius 1.0 m matches the typical sharp-turn
+        # radius measured from the user's saved sharp_curves.json.
+        self.declare_parameter('lane_arc_radius_m',          1.0)
+        self.declare_parameter('lane_arc_threshold_deg',    15.0)
         # Control algorithm — 'stanley', 'mpc', 'ttr', or 'afs'
         self.declare_parameter('control_algorithm',          'stanley')
         # AFS (Always Forward Strategy) parameters (only used when control_algorithm == 'afs')
@@ -389,6 +397,8 @@ class NavigatorNode(Node):
         self._pivot_approach_dist = self.get_parameter('pivot_approach_dist').value
         self._post_turn_speed    = self.get_parameter('post_turn_speed').value
         self._min_pivot_seg       = self.get_parameter('min_pivot_segment_m').value
+        self._lane_arc_radius     = self.get_parameter('lane_arc_radius_m').value
+        self._lane_arc_threshold  = self.get_parameter('lane_arc_threshold_deg').value
         rover_width               = self.get_parameter('rover_width_m').value
         self._clearance           = (rover_width / 2.0
                                      + self.get_parameter('obstacle_clearance_m').value)
@@ -465,6 +475,7 @@ class NavigatorNode(Node):
         # _path_idx : index of the next waypoint not yet reached
         self._path:            list[MissionWaypoint] = []
         self._path_s:          list[float]           = []
+        self._path_tags:       list[str]             = []  # parallel to _path: "row" | "hd" | ""
         self._path_origin_lat: float | None          = None
         self._path_origin_lon: float | None          = None
         self._path_idx:        int                   = 0
@@ -1529,6 +1540,7 @@ class NavigatorNode(Node):
             from agri_rover_navigator.corridor import (
                 corridor_mission_from_json, corridors_to_path,
                 auto_split_corridors, optimize_corridor_speeds,
+                insert_lane_arcs,
             )
 
             mission = corridor_mission_from_json(msg.data)
@@ -1536,22 +1548,47 @@ class NavigatorNode(Node):
             # Save raw corridor data before any optimization
             self._raw_corridor_json = msg.data
 
-            # Auto-split: if mission has only 1 corridor with many points,
-            # it's likely a raw recording. Split at sharp turns into multiple
-            # corridors with headland crossings.
-            if (len(mission.corridors) == 1
+            # Detect lane tags. If any vertex of any corridor has a non-empty
+            # tag ("row" | "hd"), this is a tagged mission and we BYPASS
+            # auto_split_corridors — the user's tag boundaries are authoritative,
+            # not heading-change detection.
+            has_lane_tags = any(
+                any(t for t in c.tags) for c in mission.corridors
+            )
+
+            # Auto-split: if mission has only 1 corridor with many points
+            # AND no lane tags, it's a raw recording — split at sharp turns
+            # into multiple corridors with headland crossings.
+            if (not has_lane_tags
+                    and len(mission.corridors) == 1
                     and len(mission.corridors[0].centerline) > 5):
                 c0 = mission.corridors[0]
                 mission = auto_split_corridors(
                     c0.centerline, turn_threshold_deg=70.0,
                     width=c0.width, speeds=c0.speeds,
-                    ch5s=c0.ch5, ch6s=c0.ch6, ch7s=c0.ch7, ch8s=c0.ch8)
+                    ch5s=c0.ch5, ch6s=c0.ch6, ch7s=c0.ch7, ch8s=c0.ch8,
+                    tags=c0.tags)
                 self.get_logger().info(
                     f'Auto-split: {len(c0.centerline)} points -> '
                     f'{len(mission.corridors)} corridors')
 
             path_pts = corridors_to_path(mission, default_speed=self._max_speed,
                                         post_turn_speed=self._post_turn_speed)
+
+            # Lane-tag arc insertion: at each row<->hd transition where the heading
+            # change exceeds lane_arc_threshold_deg, splice in a tangent-circle arc.
+            if has_lane_tags and path_pts:
+                before_n = len(path_pts)
+                path_pts = insert_lane_arcs(
+                    path_pts,
+                    radius_m=self._lane_arc_radius,
+                    threshold_deg=self._lane_arc_threshold,
+                )
+                added = len(path_pts) - before_n
+                if added > 0:
+                    self.get_logger().info(
+                        f'Lane arcs: inserted {added} points at row<->hd transitions '
+                        f'(R={self._lane_arc_radius:.2f} m, threshold={self._lane_arc_threshold:.0f}°)')
 
             if not path_pts:
                 self.get_logger().warn('Corridor mission: empty path')
@@ -1569,6 +1606,7 @@ class NavigatorNode(Node):
             # Clear any existing waypoint mission
             self._path.clear()
             self._path_s.clear()
+            self._path_tags.clear()
             self._path_original.clear()
             self._path_idx          = 0
             self._holding           = False
@@ -1580,8 +1618,10 @@ class NavigatorNode(Node):
             self._pivot_min_dist    = None
             self._corridor_widths.clear()
 
-            # Build path from corridor polyline
-            for i, (lat, lon, speed, width, _is_turn, _srv) in enumerate(path_pts):
+            # Build path from corridor polyline (7-tuple includes lane tag)
+            for i, pt in enumerate(path_pts):
+                lat, lon, speed, width, _is_turn, _srv = pt[:6]
+                tag = pt[6] if len(pt) > 6 else ''
                 wp = MissionWaypoint()
                 wp.seq               = i
                 wp.latitude          = lat
@@ -1591,6 +1631,7 @@ class NavigatorNode(Node):
                 wp.hold_secs         = 0.0
                 self._path.append(wp)
                 self._path_original.append(wp)
+                self._path_tags.append(tag)
                 self._corridor_widths.append(width)
 
             # Set origin to first point
