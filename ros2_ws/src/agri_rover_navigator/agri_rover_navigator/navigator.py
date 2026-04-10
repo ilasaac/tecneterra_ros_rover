@@ -1343,16 +1343,20 @@ class NavigatorNode(Node):
         ]
 
         if self._obstacle_polygons:
+            total_verts = sum(len(p) for p in self._obstacle_polygons)
             self.get_logger().info(
                 f'Obstacle fence: {len(self._obstacle_polygons)} polygon(s), '
+                f'{total_verts} verts total, '
                 f'clearance={self._clearance:.1f} m, '
                 f'path_original={len(self._path_original)} wps')
+            # Per-polygon vertex dump moved to debug level to avoid log spam
+            # (was 2 INFO lines per polygon — 40 lines for a 20-polygon mission).
+            # Re-enable with --ros-args --log-level rv2.navigator:=debug if needed.
             for pi, poly in enumerate(self._obstacle_polygons):
                 verts_str = '  '.join(f'{lat:.7f},{lon:.7f}' for lat, lon in poly)
-                self.get_logger().info(f'  poly[{pi}] raw ({len(poly)} verts): {verts_str}')
-                exp = self._expanded_polygons[pi]
-                exp_str = '  '.join(f'{lat:.7f},{lon:.7f}' for lat, lon in exp)
-                self.get_logger().info(f'  poly[{pi}] expanded: {exp_str}')
+                self.get_logger().debug(f'  poly[{pi}] raw ({len(poly)} verts): {verts_str}')
+                exp_str = '  '.join(f'{lat:.7f},{lon:.7f}' for lat, lon in self._expanded_polygons[pi])
+                self.get_logger().debug(f'  poly[{pi}] expanded: {exp_str}')
 
         # Check if path crosses any obstacle — disarm if so
         if self._obstacle_polygons and self._path_original:
@@ -1949,18 +1953,36 @@ class NavigatorNode(Node):
         self._publish_cmd(throttle_ppm, steer_ppm)
 
     def _publish_full_path(self):
-        """Publish current _path as JSON for mavlink_bridge → GQC mission sync.
+        """Publish current _path as JSON for GQC mission sync (rerouted_path topic).
 
         Format: [[lat, lon, bypass, speed, hold_secs], ...]
-        mavlink_bridge uses this for MSN_ID hash and MISSION_REQUEST_LIST downloads.
+        Used for the GQC mission overlay and run-folder save.
+
+        Burst guard: skips a publish if the content is identical to the last
+        one AND the previous publish was less than 1 s ago. This collapses
+        the well-known double-publish during a mission upload (one from
+        _cb_corridor_mission, one from _cb_mission_fence -> _check_path_obstacles)
+        into a single WebSocket message — important on the SIYI MK32 whose
+        WiFi stack can drop the association under bursty rosbridge load.
+        Late-joining clients are still served because the 5 s nav_status
+        timer republish bypasses the cooldown after 1 s elapses.
         """
         path_data = [
             [round(wp.latitude, 7), round(wp.longitude, 7),
              0, round(wp.speed, 2), round(wp.hold_secs, 1)]
             for wp in self._path
         ]
+        json_data = json.dumps(path_data, separators=(',', ':'))
+        now = time.time()
+        last_hash = getattr(self, '_last_full_path_hash', None)
+        last_time = getattr(self, '_last_full_path_time', 0.0)
+        new_hash = hash(json_data)
+        if new_hash == last_hash and (now - last_time) < 1.0:
+            return  # identical content within cooldown — drop the burst dup
+        self._last_full_path_hash = new_hash
+        self._last_full_path_time = now
         rp_msg = String()
-        rp_msg.data = json.dumps(path_data, separators=(',', ':'))
+        rp_msg.data = json_data
         self.rerouted_pub.publish(rp_msg)
         self._save_run_mission()
 
