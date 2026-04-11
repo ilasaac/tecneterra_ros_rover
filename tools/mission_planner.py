@@ -3457,7 +3457,22 @@ function runPathShift() {
   const smooth    = parseInt(document.getElementById('shift-smooth').value) || 2;
   const direction = document.getElementById('shift-dir').value;
 
-  baseMission = waypoints.map(w => ({...w, servos: w.servos ? {...w.servos} : {}}));
+  // Use optimizedPath if available (table edits go there), else waypoints.
+  // optimizedPath uses .servo (numeric keys), waypoints uses .servos (string keys).
+  const srcPts = (optimizedPath && optimizedPath.length) ? optimizedPath : waypoints;
+  baseMission = srcPts.map(w => {
+    const s = w.servo || w.servos || {};
+    return {
+      lat: w.lat, lon: w.lon, speed: w.speed || 0,
+      hold_secs: w.hold_secs || 0, lane_tag: w.lane_tag || '',
+      servos: {
+        '5': s['5'] || s[5] || 1500,
+        '6': s['6'] || s[6] || 1500,
+        '7': s['7'] || s[7] || 1500,
+        '8': s['8'] || s[8] || 1500,
+      },
+    };
+  });
   const offsets = generateOffsetMissions(baseMission, count, maxDist, step, clearance, smooth, direction);
   missionQueue = [baseMission, ...offsets];
   queueIndex = 0;
