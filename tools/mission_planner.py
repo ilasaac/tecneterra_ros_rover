@@ -3028,12 +3028,13 @@ async function uploadRover(roverId) {
     let pointCount;
     if (optimizedPath && optimizedPath.length) {
       // Build single-corridor from edited optimized path (what the table shows)
+      // Merge servos: optimizedPath.servo (table edits) → waypoints.servos (bulk) → 1500
       const cl = optimizedPath.map(pt => [pt.lat, pt.lon]);
       const speeds = optimizedPath.map(pt => pt.speed);
-      const ch5 = optimizedPath.map(pt => (pt.servo||{})[5]||(pt.servo||{})['5']||1500);
-      const ch6 = optimizedPath.map(pt => (pt.servo||{})[6]||(pt.servo||{})['6']||1500);
-      const ch7 = optimizedPath.map(pt => (pt.servo||{})[7]||(pt.servo||{})['7']||1500);
-      const ch8 = optimizedPath.map(pt => (pt.servo||{})[8]||(pt.servo||{})['8']||1500);
+      const ch5 = optimizedPath.map((pt,i) => { const o=pt.servo||pt.servos||{}, w=(i<waypoints.length?(waypoints[i].servos||{}):({})); return o['5']||o[5]||w['5']||w[5]||1500; });
+      const ch6 = optimizedPath.map((pt,i) => { const o=pt.servo||pt.servos||{}, w=(i<waypoints.length?(waypoints[i].servos||{}):({})); return o['6']||o[6]||w['6']||w[6]||1500; });
+      const ch7 = optimizedPath.map((pt,i) => { const o=pt.servo||pt.servos||{}, w=(i<waypoints.length?(waypoints[i].servos||{}):({})); return o['7']||o[7]||w['7']||w[7]||1500; });
+      const ch8 = optimizedPath.map((pt,i) => { const o=pt.servo||pt.servos||{}, w=(i<waypoints.length?(waypoints[i].servos||{}):({})); return o['8']||o[8]||w['8']||w[8]||1500; });
       corridorJson = JSON.stringify({corridors:[{
         corridor_id:0, centerline:cl, width:1.5, speed:0,
         speeds, ch5, ch6, ch7, ch8,
@@ -3316,20 +3317,23 @@ function toggleLoopPanel() {
 }
 
 function runLoop() {
-  const srcPts = (optimizedPath && optimizedPath.length) ? optimizedPath : waypoints;
-  if (srcPts.length < 2) {
+  const usePts = (optimizedPath && optimizedPath.length) ? optimizedPath : waypoints;
+  if (usePts.length < 2) {
     status('Load a mission first (need at least 2 waypoints).', '#e74c3c');
     return;
   }
   const laps = parseInt(document.getElementById('loop-count').value) || 3;
-  const base = srcPts.map(w => {
-    const s = w.servo || w.servos || {};
+  const base = usePts.map((w, idx) => {
+    const so = w.servo || w.servos || {};
+    const sw = (idx < waypoints.length) ? (waypoints[idx].servos || {}) : {};
     return {
       lat: w.lat, lon: w.lon, speed: w.speed || 0,
       hold_secs: w.hold_secs || 0, lane_tag: w.lane_tag || '',
       servos: {
-        '5': s['5'] || s[5] || 1500, '6': s['6'] || s[6] || 1500,
-        '7': s['7'] || s[7] || 1500, '8': s['8'] || s[8] || 1500,
+        '5': so['5'] || so[5] || sw['5'] || sw[5] || 1500,
+        '6': so['6'] || so[6] || sw['6'] || sw[6] || 1500,
+        '7': so['7'] || so[7] || sw['7'] || sw[7] || 1500,
+        '8': so['8'] || so[8] || sw['8'] || sw[8] || 1500,
       },
     };
   });
@@ -3517,19 +3521,20 @@ function runPathShift() {
   const smooth    = parseInt(document.getElementById('shift-smooth').value) || 2;
   const direction = document.getElementById('shift-dir').value;
 
-  // Use optimizedPath if available (table edits go there), else waypoints.
-  // optimizedPath uses .servo (numeric keys), waypoints uses .servos (string keys).
-  const srcPts = (optimizedPath && optimizedPath.length) ? optimizedPath : waypoints;
-  baseMission = srcPts.map(w => {
-    const s = w.servo || w.servos || {};
+  // Use optimizedPath for position/speed if available, merge servos from both
+  // sources: optimizedPath.servo (table edits) → waypoints.servos (bulk set) → 1500
+  const usePts = (optimizedPath && optimizedPath.length) ? optimizedPath : waypoints;
+  baseMission = usePts.map((w, idx) => {
+    const so = w.servo || w.servos || {};
+    const sw = (idx < waypoints.length) ? (waypoints[idx].servos || {}) : {};
     return {
       lat: w.lat, lon: w.lon, speed: w.speed || 0,
       hold_secs: w.hold_secs || 0, lane_tag: w.lane_tag || '',
       servos: {
-        '5': s['5'] || s[5] || 1500,
-        '6': s['6'] || s[6] || 1500,
-        '7': s['7'] || s[7] || 1500,
-        '8': s['8'] || s[8] || 1500,
+        '5': so['5'] || so[5] || sw['5'] || sw[5] || 1500,
+        '6': so['6'] || so[6] || sw['6'] || sw[6] || 1500,
+        '7': so['7'] || so[7] || sw['7'] || sw[7] || 1500,
+        '8': so['8'] || so[8] || sw['8'] || sw[8] || 1500,
       },
     };
   });
