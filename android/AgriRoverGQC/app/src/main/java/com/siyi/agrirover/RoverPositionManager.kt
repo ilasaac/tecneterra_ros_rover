@@ -205,7 +205,7 @@ class RoverPositionManager(
                     "wp_active", "xte", "armed", "rerouted_path",
                     "rc_input", "cmd_override", "rtk_status", "sensors",
                     "reroute_pending", "confirm_message", "lane_status",
-                    "mission_fence")
+                    "mission_fence", "hacc")
                 for (t in topics) {
                     webSocket.send("""{"op":"subscribe","topic":"$ns/$t"}""")
                 }
@@ -289,6 +289,12 @@ class RoverPositionManager(
                                 else -> 0
                             }
                             scope.launch(Dispatchers.Main) { onGpsStatus(sysId, fixType) }
+                        }
+                        topic.endsWith("/hacc") -> {
+                            val haccMm = msg.optDouble("data", -1.0).toFloat()
+                            if (haccMm >= 0f) {
+                                scope.launch(Dispatchers.Main) { onHaccStatus(sysId, haccMm) }
+                            }
                         }
                         topic.endsWith("/lane_status") -> {
                             val ls = msg.optString("data", "")
