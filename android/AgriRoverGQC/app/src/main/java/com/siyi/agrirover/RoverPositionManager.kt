@@ -200,16 +200,32 @@ class RoverPositionManager(
             override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
                 Log.e("ROSBRIDGE", "Connected to RV$sysId rosbridge")
                 rosbridgeConnected[sysId] = true
-                // Subscribe to topics — no type field (rosbridge auto-detects)
-                val topics = listOf("center_pos", "heading", "nav_status",
-                    "wp_active", "xte", "armed", "rerouted_path",
-                    "rc_input", "cmd_override", "rtk_status", "sensors",
-                    "reroute_pending", "confirm_message", "lane_status",
-                    "mission_fence", "hacc")
-                for (t in topics) {
-                    webSocket.send("""{"op":"subscribe","topic":"$ns/$t"}""")
+                // Subscribe to topics with throttle_rate (ms) to avoid flooding.
+                // Rover publishes many topics at 25-50 Hz internally; the GQC UI
+                // only needs a fraction of that.  Event-driven topics (null rate)
+                // are delivered immediately.
+                val topicThrottle = mapOf(
+                    "center_pos"      to 200,   // 5 Hz — map marker update
+                    "heading"         to 200,   // 5 Hz — heading arrow
+                    "nav_status"      to 1000,  // 1 Hz — status badge
+                    "wp_active"       to 500,   // 2 Hz — waypoint progress
+                    "armed"           to null,   // event — arm state change
+                    "rerouted_path"   to null,   // event — path overlay (large)
+                    "rc_input"        to 500,   // 2 Hz — PPM display + link dots
+                    "cmd_override"    to 500,   // 2 Hz — autonomous PPM display
+                    "rtk_status"      to 1000,  // 1 Hz — RTK badge
+                    "sensors"         to 2000,  // 0.5 Hz — tank/temp
+                    "reroute_pending" to null,   // event — confirmation dialog
+                    "confirm_message" to null,   // event — user alert
+                    "lane_status"     to 2000,  // 0.5 Hz — lane info
+                    "mission_fence"   to null,   // event — obstacle polygons
+                    "hacc"            to 1000,  // 1 Hz — accuracy display
+                )
+                for ((t, rate) in topicThrottle) {
+                    val rateField = if (rate != null) ""","throttle_rate":$rate""" else ""
+                    webSocket.send("""{"op":"subscribe","topic":"$ns/$t"$rateField}""")
                 }
-                Log.e("ROSBRIDGE", "Subscribed to ${topics.size} topics on $ns")
+                Log.e("ROSBRIDGE", "Subscribed to ${topicThrottle.size} topics on $ns (throttled)")
             }
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
                 // Update heartbeat watchdog — any rosbridge message proves rover is alive
