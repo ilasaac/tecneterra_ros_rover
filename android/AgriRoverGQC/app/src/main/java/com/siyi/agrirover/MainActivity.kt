@@ -53,7 +53,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private val roverMissions             = HashMap<Int, List<LatLng>>()
     private val roverMissionBypass        = HashMap<Int, List<Boolean>>()  // parallel: is bypass WP?
     private val roverMissionVisible       = HashMap<Int, Boolean>()
-    private val roverMissionOverlays      = HashMap<Int, MutableList<Any>>()
+    // Separated overlay storage for incremental wp_active updates
+    private val roverWpDots               = HashMap<Int, MutableList<Marker>>()
+    private val roverSpinDots             = HashMap<Int, MutableMap<Int, Marker>>()
+    private val roverPolylines            = HashMap<Int, MutableList<Polyline>>()
+    // Bitmap descriptor cache — avoids re-creating identical bitmaps on every redraw
+    private val dotBitmapCache            = HashMap<Long, BitmapDescriptor>()
     private val roverNextWaypointIndex    = HashMap<Int, Int>()   // last MISSION_ITEM_REACHED seq per rover
 
     // Per-rover rerouted path received from navigator via TUNNEL (after obstacle avoidance)
@@ -272,11 +277,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     redrawRoverMissions()
                     Toast.makeText(this, "RV$sysId mission complete", Toast.LENGTH_SHORT).show()
                 } else {
+                    val oldIdx = roverNextWaypointIndex[sysId] ?: 0
                     roverNextWaypointIndex[sysId] = seq
                     val total = roverReroutedPaths[sysId]?.size ?: roverMissions[sysId]?.size ?: 0
                     val wpView = if (sysId == 1) txtRv1Wp else txtRv2Wp
                     wpView.text = if (total > 0) "WP: ${seq + 1}/$total" else "WP: --"
-                    redrawRoverMissions()
+                    // Incremental update — only swap icons on changed markers + rebuild polylines
+                    if (seq >= oldIdx && roverWpDots[sysId]?.isNotEmpty() == true) {
+                        updateWpWalked(sysId, oldIdx, seq)
+                    } else {
+                        redrawRoverMissions()
+                    }
                 }
             }
         },
@@ -1073,22 +1084,18 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun redrawRoverMissions() {
         if (!::map.isInitialized) return
-        roverMissionOverlays.values.forEach { overlays ->
-            overlays.forEach {
-                when (it) {
-                    is Marker   -> it.remove()
-                    is Polyline -> it.remove()
-                }
-            }
-            overlays.clear()
-        }
-        // Iterate all rovers that have either uploaded mission or rerouted path
+        // Clear all existing overlays
+        roverWpDots.values.forEach { list -> list.forEach { it.remove() } }
+        roverWpDots.clear()
+        roverSpinDots.values.forEach { m -> m.values.forEach { it.remove() } }
+        roverSpinDots.clear()
+        roverPolylines.values.forEach { list -> list.forEach { it.remove() } }
+        roverPolylines.clear()
+
         val allRoverIds = roverMissions.keys + roverReroutedPaths.keys
         for (roverId in allRoverIds) {
             if (roverMissionVisible[roverId] == false) continue
 
-            // Use rerouted path (what rover actually follows) if available,
-            // fall back to uploaded mission points
             val rerouted = roverReroutedPaths[roverId]
             val points: List<LatLng>
             val bypass: List<Boolean>
@@ -1101,7 +1108,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
             if (points.isEmpty()) continue
 
-            val overlays     = roverMissionOverlays.getOrPut(roverId) { mutableListOf() }
             val pendingColor = if (roverId == 1) Color.parseColor("#F44336")
                                else              Color.parseColor("#2196F3")
             val walkedColor  = if (roverId == 1) Color.parseColor("#FFCDD2")
@@ -1109,36 +1115,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             val bypassColor  = if (roverId == 1) Color.parseColor("#FF9800")
                                else              Color.parseColor("#00BCD4")
             val walkedIdx    = roverNextWaypointIndex[roverId] ?: 0
-            val dashPattern  = listOf(Dot(), Gap(10f))
 
-            // Walked portion — light rover color
-            if (walkedIdx > 0) {
-                val walked = (0..min(walkedIdx, points.size - 1)).map { points[it] }
-                overlays.add(map.addPolyline(
-                    PolylineOptions().addAll(walked).width(8f)
-                        .color(walkedColor).zIndex(2f)))
-            }
-            // Pending portion — split by bypass flag for distinct rendering
-            if (walkedIdx < points.size) {
-                val start = max(0, walkedIdx - 1)
-                var segStart = start
-                var segIsBypass = bypass.getOrElse(start) { false }
-                for (i in (start + 1)..points.size) {
-                    val curBypass = if (i < points.size) bypass.getOrElse(i) { false } else !segIsBypass
-                    if (curBypass != segIsBypass || i == points.size) {
-                        val segPts = (segStart..min(i, points.size - 1)).map { points[it] }
-                        if (segPts.size >= 2) {
-                            val opts = PolylineOptions().addAll(segPts).width(8f).zIndex(2f)
-                            if (segIsBypass) opts.color(bypassColor).pattern(dashPattern)
-                            else             opts.color(pendingColor)
-                            overlays.add(map.addPolyline(opts))
-                        }
-                        segStart = min(i, points.size - 1)
-                        segIsBypass = curBypass
-                    }
-                }
-            }
-            // Waypoint dots — bypass dots in bypass color
+            // Polylines (cheap — just a few objects)
+            rebuildPolylines(roverId, points, bypass, walkedIdx,
+                            pendingColor, walkedColor, bypassColor)
+
+            // Waypoint dots — stored in indexed list for incremental updates
+            val dots = ArrayList<Marker>(points.size)
             points.forEachIndexed { i, pt ->
                 val isBypass = bypass.getOrElse(i) { false }
                 val dotColor = if (i < walkedIdx) walkedColor
@@ -1146,11 +1129,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                                else pendingColor
                 map.addMarker(MarkerOptions().position(pt).anchor(0.5f, 0.5f)
                     .icon(createDotBitmap(dotColor, 7)).flat(true).zIndex(2f))
-                    ?.also { overlays.add(it) }
+                    ?.also { dots.add(it) }
             }
+            roverWpDots[roverId] = dots
 
-            // Spin-in-place markers — detect sharp turns from waypoint geometry
-            val pivotThreshold = 50.0  // degrees — matches navigator pivot_threshold
+            // Spin-in-place markers — stored by index for incremental icon swaps
+            val spins = mutableMapOf<Int, Marker>()
+            val pivotThreshold = 50.0
             for (i in 1 until points.size - 1) {
                 val inBrg  = bearingTo(points[i - 1], points[i])
                 val outBrg = bearingTo(points[i], points[i + 1])
@@ -1160,10 +1145,85 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     map.addMarker(MarkerOptions().position(points[i]).anchor(0.5f, 0.5f)
                         .icon(createDotBitmap(spinColor, 12)).flat(true).zIndex(3f)
                         .title("Spin ${turn.toInt()}°"))
-                        ?.also { overlays.add(it) }
+                        ?.also { spins[i] = it }
+                }
+            }
+            roverSpinDots[roverId] = spins
+        }
+    }
+
+    /** Rebuild only polylines for [roverId] — called during incremental wp_active updates. */
+    private fun rebuildPolylines(roverId: Int, points: List<LatLng>, bypass: List<Boolean>,
+                                 walkedIdx: Int, pendingColor: Int, walkedColor: Int,
+                                 bypassColor: Int) {
+        roverPolylines[roverId]?.forEach { it.remove() }
+        val polylines = mutableListOf<Polyline>()
+        val dashPattern = listOf(Dot(), Gap(10f))
+
+        if (walkedIdx > 0) {
+            val walked = (0..min(walkedIdx, points.size - 1)).map { points[it] }
+            polylines.add(map.addPolyline(
+                PolylineOptions().addAll(walked).width(8f)
+                    .color(walkedColor).zIndex(2f)))
+        }
+        if (walkedIdx < points.size) {
+            val start = max(0, walkedIdx - 1)
+            var segStart = start
+            var segIsBypass = bypass.getOrElse(start) { false }
+            for (i in (start + 1)..points.size) {
+                val curBypass = if (i < points.size) bypass.getOrElse(i) { false } else !segIsBypass
+                if (curBypass != segIsBypass || i == points.size) {
+                    val segPts = (segStart..min(i, points.size - 1)).map { points[it] }
+                    if (segPts.size >= 2) {
+                        val opts = PolylineOptions().addAll(segPts).width(8f).zIndex(2f)
+                        if (segIsBypass) opts.color(bypassColor).pattern(dashPattern)
+                        else             opts.color(pendingColor)
+                        polylines.add(map.addPolyline(opts))
+                    }
+                    segStart = min(i, points.size - 1)
+                    segIsBypass = curBypass
                 }
             }
         }
+        roverPolylines[roverId] = polylines
+    }
+
+    /** Incremental wp_active update — swap icons on newly-walked markers + rebuild polylines.
+     *  Avoids tearing down and re-adding all N markers on every 1 Hz tick. */
+    private fun updateWpWalked(roverId: Int, oldIdx: Int, newIdx: Int) {
+        if (!::map.isInitialized) return
+        val dots = roverWpDots[roverId]
+        if (dots == null || dots.isEmpty()) { redrawRoverMissions(); return }
+
+        val walkedColor = if (roverId == 1) Color.parseColor("#FFCDD2")
+                          else              Color.parseColor("#BBDEFB")
+        val walkedDot   = createDotBitmap(walkedColor, 7)
+        val walkedSpin  = createDotBitmap(walkedColor, 12)
+        val spins       = roverSpinDots[roverId] ?: emptyMap()
+
+        // Swap icons on newly-walked markers (typically just 1)
+        for (i in oldIdx until min(newIdx, dots.size)) {
+            dots[i].setIcon(walkedDot)
+            spins[i]?.setIcon(walkedSpin)
+        }
+
+        // Rebuild polylines only (just a few objects, not N markers)
+        val rerouted = roverReroutedPaths[roverId]
+        val points: List<LatLng>
+        val bypass: List<Boolean>
+        if (rerouted != null && rerouted.isNotEmpty()) {
+            points = rerouted.map { LatLng(it.first, it.second) }
+            bypass = rerouted.map { it.third }
+        } else {
+            points = roverMissions[roverId] ?: return
+            bypass = roverMissionBypass[roverId] ?: emptyList()
+        }
+        val pendingColor = if (roverId == 1) Color.parseColor("#F44336")
+                           else              Color.parseColor("#2196F3")
+        val bypassColor  = if (roverId == 1) Color.parseColor("#FF9800")
+                           else              Color.parseColor("#00BCD4")
+        rebuildPolylines(roverId, points, bypass, newIdx,
+                        pendingColor, walkedColor, bypassColor)
     }
 
     private fun bearingTo(a: LatLng, b: LatLng): Double {
@@ -1186,11 +1246,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun createDotBitmap(color: Int, sizeDp: Int): BitmapDescriptor {
-        val px = (sizeDp * resources.displayMetrics.density + 0.5f).toInt()
-        val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
-        Canvas(bmp).drawCircle(px / 2f, px / 2f, px / 2f,
-            Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color })
-        return BitmapDescriptorFactory.fromBitmap(bmp)
+        val key = (color.toLong() shl 32) or (sizeDp.toLong() and 0xFFFFFFFFL)
+        return dotBitmapCache.getOrPut(key) {
+            val px = (sizeDp * resources.displayMetrics.density + 0.5f).toInt()
+            val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
+            Canvas(bmp).drawCircle(px / 2f, px / 2f, px / 2f,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color })
+            BitmapDescriptorFactory.fromBitmap(bmp)
+        }
     }
 
     // ─── Rerouted path drawing ────────────────────────────────────────────────
