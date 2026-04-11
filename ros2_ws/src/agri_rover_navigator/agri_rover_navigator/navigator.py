@@ -937,12 +937,27 @@ class NavigatorNode(Node):
             rover_hdg = bearing_to(rover_lat, rover_lon,
                                    wp0.latitude, wp0.longitude)
 
-        # Desired arrival heading = first mission segment direction
+        # Desired arrival heading = mission direction at WP[0].
+        # Look ahead until we find a point >= 2 m from WP[0] so the
+        # bearing is stable (consecutive recorded points can be < 0.5 m
+        # apart, giving unreliable headings).
+        goal_hdg = None
         if len(self._path) >= 2:
-            goal_hdg = bearing_to(wp0.latitude, wp0.longitude,
-                                  self._path[1].latitude,
-                                  self._path[1].longitude)
-        else:
+            for i in range(1, len(self._path)):
+                d = haversine(wp0.latitude, wp0.longitude,
+                              self._path[i].latitude,
+                              self._path[i].longitude)
+                if d >= 2.0:
+                    goal_hdg = bearing_to(wp0.latitude, wp0.longitude,
+                                          self._path[i].latitude,
+                                          self._path[i].longitude)
+                    break
+            if goal_hdg is None:
+                # All points within 2 m — use the last one
+                goal_hdg = bearing_to(wp0.latitude, wp0.longitude,
+                                      self._path[-1].latitude,
+                                      self._path[-1].longitude)
+        if goal_hdg is None:
             goal_hdg = bearing_to(rover_lat, rover_lon,
                                   wp0.latitude, wp0.longitude)
 
