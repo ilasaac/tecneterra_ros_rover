@@ -1818,14 +1818,23 @@ class NavigatorNode(Node):
             return
 
         # Runtime obstacle proximity — halt if rover enters any expanded polygon
+        # Publish alert only on first detection to avoid flooding GQC via rosbridge
         if self._expanded_polygons:
+            inside_obs = False
             for poly in self._expanded_polygons:
                 if self._point_in_polygon(rlat, rlon, poly):
+                    inside_obs = True
+                    break
+            if inside_obs:
+                self._publish_halt()
+                if not getattr(self, '_obstacle_halt_sent', False):
+                    self._obstacle_halt_sent = True
                     self.get_logger().error('OBSTACLE PROXIMITY — rover inside safety zone, halting')
-                    self._publish_halt()
                     m = Int32(); m.data = -3
                     self.wp_pub.publish(m)
-                    return
+                return
+            else:
+                self._obstacle_halt_sent = False
 
         # XTE telemetry
         xte_msg = Float32(); xte_msg.data = abs(cte)
