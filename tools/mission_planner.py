@@ -1315,6 +1315,8 @@ let queueIndex    = 0;       // currently previewed mission
 let queueRunning  = false;   // auto-upload in progress
 let queueRunIdx   = -1;      // mission currently executing on rover
 let baseMission   = null;    // original waypoints before offset generation
+let queueCooldownUntil = 0;  // timestamp: ignore completion signals until this time
+let queueSeenStart = false;  // true once rover confirms mission started (wp_active >= 0)
 
 // Drag / pan tracking
 let _drag    = null;   // {type:'wp',idx} | {type:'pan',sx,sy,sLat,sLon}
@@ -3558,6 +3560,10 @@ function drawQueueGhosts() {
 
 // ── Auto-upload queue ────────────────────────────────────────────
 async function uploadQueueMission(idx) {
+  // Block completion polling until rover confirms new mission started
+  queueCooldownUntil = Date.now() + 15000;  // 15 s hard minimum
+  queueSeenStart = false;
+
   const roverId = parseInt(document.getElementById('queue-rover').value);
   const ipEl = document.getElementById('r-ip-rv' + roverId);
   if (!ipEl || !ipEl.value) {
@@ -3686,6 +3692,23 @@ function pollQueueStatus() {
   if (!r) return;
   const now = Date.now() / 1000;
   if (now - r.ts > 10) return;  // stale
+
+  // ── Guard: wait for rover to confirm new mission started ─────
+  // After each upload the old state (wp_active==-1, armed==false)
+  // lingers until the navigator processes the new mission.  Without
+  // this guard, pollQueueStatus sees the OLD completion and
+  // immediately advances — uploading two missions in a row.
+  if (!queueSeenStart) {
+    // Hard cooldown: don't even look until upload + arm sequence is done
+    if (Date.now() < queueCooldownUntil) return;
+    // Soft gate: rover must report wp_active >= 0 (mission loaded)
+    if (r.wp_active !== undefined && r.wp_active >= 0) {
+      queueSeenStart = true;
+      status(`Queue: mission ${queueRunIdx + 1} running (wp ${r.wp_active})...`, '#27ae60');
+    }
+    return;  // don't check completion yet
+  }
+
   // Detect mission complete: wp_active == -1 and armed == false
   if (r.wp_active === -1 && r.armed === false) {
     const nextIdx = queueRunIdx + 1;
