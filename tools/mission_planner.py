@@ -840,6 +840,7 @@ tr:hover td{background:#1e1e3a}
     <button class="btn-red" onclick="clearAll()">&#10005; Clear</button>
     <button class="btn-orange" onclick="toggleGenPanel()">&#9881; Gen</button>
     <button class="btn-blue" onclick="toggleShiftPanel()" title="Generate offset missions to avoid ruts">&#8644; Shift</button>
+    <button class="btn-blue" onclick="toggleLoopPanel()" title="Repeat mission N times (loop)">&#8635; Loop</button>
     <button id="btn-lanes" class="btn-orange" onclick="toggleLaneMode()" title="Draw directed lanes for grid navigation">&#9776; Lanes</button>
     <button class="btn-green" onclick="goToRover()" title="Center map on live rover position">&#8982; Rover</button>
     <span id="rover-status" style="font-size:10px;color:#556;align-self:center;margin-left:2px" title="Live rover beacon status"></span>
@@ -1161,6 +1162,18 @@ tr:hover td{background:#1e1e3a}
   <div class="grow" style="margin-top:7px">
     <button class="btn-green" style="flex:1;padding:4px" onclick="runPathShift()">&#9654; Generate</button>
   </div>
+</div>
+<div id="loop-panel" style="display:none;position:fixed;left:318px;top:45px;z-index:2000;background:#1a1a2e;border:1px solid #0f3460;border-radius:4px;padding:10px;width:220px;font-size:11px;color:#ddd;box-shadow:0 4px 14px rgba(0,0,0,.8)">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+    <b style="color:#fff;font-size:12px">&#8635; Loop Mission</b>
+    <button onclick="toggleLoopPanel()" style="background:none;border:none;color:#aaa;font-size:15px;cursor:pointer;padding:0 3px">&#10005;</button>
+  </div>
+  <div style="margin-bottom:5px;color:#888">Repeat current mission N times, joining last point back to first.</div>
+  <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px">
+    <label style="margin:0;width:50px">Laps</label>
+    <input id="loop-count" type="number" min="2" max="100" value="3" style="flex:1;background:#0a1020;color:#eee;border:1px solid #446;padding:2px 4px;border-radius:2px">
+  </div>
+  <button class="btn-green" style="width:100%;padding:4px" onclick="runLoop()">&#9654; Generate Loop</button>
 </div>
 <div id="lane-panel" style="display:none;position:fixed;left:318px;top:45px;z-index:2000;background:#1a1a2e;border:1px solid #0f3460;border-radius:4px;padding:10px;width:260px;font-size:11px;color:#ddd;box-shadow:0 4px 14px rgba(0,0,0,.8)">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
@@ -3294,6 +3307,48 @@ function applyGenerate(append) {
   fitAll();
   toggleGenPanel();
   status(`Generated ${newWps.length} waypoints (${pat}).`);
+}
+
+// ── Loop mission (repeat N laps) ─────────────────────────────────
+function toggleLoopPanel() {
+  const p = document.getElementById('loop-panel');
+  p.style.display = p.style.display === 'block' ? 'none' : 'block';
+}
+
+function runLoop() {
+  const srcPts = (optimizedPath && optimizedPath.length) ? optimizedPath : waypoints;
+  if (srcPts.length < 2) {
+    status('Load a mission first (need at least 2 waypoints).', '#e74c3c');
+    return;
+  }
+  const laps = parseInt(document.getElementById('loop-count').value) || 3;
+  const base = srcPts.map(w => {
+    const s = w.servo || w.servos || {};
+    return {
+      lat: w.lat, lon: w.lon, speed: w.speed || 0,
+      hold_secs: w.hold_secs || 0, lane_tag: w.lane_tag || '',
+      servos: {
+        '5': s['5'] || s[5] || 1500, '6': s['6'] || s[6] || 1500,
+        '7': s['7'] || s[7] || 1500, '8': s['8'] || s[8] || 1500,
+      },
+    };
+  });
+
+  // Build looped path: repeat base N times, each lap joins last→first
+  const looped = [];
+  for (let lap = 0; lap < laps; lap++) {
+    for (let i = 0; i < base.length; i++) {
+      // Skip first point on laps 2+ if it duplicates last point
+      if (lap > 0 && i === 0) continue;
+      looped.push({...base[i], servos: {...base[i].servos}});
+    }
+  }
+  waypoints = looped;
+  optimizedPath = null;
+  document.getElementById('loop-panel').style.display = 'none';
+  refresh();
+  fitAll();
+  status(`Loop: ${base.length} pts × ${laps} laps = ${looped.length} waypoints.`, '#27ae60');
 }
 
 // ── Path Shift — offset mission generation ───────────────────────
