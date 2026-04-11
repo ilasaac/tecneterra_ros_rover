@@ -562,6 +562,7 @@ Connect a **u-blox GPS module** via USB serial to the host PC running mission_pl
 - Ghost lines for all missions drawn as faint dashed lines on canvas
 - Current mission displayed at full brightness
 - Rover selector (RV1/RV2)
+- **Auto Upload & Arm** checkbox: when checked, `runPathShift()` auto-starts the queue after generating offset missions. Queue upload sends ARM twice — the second ARM 3 s after the first handles the navigator's approach-path disarm-for-review (skips manual review in auto mode). Mode is set by RC CH9 — queue only sends ARM, never MODE.
 - **Start Queue**: uploads mission[0] via rosbridge, arms rover
 - **Auto-advance**: polls `wp_active` and `armed` from beacon every 2 s; when `wp_active == -1` and `armed == false`, uploads next mission after 3 s settle delay
 - **Stop Queue**: cancels auto-upload

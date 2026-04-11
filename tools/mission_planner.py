@@ -1223,6 +1223,10 @@ tr:hover td{background:#1e1e3a}
       <option value="2">RV2</option>
     </select>
   </div>
+  <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px">
+    <input type="checkbox" id="queue-auto-arm" style="margin:0">
+    <label for="queue-auto-arm" style="margin:0;cursor:pointer">Auto Upload &amp; Arm</label>
+  </div>
   <div class="grow">
     <button id="btn-queue-start" class="btn-green" style="flex:1;padding:4px" onclick="startQueue()">&#9654; Start Queue</button>
     <button id="btn-queue-stop" class="btn-red" style="flex:1;padding:4px;display:none" onclick="stopQueue()">&#9632; Stop</button>
@@ -3463,6 +3467,11 @@ function runPathShift() {
   updateQueueDisplay();
   fitAll();
   status(`Generated ${missionQueue.length} missions (base + ${offsets.length} offsets).`, '#27ae60');
+
+  // Auto-start queue if checkbox is checked
+  if (document.getElementById('queue-auto-arm').checked) {
+    setTimeout(() => startQueue(), 500);
+  }
 }
 
 // ── Queue navigation ─────────────────────────────────────────────
@@ -3591,15 +3600,20 @@ async function uploadQueueMission(idx) {
     }
 
     // Wait briefly for navigator to process, then arm
+    // (mode is set by RC CH9 — only arm here)
     await new Promise(r => setTimeout(r, 1500));
     ws.send(JSON.stringify({
       op: 'publish', topic: ns + '/armed',
       type: 'std_msgs/msg/Bool', msg: {data: true}
     }));
-    await new Promise(r => setTimeout(r, 300));
+
+    // Re-arm after approach path planning: navigator may disarm to show
+    // the smooth approach path for review.  In auto-queue mode we skip
+    // the review and re-arm so the rover starts immediately.
+    await new Promise(r => setTimeout(r, 3000));
     ws.send(JSON.stringify({
-      op: 'publish', topic: ns + '/mode',
-      type: 'std_msgs/msg/String', msg: {data: 'AUTONOMOUS'}
+      op: 'publish', topic: ns + '/armed',
+      type: 'std_msgs/msg/Bool', msg: {data: true}
     }));
 
     ws.close();
