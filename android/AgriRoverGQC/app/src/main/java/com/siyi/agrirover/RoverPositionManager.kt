@@ -200,26 +200,22 @@ class RoverPositionManager(
             override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
                 Log.e("ROSBRIDGE", "Connected to RV$sysId rosbridge")
                 rosbridgeConnected[sysId] = true
-                // Subscribe to topics with throttle_rate (ms) to avoid flooding.
-                // Rover publishes many topics at 25-50 Hz internally; the GQC UI
-                // only needs a fraction of that.  Event-driven topics (null rate)
-                // are delivered immediately.
+                // Subscribe only to topics the GQC UI actually needs.
+                // Debug topics (cmd_override, sensors, lane_status, xte) removed
+                // to cut message volume — two rovers double the load.
                 val topicThrottle = mapOf(
-                    "center_pos"      to 200,   // 5 Hz — map marker update
-                    "heading"         to 200,   // 5 Hz — heading arrow
-                    "nav_status"      to 1000,  // 1 Hz — status badge
-                    "wp_active"       to 500,   // 2 Hz — waypoint progress
+                    "center_pos"      to 500,   // 2 Hz — map marker
+                    "heading"         to 500,   // 2 Hz — heading arrow
+                    "nav_status"      to 2000,  // 0.5 Hz — status badge
+                    "wp_active"       to 1000,  // 1 Hz — waypoint progress
                     "armed"           to null,   // event — arm state change
-                    "rerouted_path"   to null,   // event — path overlay (large)
-                    "rc_input"        to 500,   // 2 Hz — PPM display + link dots
-                    "cmd_override"    to 500,   // 2 Hz — autonomous PPM display
-                    "rtk_status"      to 1000,  // 1 Hz — RTK badge
-                    "sensors"         to 2000,  // 0.5 Hz — tank/temp
+                    "rerouted_path"   to null,   // event — path overlay
+                    "rc_input"        to 1000,  // 1 Hz — link dots + PPM
+                    "rtk_status"      to 2000,  // 0.5 Hz — RTK badge
                     "reroute_pending" to null,   // event — confirmation dialog
                     "confirm_message" to null,   // event — user alert
-                    "lane_status"     to 2000,  // 0.5 Hz — lane info
                     "mission_fence"   to null,   // event — obstacle polygons
-                    "hacc"            to 1000,  // 1 Hz — accuracy display
+                    "hacc"            to 2000,  // 0.5 Hz — accuracy
                 )
                 for ((t, rate) in topicThrottle) {
                     val rateField = if (rate != null) ""","throttle_rate":$rate""" else ""
