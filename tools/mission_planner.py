@@ -3372,16 +3372,19 @@ function _pointInAnyObstacle(lat, lon) {
 }
 
 function _chaikinSmooth(wps, passes) {
-  // Chaikin corner-cutting — preserves first, last, and turn markers
-  if (passes <= 0 || wps.length < 3) return wps;
+  // Chaikin corner-cutting — preserves first 2, last 2, and turn markers.
+  // Keeping the first/last segments intact prevents the smoothing from
+  // creating curves at the start/end of offset missions (they must stay
+  // parallel to the base path).
+  if (passes <= 0 || wps.length < 4) return wps;
   let pts = [...wps];
   for (let p = 0; p < passes; p++) {
-    const out = [pts[0]];  // keep first
-    for (let i = 0; i < pts.length - 1; i++) {
+    const out = [pts[0], pts[1]];  // keep first 2 (preserve start segment)
+    for (let i = 1; i < pts.length - 2; i++) {
       const a = pts[i], b = pts[i + 1];
       // Preserve turn markers exactly
       if (a.speed < 0 || b.speed < 0) {
-        if (i > 0 || a.speed < 0) out.push(a);
+        out.push(a);
         continue;
       }
       const q = {
@@ -3398,7 +3401,7 @@ function _chaikinSmooth(wps, passes) {
       };
       out.push(q, r);
     }
-    out.push(pts[pts.length - 1]);  // keep last
+    out.push(pts[pts.length - 2], pts[pts.length - 1]);  // keep last 2
     pts = out;
   }
   return pts;
