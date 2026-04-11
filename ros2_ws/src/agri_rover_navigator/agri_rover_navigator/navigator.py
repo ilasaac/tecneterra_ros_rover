@@ -914,32 +914,82 @@ class NavigatorNode(Node):
             self.get_logger().info('[RESOURCE] Re-armed at base — resuming mission')
 
     def _plan_approach_path(self, rover_lat: float, rover_lon: float):
-        """Plan A-star path from rover to WP[0], prepend to mission, disarm for review."""
-        from agri_rover_navigator.grid_planner import plan_around_obstacles
-        wp0 = self._path[0]
-        planned = plan_around_obstacles(
-            start=(rover_lat, rover_lon),
-            goal=(wp0.latitude, wp0.longitude),
-            obstacles=self._obstacle_polygons,
-            clearance_m=self._clearance,
-            resolution_m=0.10,
-            padding_m=self._clearance + 2.0,
+        """Plan a smooth heading-aware path from rover to WP[0].
+
+        1. Try a cubic-Bézier curve tangent to the rover's current heading
+           (avoids axis turns).  The curve arrives aligned with the first
+           mission segment.
+        2. If the smooth path crosses an obstacle, fall back to the A* grid
+           planner.
+        3. Prepend approach waypoints to the mission and disarm for review.
+        """
+        from agri_rover_navigator.grid_planner import (
+            plan_smooth_approach, plan_around_obstacles,
         )
+        wp0 = self._path[0]
+
+        # ── headings ──────────────────────────────────────────────
+        rover_hdg = self._heading
+        # Fallback: if heading is still zero and no front antenna, use
+        # bearing from rover to WP[0] (best we can do).
+        if rover_hdg == 0.0 and (self._fix_front is None
+                                  or self._fix_front.latitude == 0.0):
+            rover_hdg = bearing_to(rover_lat, rover_lon,
+                                   wp0.latitude, wp0.longitude)
+
+        # Desired arrival heading = first mission segment direction
+        if len(self._path) >= 2:
+            goal_hdg = bearing_to(wp0.latitude, wp0.longitude,
+                                  self._path[1].latitude,
+                                  self._path[1].longitude)
+        else:
+            goal_hdg = bearing_to(rover_lat, rover_lon,
+                                  wp0.latitude, wp0.longitude)
+
+        # ── 1. try smooth Bézier approach ─────────────────────────
+        planned = plan_smooth_approach(
+            start=(rover_lat, rover_lon),
+            start_heading_deg=rover_hdg,
+            goal=(wp0.latitude, wp0.longitude),
+            goal_heading_deg=goal_hdg,
+            expanded_obstacles=self._expanded_polygons,
+        )
+        if planned is not None:
+            self.get_logger().info(
+                f'Smooth approach: {len(planned)} pts, '
+                f'rover hdg {rover_hdg:.0f}° → goal hdg {goal_hdg:.0f}°')
+        else:
+            # ── 2. fall back to A* grid planner ───────────────────
+            self.get_logger().info(
+                'Smooth approach blocked by obstacle — falling back to A*')
+            planned = plan_around_obstacles(
+                start=(rover_lat, rover_lon),
+                goal=(wp0.latitude, wp0.longitude),
+                obstacles=self._obstacle_polygons,
+                clearance_m=self._clearance,
+                resolution_m=0.10,
+                padding_m=self._clearance + 2.0,
+            )
+
         if not planned or len(planned) < 2:
-            self.get_logger().warn('Approach planning failed — proceeding without')
+            self.get_logger().warn(
+                'Approach planning failed — proceeding without')
             self._approach_planned = True
             return
-        # Build approach waypoints — speed proportional to remaining distance
+
+        # ── build approach waypoints (decel ramp) ─────────────────
         total_dist = sum(
-            haversine(planned[i][0], planned[i][1], planned[i+1][0], planned[i+1][1])
+            haversine(planned[i][0], planned[i][1],
+                      planned[i + 1][0], planned[i + 1][1])
             for i in range(len(planned) - 1))
-        approach_wps = []
+        approach_wps: list = []
         remaining = total_dist
         for i, (lat, lon) in enumerate(planned[:-1]):
             frac = remaining / max(total_dist, 0.1)
             spd = self._min_speed + (self._max_speed - self._min_speed) * frac
             if i + 1 < len(planned):
-                remaining -= haversine(lat, lon, planned[i+1][0], planned[i+1][1])
+                remaining -= haversine(lat, lon,
+                                       planned[i + 1][0], planned[i + 1][1])
             wp = MissionWaypoint()
             wp.seq = -99
             wp.latitude = lat
@@ -948,17 +998,21 @@ class NavigatorNode(Node):
             wp.hold_secs = 0.0
             wp.acceptance_radius = self._accept_r
             approach_wps.append(wp)
+
         # Check angle between approach arrival and first mission segment.
-        # If > 30°, insert a turn point so the rover pivots at WP[0].
+        # With the Bézier this should be near-zero; kept as safety net.
         if len(planned) >= 2 and len(self._path) >= 2:
             approach_brg = bearing_to(planned[-2][0], planned[-2][1],
                                       planned[-1][0], planned[-1][1])
-            mission_brg = bearing_to(self._path[0].latitude, self._path[0].longitude,
-                                     self._path[1].latitude, self._path[1].longitude)
+            mission_brg = bearing_to(self._path[0].latitude,
+                                     self._path[0].longitude,
+                                     self._path[1].latitude,
+                                     self._path[1].longitude)
             angle_diff = abs((mission_brg - approach_brg + 180) % 360 - 180)
             if angle_diff > 30.0:
                 self.get_logger().info(
-                    f'Approach→mission angle {angle_diff:.0f}° > 30° — adding turn at WP[0]')
+                    f'Approach→mission angle {angle_diff:.0f}° > 30° '
+                    f'— adding turn at WP[0]')
                 needs_turn_at_junction = True
             else:
                 needs_turn_at_junction = False
@@ -996,8 +1050,8 @@ class NavigatorNode(Node):
                     if self._point_in_polygon(wp.latitude, wp.longitude, poly):
                         self.get_logger().warn(
                             f'Approach WP[{i}] inside obstacle — removing')
-                        wp.latitude = approach_wps[max(0, i-1)].latitude
-                        wp.longitude = approach_wps[max(0, i-1)].longitude
+                        wp.latitude = approach_wps[max(0, i - 1)].latitude
+                        wp.longitude = approach_wps[max(0, i - 1)].longitude
                         break
 
         # Publish path + run preflight sim (same as obstacle reroute pipeline)

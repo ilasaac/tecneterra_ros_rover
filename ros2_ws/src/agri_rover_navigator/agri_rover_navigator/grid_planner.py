@@ -20,6 +20,123 @@ import heapq
 import math
 
 
+# ---------------------------------------------------------------------------
+# Smooth heading-aware approach path (cubic Bézier)
+# ---------------------------------------------------------------------------
+
+def plan_smooth_approach(
+    start: tuple[float, float],
+    start_heading_deg: float,
+    goal: tuple[float, float],
+    goal_heading_deg: float,
+    expanded_obstacles: list[list[tuple[float, float]]],
+    point_spacing_m: float = 0.10,
+    min_turn_radius: float = 1.5,
+) -> list[tuple[float, float]] | None:
+    """Generate a smooth heading-aware approach path using cubic Bézier.
+
+    The curve is tangent to *start_heading_deg* at the start and arrives
+    tangent to *goal_heading_deg* at the goal — no axis turns.
+
+    Parameters
+    ----------
+    start, goal          : (lat, lon) degrees
+    start_heading_deg    : rover heading (north = 0, CW)
+    goal_heading_deg     : desired arrival heading (north = 0, CW)
+    expanded_obstacles   : polygons already expanded by clearance
+    point_spacing_m      : sample spacing along the curve (metres)
+    min_turn_radius      : minimum effective turn radius (metres)
+
+    Returns
+    -------
+    List of (lat, lon) waypoints, or *None* if the path crosses an obstacle.
+    """
+    dist = _haversine(start[0], start[1], goal[0], goal[1])
+    if dist < 0.5:
+        return [start, goal]
+
+    # Control-point distance — longer for larger heading differences
+    angle_diff = abs((goal_heading_deg - start_heading_deg + 180) % 360 - 180)
+    heading_factor = 1.0 + angle_diff / 180.0        # 1.0 → 2.0
+    cp_dist = max(min_turn_radius, dist / 3.0 * heading_factor)
+    cp_dist = min(cp_dist, dist * 0.8)               # don't overshoot
+
+    # Flat-earth projection centred at start
+    cos_lat = math.cos(math.radians(start[0])) or 1e-9
+    M_LAT = 111_320.0
+    M_LON = 111_320.0 * cos_lat
+
+    def to_m(lat, lon):
+        return (lon - start[1]) * M_LON, (lat - start[0]) * M_LAT
+
+    def to_gps(x, y):
+        return start[0] + y / M_LAT, start[1] + x / M_LON
+
+    # Headings → math angle (north CW → east CCW)
+    s_rad = math.radians(90.0 - start_heading_deg)
+    g_rad = math.radians(90.0 - goal_heading_deg)
+
+    sx, sy = 0.0, 0.0
+    gx, gy = to_m(*goal)
+
+    # Bézier control points
+    cp1x = sx + cp_dist * math.cos(s_rad)
+    cp1y = sy + cp_dist * math.sin(s_rad)
+    cp2x = gx - cp_dist * math.cos(g_rad)
+    cp2y = gy - cp_dist * math.sin(g_rad)
+
+    # Sample the curve
+    n_pts = max(10, int(dist / point_spacing_m))
+    path_m: list[tuple[float, float]] = []
+    for i in range(n_pts + 1):
+        t = i / n_pts
+        mt = 1.0 - t
+        x = (mt**3 * sx + 3 * mt**2 * t * cp1x
+             + 3 * mt * t**2 * cp2x + t**3 * gx)
+        y = (mt**3 * sy + 3 * mt**2 * t * cp1y
+             + 3 * mt * t**2 * cp2y + t**3 * gy)
+        path_m.append((x, y))
+
+    # Check every sample against expanded obstacles (already include clearance)
+    if expanded_obstacles:
+        obs_m = [[to_m(lat, lon) for lat, lon in poly]
+                 for poly in expanded_obstacles]
+        for px, py in path_m:
+            for poly in obs_m:
+                if _pip(px, py, poly):
+                    return None          # blocked → caller falls back to A*
+
+    # Convert to GPS, pin endpoints exactly
+    path_gps = [start] + [to_gps(x, y) for x, y in path_m[1:-1]] + [goal]
+    return path_gps
+
+
+def _haversine(lat1, lon1, lat2, lon2):
+    """Quick haversine distance in metres."""
+    R = 6_371_000.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _pip(px, py, poly):
+    """Point-in-polygon (ray casting) in flat-earth metres."""
+    n = len(poly)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if ((yi > py) != (yj > py)
+                and px < (xj - xi) * (py - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
 def plan_around_obstacles(
     start: tuple[float, float],
     goal: tuple[float, float],

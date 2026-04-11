@@ -383,6 +383,11 @@ Waypoint speed: recorded with timestamps during REC; sent as `z` field of NAV_WA
 
 **Obstacle detection:** When the uploaded path crosses an obstacle polygon, the navigator disarms immediately and publishes a `confirm_message` explaining which segment is blocked. No rerouting — user must adjust the mission. Obstacle polygons are also used for lane graph connection pruning (base-return routing).
 
+**Smooth approach path** (`_plan_approach_path`): When the rover arms >1.5 m from WP[0], the navigator generates a smooth heading-aware approach path:
+1. **Primary:** cubic Bézier curve tangent to the rover's current heading at departure and aligned with the first mission segment at arrival. Control-point distance scales with heading difference (wider curves for larger turns). Checked against expanded obstacle polygons — every 0.1 m sample must be outside all obstacles.
+2. **Fallback:** if the Bézier crosses an obstacle, falls back to A* grid planner (`plan_around_obstacles`).
+3. Approach waypoints (seq = -99) are prepended to the mission with a deceleration speed ramp. Navigator disarms after planning so the user can review the approach on GQC, then re-arm to start.
+
 **Base-return confirmation:** When base-return triggers without a lane map, navigator publishes `confirm_message` + `reroute_pending=True`. GQC shows Confirm/Reject dialog via rosbridge. Confirm → direct 2-WP path to base. Reject → cancel base return, resume mission.
 
 **Mission auto-disarm:** `wp_active = -1` → mavlink_bridge auto-disarms, clears mission, publishes MANUAL.
