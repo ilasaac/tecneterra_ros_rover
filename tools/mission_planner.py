@@ -3385,12 +3385,14 @@ function _chaikinSmooth(wps, passes) {
       const q = {
         lat: a.lat * 0.75 + b.lat * 0.25,
         lon: a.lon * 0.75 + b.lon * 0.25,
-        speed: a.speed, hold_secs: a.hold_secs, servos: a.servos
+        speed: a.speed, hold_secs: a.hold_secs, servos: a.servos,
+        lane_tag: a.lane_tag
       };
       const r = {
         lat: a.lat * 0.25 + b.lat * 0.75,
         lon: a.lon * 0.25 + b.lon * 0.75,
-        speed: b.speed, hold_secs: b.hold_secs, servos: b.servos
+        speed: b.speed, hold_secs: b.hold_secs, servos: b.servos,
+        lane_tag: b.lane_tag
       };
       out.push(q, r);
     }
@@ -3434,7 +3436,8 @@ function generateOffsetMissions(baseWps, count, maxDist, step, minClearance, smo
 
       const [lat, lon] = _perpOffset(wp.lat, wp.lon, brg, d);
       return {lat, lon, speed: wp.speed, hold_secs: wp.hold_secs,
-              servos: wp.servos ? {...wp.servos} : {}};
+              servos: wp.servos ? {...wp.servos} : {},
+              lane_tag: wp.lane_tag || ''};
     });
 
     missions.push(_chaikinSmooth(offsetWps, smoothPasses));
@@ -3560,19 +3563,20 @@ async function uploadQueueMission(idx) {
       setTimeout(() => reject(new Error('WebSocket timeout')), 5000);
     });
 
-    // Build corridor JSON (same as uploadRover)
+    // Build corridor JSON (identical to uploadRover waypoints path)
     const pts = mission;
+    const ch5 = pts.map(p => (p.servos||{})['5']||(p.servos||{})[5]||1500);
+    const ch6 = pts.map(p => (p.servos||{})['6']||(p.servos||{})[6]||1500);
+    const ch7 = pts.map(p => (p.servos||{})['7']||(p.servos||{})[7]||1500);
+    const ch8 = pts.map(p => (p.servos||{})['8']||(p.servos||{})[8]||1500);
     const corridorData = {
       corridors: [{
         corridor_id: 0,
         centerline: pts.map(p => [p.lat, p.lon]),
         width: 1.5,
         speed: 0,
-        speeds: pts.map(p => p.speed),
-        ch5: pts.map(p => (p.servos && (p.servos['5'] || p.servos[5])) || 1500),
-        ch6: pts.map(p => (p.servos && (p.servos['6'] || p.servos[6])) || 1500),
-        ch7: pts.map(p => (p.servos && (p.servos['7'] || p.servos[7])) || 1500),
-        ch8: pts.map(p => (p.servos && (p.servos['8'] || p.servos[8])) || 1500),
+        speeds: pts.map(p => p.speed || 0),
+        ch5, ch6, ch7, ch8,
         tags: pts.map(p => p.lane_tag || ''),
         next_corridor_id: -1,
         turn_type: 'auto',
@@ -3596,6 +3600,22 @@ async function uploadQueueMission(idx) {
         op: 'publish', topic: ns + '/mission_fence',
         type: 'std_msgs/msg/String',
         msg: {data: JSON.stringify({polygons: obstacles})}
+      }));
+    }
+
+    // Publish stations if set
+    if (typeof stationBattery !== 'undefined' && stationBattery) {
+      ws.send(JSON.stringify({
+        op: 'publish', topic: ns + '/station_update',
+        type: 'std_msgs/msg/String',
+        msg: {data: JSON.stringify({type: 'battery', lat: stationBattery.lat, lon: stationBattery.lon})}
+      }));
+    }
+    if (typeof stationWater !== 'undefined' && stationWater) {
+      ws.send(JSON.stringify({
+        op: 'publish', topic: ns + '/station_update',
+        type: 'std_msgs/msg/String',
+        msg: {data: JSON.stringify({type: 'water', lat: stationWater.lat, lon: stationWater.lon})}
       }));
     }
 
