@@ -1,7 +1,7 @@
 """
 Launch file for on-Jetson SIL simulation.
 
-Runs only navigator + mavlink_bridge + sim_harness.
+Runs only navigator + sim_harness.
 No gps_driver, rp2040_bridge, sensor_node, or video.
 
   ros2 launch agri_rover_bringup sim_harness.launch.py
@@ -42,12 +42,6 @@ def _make_nodes(rover_num: str):
     # Return nodes as a group (LaunchDescription accepts nested lists)
     from launch import LaunchDescription as _LD
     return _LD([
-        Node(package='agri_rover_mavlink',
-             executable='mavlink_bridge',
-             namespace=ns,
-             parameters=[config],
-             output='screen'),
-
         Node(package='agri_rover_navigator',
              executable='navigator',
              namespace=ns,

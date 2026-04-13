@@ -10,7 +10,6 @@
 
   <exec_depend>agri_rover_rp2040</exec_depend>
   <exec_depend>agri_rover_gps</exec_depend>
-  <exec_depend>agri_rover_mavlink</exec_depend>
   <exec_depend>agri_rover_navigator</exec_depend>
   <exec_depend>agri_rover_sensors</exec_depend>
   <exec_depend>agri_rover_video</exec_depend>

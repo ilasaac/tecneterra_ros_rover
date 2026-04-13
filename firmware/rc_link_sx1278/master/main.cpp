@@ -5,7 +5,7 @@
  *   PIO0 SM0  ← SBUS RX (inverted UART, 100kbaud, 8E2)  GP4
  *   PIO0 SM1  → PPM TX  (DMA-fed, 50 Hz, 20 ms frame)   GP15
  *   SPI0      ↔ SX1278 LoRa (433 MHz)                   GP16-21
- *   USB CDC   ↔ Jetson Nano (MAVLink serial protocol)
+ *   USB CDC   ↔ Jetson Nano (serial protocol)
  *
  * PPM timing is 100% hardware (PIO + DMA):
  *   - DMA feeds 20-word buffer to PIO TX FIFO at PIO's own pace (DREQ-gated)

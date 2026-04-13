@@ -16,13 +16,6 @@
     # publish_rate: timer rate (Hz); only publishes when new GGA arrives — set to match GPS hw rate
     publish_rate:   25.0
 
-/rv1/mavlink_bridge:
-  ros__parameters:
-    rover_id:  1
-    gqc_host:  192.168.100.255  # WiFi broadcast — GQC receives regardless of IP
-    gqc_port:  14550
-    bind_port: 14550            # listen on :14550 for inbound MAVLink from GQC
-
 /rv1/sensor_node:
   ros__parameters:
     publish_rate: 1.0
