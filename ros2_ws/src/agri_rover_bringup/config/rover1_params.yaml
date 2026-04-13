@@ -59,36 +59,10 @@
     obstacle_clearance_m:      0.5
     bypass_arc_radius_m:       0.5    # smoother sample distance in metres (0 = disabled)
     bypass_arc_speed_k:        0.7    # speed scaling: speed = max_speed * (1 - k * angle/180)
-    control_algorithm:         stanley   # stanley | mpc | ttr | afs
-    # AFS (Always Forward Strategy) parameters — only used when control_algorithm: afs
-    # afs_cte_scale_m:    CTE (m) at which throttle reaches min_speed (linear decay)
-    # afs_cte_alarm_m:    CTE (m) above which the rover halts and logs a critical alarm
-    # afs_approach_dist_m: rover switches to direct-to-wp approach within this distance
-    #                      of a turn waypoint; continues until closest approach is passed,
-    #                      then stops and spins to the outgoing bearing.
-    afs_cte_scale_m:           2.0
-    afs_cte_alarm_m:           3.0
-    afs_approach_dist_m:       5.0
-    afs_min_throttle_ppm:      1550   # hard PPM floor for forward motion (tune to motor stiction)
-    min_steer_ppm_delta:    300   # min |steer_ppm - 1500| during ALL turns/curves (tune to motor stiction)
-    steer_coast_angle:       5.0  # below this |heading_err| (°), floor not applied — coast to zero near target
-    # TTR dual-PID (CTE → heading cascaded controller)
-    ttr_angle_kp:              3.0
-    ttr_angle_ki:              0.0
-    ttr_angle_kd:              0.1
-    ttr_hight_kp:              1.5
-    ttr_hight_ki:              0.0
-    ttr_hight_kd:              0.0
-    ttr_max_yaw_distance:      3.0
-    ttr_target_dece_dis:       4.0
-    # MPC parameters (alternative algorithm)
-    mpc_horizon:               5
-    mpc_dt:                    0.1
-    mpc_w_cte:                 5.0
-    mpc_w_heading:             1.0
-    mpc_w_steer:               0.1
-    mpc_w_dsteer:              0.05
-    wheelbase_m:               0.6
+    # Motor stiction floors (Stanley output)
+    min_throttle_ppm:       1550   # hard PPM floor for forward motion
+    min_steer_ppm_delta:     300   # min |steer_ppm - 1500| during turns/curves
+    steer_coast_angle:       5.0   # below this |heading_err| (°), floor not applied
     # Inter-rover proximity safety — RV1 monitors RV2
     peer_rover_ns:             '/rv2'
     rover_front_corner_dist_m: 0.6    # diagonal from front antenna to front corner

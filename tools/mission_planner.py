@@ -3995,7 +3995,7 @@ function pbUpdateInfo() {
   document.getElementById('pb-time').textContent =
     `t=${f.t.toFixed(2)}s  frame ${pbIdx+1}/${pbTrace.length}`;
   const info = document.getElementById('pb-info');
-  const modeColor = f.m === 'ttr' ? '#e67e22' : (f.m === 'mpc' ? '#9b59b6' : '#2ecc71');
+  const modeColor = '#2ecc71';
   info.innerHTML =
     `<span style="color:${modeColor}"><b>${f.m || (f.pv ? 'PIVOT' : '—')}</b></span>` +
     ` &nbsp;WP: <b>${f.wp}</b>  dist: ${f.dw.toFixed(2)}m` +

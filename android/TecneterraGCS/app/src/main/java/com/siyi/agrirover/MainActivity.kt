@@ -80,9 +80,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         Triple("PIVOT_DIST",   "Pivot Approach Dist", "m"),
         Triple("ALIGN_THRESH", "Align Threshold",     "°"),
         Triple("ACCEPT_RAD",   "Acceptance Radius",   "m"),
-        Triple("AFS_MIN_THR",  "AFS Min Throttle",    "µs"),
-        Triple("AFS_MIN_STR",  "AFS Min Steer Δ",     "µs"),
-        Triple("AFS_COAST_ANG", "AFS Coast Angle",    "°"),
+        Triple("MIN_THR",       "Min Throttle",       "µs"),
+        Triple("MIN_STEER_DLT", "Min Steer Δ",        "µs"),
+        Triple("STEER_COAST",   "Steer Coast Angle",  "°"),
     )
 
     // UI Elements

@@ -77,31 +77,10 @@ DEFAULT_NAV: dict = {
     'rover_width_m':             1.0,
     'control_rate':              25.0,
     'max_timeout':               300.0,  # simulation hard stop (seconds)
-    # Control algorithm — 'stanley', 'mpc', 'ttr', or 'afs'
-    'control_algorithm':         'stanley',
-    # AFS (Always Forward Strategy) parameters
-    'afs_cte_scale_m':           2.0,
-    'afs_cte_alarm_m':           3.0,
-    'afs_approach_dist_m':       5.0,
-    'afs_min_throttle_ppm':      1550,
-    'min_steer_ppm_delta':    150,
+    # Motor stiction floors
+    'min_throttle_ppm':       1550,
+    'min_steer_ppm_delta':     150,
     'steer_coast_angle':      15.0,
-    # TTR dual-PID parameters
-    'ttr_angle_kp':              3.0,
-    'ttr_angle_ki':              0.0,
-    'ttr_angle_kd':              0.1,
-    'ttr_hight_kp':              1.5,
-    'ttr_hight_ki':              0.0,
-    'ttr_hight_kd':              0.0,
-    'ttr_max_yaw_distance':      3.0,
-    'ttr_target_dece_dis':       4.0,
-    'mpc_horizon':               5,
-    'mpc_dt':                    0.1,
-    'mpc_w_cte':                 5.0,
-    'mpc_w_heading':             1.0,
-    'mpc_w_steer':               0.1,
-    'mpc_w_dsteer':              0.05,
-    'wheelbase_m':               0.6,
 }
 
 
@@ -236,9 +215,8 @@ class DiffDriveState(RoverState):
         # max_wheel clamp at the end enforces the physical wheel speed limit.
         forward_mms = (throttle - 1500) / 500.0 * max_speed * 1000.0
 
-        # Steering: recover angle_output (degrees) from PPM via TTR formula
+        # Steering: recover angle_output (degrees) from PPM.
         # Navigator: steer_ppm = 1500 - steer_frac * 500
-        # _ttr_steer: steer_frac = (angle_output / 25) * max_steer
         steer_frac = (1500 - steering) / 500.0
         if abs(steer_frac) < steer_deadband:
             steer_frac = 0.0
@@ -636,23 +614,6 @@ def _reroute_waypoints(
     return [w for w in new_wps if w.seq != _ORIGIN_SEQ]
 
 
-class _PID:
-    """Minimal PID controller — matches TTR PIDController.hpp."""
-    def __init__(self, kp: float = 1.0, ki: float = 0.0, kd: float = 0.0):
-        self.kp = kp; self.ki = ki; self.kd = kd
-        self._integral = 0.0; self._prev_error = 0.0
-
-    def compute(self, setpoint: float, feedback: float) -> float:
-        err = setpoint - feedback
-        self._integral += err
-        deriv = err - self._prev_error
-        self._prev_error = err
-        return self.kp * err + self.ki * self._integral + self.kd * deriv
-
-    def clear(self):
-        self._integral = 0.0; self._prev_error = 0.0
-
-
 # ── Path navigator (mirrors navigator.py) ────────────────────────────────────
 
 class PathNavigator:
@@ -666,26 +627,15 @@ class PathNavigator:
                  origin_lat: float, origin_lon: float,
                  nav: dict):
         self._nav        = nav
-        self._algo       = nav.get('control_algorithm', 'stanley')
+        self._algo       = 'corridor' if nav.get('_corridor_mode') else 'stanley'
         self.path_idx    = 0
         self.total_advanced = 0   # monotonically counts _advance() calls
         self._pivoting   = False
         self._pivot_hdg  = 0.0
         self._holding    = False
         self._hold_end   = 0.0
-        self._mpc_prev_steers: list[float] = []
         self._spin_target_brg: float | None = None
-        # AFS state
-        self._afs_phase:          str   = 'straight'  # 'straight' | 'approach' | 'spin'
-        self._afs_closest_dist:   float = float('inf')
-        self._afs_spin_hdg:       float = 0.0
         self._pivot_closest_dist: float = float('inf')
-        self._ttr_apid   = _PID(nav.get('ttr_angle_kp', 3.0),
-                                 nav.get('ttr_angle_ki', 0.0),
-                                 nav.get('ttr_angle_kd', 0.1))
-        self._ttr_hpid   = _PID(nav.get('ttr_hight_kp', 1.5),
-                                 nav.get('ttr_hight_ki', 0.0),
-                                 nav.get('ttr_hight_kd', 0.0))
         self._step_info: dict = {}
         self._accept_r = nav.get('default_acceptance_radius', 0.3)
 
@@ -865,331 +815,6 @@ class PathNavigator:
                                  self._wps[idx].lat, self._wps[idx].lon)
         return abs(((hdg_out - hdg_in + 180) % 360) - 180)
 
-    # ── MPC controller ─────────────────────────────────────────────────────
-
-    def _mpc_steer(self, rlat: float, rlon: float,
-                   heading_deg: float, s_nearest: float,
-                   v_mps: float) -> float:
-        """MPC lateral controller — mirrors navigator.py._mpc_steer()."""
-        nav      = self._nav
-        N        = int(nav.get('mpc_horizon', 10))
-        dt       = nav.get('mpc_dt', 0.2)
-        wb       = max(nav.get('wheelbase_m', 0.6), 0.1)
-        max_s    = nav['max_steering']
-        w_cte    = nav.get('mpc_w_cte',     2.0)
-        w_hdg    = nav.get('mpc_w_heading', 1.0)
-        w_str    = nav.get('mpc_w_steer',   0.1)
-        w_dstr   = nav.get('mpc_w_dsteer',  0.05)
-        lookahead = nav['lookahead_distance']
-
-        if not _SCIPY_OK:
-            la_lat, la_lon = self._point_at_s(s_nearest + lookahead)
-            brg = _bearing_to(rlat, rlon, la_lat, la_lon)
-            err = ((brg - heading_deg + 180) % 360) - 180
-            return max(-max_s, min(max_s, err / 45.0))
-
-        cos_lat = math.cos(math.radians(rlat)) or 1e-9
-        m_lat   = 111_320.0
-        m_lon   = 111_320.0 * cos_lat
-
-        def to_xy(lat: float, lon: float) -> tuple[float, float]:
-            return (lon - rlon) * m_lon, (lat - rlat) * m_lat
-
-        # Clip horizon at the next pivot waypoint so MPC never sees past a sharp
-        # turn — rover must reach and stop at the pivot before the post-turn
-        # segment becomes visible (mirrors navigator.py._mpc_steer).
-        pivot_thresh_nav = self._nav.get('pivot_threshold', 25.0)
-        s_clip = float('inf')
-        for i in range(self.path_idx, len(self._wps)):
-            if self._turn_angle_at(i) >= pivot_thresh_nav:
-                if i < len(self._path_s):
-                    s_clip = self._path_s[i]
-                break
-        self._step_info['s_clip'] = s_clip
-
-        # When s_nearest approaches s_clip all reference points would collapse to
-        # the same location, producing a degenerate ref_h.  Instead, once the
-        # path arc hits s_clip, project reference points along the INCOMING
-        # tangent at the pivot — rover tracks correctly to the turn and the
-        # reference stays non-degenerate all the way up to arrival.
-        if s_clip < float('inf'):
-            eps = 0.5
-            pt_before = self._point_at_s(max(0.0, s_clip - eps))
-            pt_at     = self._point_at_s(s_clip)
-            clip_x, clip_y = to_xy(pt_at[0], pt_at[1])
-            bx, by = to_xy(pt_before[0], pt_before[1])
-            dx = clip_x - bx; dy = clip_y - by
-            norm = math.hypot(dx, dy) or 1.0
-            tang_x = dx / norm; tang_y = dy / norm
-        else:
-            clip_x = clip_y = tang_x = tang_y = 0.0
-
-        ref_x: list[float] = []
-        ref_y: list[float] = []
-        for ki in range(N + 1):
-            s_ref = s_nearest + v_mps * ki * dt
-            if s_clip < float('inf') and s_ref >= s_clip:
-                beyond = s_ref - s_clip
-                ref_x.append(clip_x + tang_x * beyond)
-                ref_y.append(clip_y + tang_y * beyond)
-            else:
-                pt = self._point_at_s(s_ref)
-                rx, ry = to_xy(pt[0], pt[1])
-                ref_x.append(rx); ref_y.append(ry)
-
-        h0 = math.radians(90.0 - heading_deg)
-        ref_h: list[float] = []
-        for ki in range(N):
-            dx = ref_x[ki + 1] - ref_x[ki]
-            dy = ref_y[ki + 1] - ref_y[ki]
-            ref_h.append(math.atan2(dy, dx) if math.hypot(dx, dy) > 1e-6 else h0)
-
-        prev0 = self._mpc_prev_steers[0] if self._mpc_prev_steers else 0.0
-
-        def cost_fn(steers) -> float:
-            x, y, h = 0.0, 0.0, h0
-            cost, prev = 0.0, prev0
-            for ki in range(N):
-                s = float(steers[ki])
-                h += -s * 2.0 * v_mps / wb * dt
-                x += v_mps * math.cos(h) * dt
-                y += v_mps * math.sin(h) * dt
-                rh   = ref_h[ki]
-                cte  = -(x - ref_x[ki]) * math.sin(rh) + (y - ref_y[ki]) * math.cos(rh)
-                herr = (h - rh + math.pi) % (2 * math.pi) - math.pi
-                cost += w_cte * cte * cte + w_hdg * herr * herr
-                cost += w_str * s * s + w_dstr * (s - prev) * (s - prev)
-                prev = s
-            return cost
-
-        if len(self._mpc_prev_steers) == N:
-            x0 = self._mpc_prev_steers[1:] + [self._mpc_prev_steers[-1]]
-        else:
-            x0 = [0.0] * N
-
-        try:
-            result = _scipy_minimize(
-                cost_fn, x0, method='L-BFGS-B',
-                bounds=[(-max_s, max_s)] * N,
-                options={'maxiter': 50, 'ftol': 1e-4})
-            steers = list(result.x)
-        except Exception:
-            steers = x0
-
-        self._mpc_prev_steers = steers
-        return max(-max_s, min(max_s, float(steers[0])))
-
-    # ── TTR controller ─────────────────────────────────────────────────────
-
-    def _ttr_steer(self, flat: float, flon: float,
-                   best_seg: int, dist_to_wp: float,
-                   v_target: float,
-                   heading_err: float = 0.0) -> tuple[float, float]:
-        """TTR cascaded dual-PID — mirrors navigator.py._ttr_steer()."""
-        nav       = self._nav
-        max_steer = nav['max_steering']
-        min_spd   = nav['min_speed']
-        max_yaw   = nav.get('ttr_max_yaw_distance', 3.0)
-        dece_dis  = nav.get('ttr_target_dece_dis', 4.0)
-
-        # Heading error: use lookahead-based heading_err from step().
-        # heading_err = target_bearing - heading (positive = need left turn).
-        # TTR convention: angle_diff = heading - target (positive = heading right).
-        # So angle_diff = -heading_err.
-        angle_diff = -heading_err
-
-        # CTE (positive = rover LEFT of route)
-        cte = self._cte_to_seg(flat, flon, best_seg)
-
-        # Dual PID
-        dis_output   = self._ttr_hpid.compute(0.0, cte)
-        angle_output = self._ttr_apid.compute(-dis_output, angle_diff)
-        angle_output = max(-25.0, min(25.0, angle_output))
-
-        steer_frac = max(-max_steer,
-                         min(max_steer, (angle_output / 25.0) * max_steer))
-
-        # Speed: lineSpeedFactor reduces with CTE magnitude
-        line_factor = max(0.4, min(0.8, 1.0 - abs(cte) / max(max_yaw, 0.1)))
-        v = v_target * line_factor
-
-        # Decelerate near waypoint
-        if dist_to_wp < dece_dis:
-            v *= max(0.3, dist_to_wp / dece_dis)
-
-        return steer_frac, max(min_spd, v)
-
-    # ── AFS controller ─────────────────────────────────────────────────────
-
-    def _afs_step(self, rlat: float, rlon: float,
-                  flat: float, flon: float,
-                  heading: float, t_mono: float) -> tuple[int, int, bool]:
-        """
-        AFS (Always Forward Strategy) step — mirrors navigator.py._afs_step().
-
-        Returns (throttle_ppm, steer_ppm, done).
-        """
-        nav              = self._nav
-        max_spd          = nav['max_speed']
-        min_spd          = nav['min_speed']
-        max_steer        = nav['max_steering']
-        accept_r         = nav['default_acceptance_radius']
-        hdb              = nav['heading_deadband']
-        align_thresh     = nav['align_threshold']
-        pivot_thresh     = nav['pivot_threshold']
-        cte_scale           = nav.get('afs_cte_scale_m',         2.0)
-        cte_alarm           = nav.get('afs_cte_alarm_m',         3.0)
-        approach_dist       = nav.get('afs_approach_dist_m',     5.0)
-        min_throttle_ppm    = nav.get('afs_min_throttle_ppm',    1550)
-        min_steer_ppm_delta = nav.get('min_steer_ppm_delta',  150)
-        coast_angle         = nav.get('steer_coast_angle',    15.0)
-        k                = nav['stanley_k']
-        softening        = nav['stanley_softening']
-        lookahead        = nav['lookahead_distance']
-
-        wp               = self._wps[self.path_idx]
-        accept           = wp.acceptance_radius if wp.acceptance_radius > 0 else accept_r
-        dist_to_wp       = _haversine(rlat, rlon, wp.lat, wp.lon)
-        is_bypass        = wp.is_bypass
-
-        # Turn detection — _turn_angle_at() works on the full path.
-        turn_angle = self._turn_angle_at(self.path_idx)
-        needs_turn = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
-
-        # ── Spin phase ──────────────────────────────────────────────────
-        if self._afs_phase == 'spin':
-            pivot_err = ((self._afs_spin_hdg - heading + 180) % 360) - 180
-            if abs(pivot_err) < hdb:
-                self._afs_phase        = 'straight'
-                self._afs_closest_dist = float('inf')
-                self._ttr_apid.clear()
-                self._ttr_hpid.clear()
-                self._advance()
-                if self.path_idx >= len(self._wps):
-                    return PPM_CENTER, PPM_CENTER, True
-                # Halt one tick — next call to _afs_step() will use fresh path_idx
-                return PPM_CENTER, PPM_CENTER, False
-            else:
-                steer_frac = max(-max_steer, min(max_steer, pivot_err / 45.0))
-                steer_ppm  = int(PPM_CENTER - steer_frac * 500)
-                if steer_ppm != PPM_CENTER and abs(pivot_err) > coast_angle:
-                    sign = 1 if steer_ppm > PPM_CENTER else -1
-                    steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
-                return PPM_CENTER, steer_ppm, False
-
-        # ── Approach phase ──────────────────────────────────────────────
-        if self._afs_phase == 'approach':
-            if dist_to_wp < self._afs_closest_dist:
-                self._afs_closest_dist = dist_to_wp
-            if dist_to_wp > self._afs_closest_dist + 0.1:
-                self._afs_phase = 'spin'
-                nxt = self._wps[self.path_idx + 1]
-                nxt_lat, nxt_lon = nxt.lat, nxt.lon
-                self._afs_spin_hdg = _bearing_to(rlat, rlon, nxt_lat, nxt_lon)
-                return PPM_CENTER, PPM_CENTER, False
-            target_brg  = _bearing_to(rlat, rlon, wp.lat, wp.lon)
-            heading_err = ((target_brg - heading + 180) % 360) - 180
-            steer_frac  = max(-max_steer, min(max_steer, heading_err / 45.0))
-            thr = max(min_throttle_ppm, int(PPM_CENTER + (min_spd / max_spd) * 500))
-            steer_ppm = int(PPM_CENTER - steer_frac * 500)
-            if steer_ppm != PPM_CENTER and abs(heading_err) > coast_angle:
-                sign = 1 if steer_ppm > PPM_CENTER else -1
-                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
-            return thr, steer_ppm, False
-
-        # ── Straight phase ──────────────────────────────────────────────
-        s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
-
-        if needs_turn:
-            if dist_to_wp < approach_dist:
-                self._afs_phase        = 'approach'
-                self._afs_closest_dist = dist_to_wp
-                self._spin_target_brg  = None
-                target_brg  = _bearing_to(rlat, rlon, wp.lat, wp.lon)
-                heading_err = ((target_brg - heading + 180) % 360) - 180
-                steer_frac  = max(-max_steer, min(max_steer, heading_err / 45.0))
-                thr = max(min_throttle_ppm, int(PPM_CENTER + (min_spd / max_spd) * 500))
-                steer_ppm = int(PPM_CENTER - steer_frac * 500)
-                if steer_ppm != PPM_CENTER and abs(heading_err) > coast_angle:
-                    sign = 1 if steer_ppm > PPM_CENTER else -1
-                    steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
-                return thr, steer_ppm, False
-        else:
-            past_wp = (not is_bypass
-                       and dist_to_wp < accept * 4.0
-                       and self._past_waypoint(rlat, rlon))
-            reached = dist_to_wp < accept or past_wp
-            if reached:
-                if wp.hold_secs > 0.0:
-                    self._holding  = True
-                    self._hold_end = t_mono + wp.hold_secs
-                    return PPM_CENTER, PPM_CENTER, False
-                self._advance()
-                if self.path_idx >= len(self._wps):
-                    return PPM_CENTER, PPM_CENTER, True
-                # Refresh for new target
-                wp         = self._wps[self.path_idx]
-                is_bypass  = wp.is_bypass
-                accept     = wp.acceptance_radius if wp.acceptance_radius > 0 else accept_r
-                dist_to_wp = _haversine(rlat, rlon, wp.lat, wp.lon)
-                s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
-                turn_angle  = self._turn_angle_at(self.path_idx)
-                needs_turn  = (turn_angle >= pivot_thresh and self.path_idx < len(self._wps) - 1)
-
-        cte_seg = self.path_idx
-        cte     = 0.0 if is_bypass else self._cte_to_seg(flat, flon, cte_seg)
-
-        if abs(cte) >= cte_alarm:
-            self._step_info['mode'] = 'afs-alarm'
-            return PPM_CENTER, PPM_CENTER, False
-
-        target_spd   = wp.speed if wp.speed > 0 else max_spd
-        cte_factor   = max(0.0, 1.0 - abs(cte) / max(cte_scale, 0.01))
-        v_mps        = max(min_spd, target_spd * cte_factor)
-        throttle_ppm = max(min_throttle_ppm, int(PPM_CENTER + (v_mps / max_spd) * 500))
-
-        if is_bypass:
-            la_lat, la_lon = wp.lat, wp.lon
-        else:
-            la_lat, la_lon = self._point_at_s(s_nearest + lookahead)
-
-        target_bearing = _bearing_to(rlat, rlon, la_lat, la_lon)
-        if self._spin_target_brg is not None:
-            target_bearing = self._spin_target_brg
-
-        heading_err = ((target_bearing - heading + 180) % 360) - 180
-
-        if abs(heading_err) > align_thresh:
-            if self._spin_target_brg is None:
-                self._spin_target_brg = target_bearing
-            steer_frac = max(-max_steer, min(max_steer, heading_err / 45.0))
-            self._ttr_apid.clear(); self._ttr_hpid.clear()
-            steer_ppm  = int(PPM_CENTER - steer_frac * 500)
-            if steer_ppm != PPM_CENTER and abs(heading_err) > coast_angle:
-                sign = 1 if steer_ppm > PPM_CENTER else -1
-                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER), min_steer_ppm_delta)
-            return PPM_CENTER, steer_ppm, False
-
-        if self._spin_target_brg is not None and abs(heading_err) < hdb:
-            self._spin_target_brg = None
-
-        stanley_ang = heading_err + math.degrees(
-            math.atan2(k * cte, max(v_mps, softening)))
-        stanley_ang = max(-90.0, min(90.0, stanley_ang))
-        steer_frac  = max(-max_steer, min(max_steer, stanley_ang / 45.0))
-
-        self._step_info.update({
-            'heading_err': heading_err,
-            'cte':         cte,
-            'cte_seg':     cte_seg,
-            'best_seg':    best_seg,
-            'steer_frac':  steer_frac,
-            'v_mps':       v_mps,
-            'mode':        'afs-straight',
-            '_heading':    heading,
-        })
-        return throttle_ppm, int(PPM_CENTER - steer_frac * 500), False
-
     # ── Control step ───────────────────────────────────────────────────────
 
     def step(self, rlat: float, rlon: float,
@@ -1241,23 +866,11 @@ class PathNavigator:
         if self._algo == 'corridor':
             return self._corridor_step(rlat, rlon, flat, flon, heading, t_mono)
 
-        # AFS algorithm
-        if self._algo == 'afs':
-            thr, steer, done = self._afs_step(rlat, rlon, flat, flon, heading, t_mono)
-            self._step_info.setdefault('wp_idx', self.path_idx)
-            self._step_info.setdefault('dist_to_wp',
-                                       _haversine(rlat, rlon,
-                                                  self._wps[self.path_idx].lat,
-                                                  self._wps[self.path_idx].lon)
-                                       if self.path_idx < len(self._wps) else 0.0)
-            return thr, steer, self.path_idx, done
-
         # Pivot
         if self._pivoting:
             pivot_err = ((self._pivot_hdg - heading + 180) % 360) - 180
             if abs(pivot_err) < hdb:
                 self._pivoting = False
-                self._ttr_apid.clear(); self._ttr_hpid.clear()
                 self._advance()
                 if self.path_idx >= len(self._wps):
                     return PPM_CENTER, PPM_CENTER, 0, True
@@ -1288,7 +901,6 @@ class PathNavigator:
             'turn_angle': turn_angle,
             'needs_pivot': needs_pivot,
             's_nearest': s_nearest,
-            's_clip': float('inf'),  # updated by _mpc_steer if called
         })
 
         # Track closest approach to pivot waypoint.
@@ -1324,8 +936,6 @@ class PathNavigator:
                 nxt_lat, nxt_lon = nxt.lat, nxt.lon
                 self._pivot_hdg       = _bearing_to(rlat, rlon, nxt_lat, nxt_lon)
                 self._pivoting        = True
-                self._mpc_prev_steers = []
-                self._ttr_apid.clear(); self._ttr_hpid.clear()
                 return PPM_CENTER, PPM_CENTER, best_seg, False
             else:
                 self._advance()
@@ -1385,8 +995,6 @@ class PathNavigator:
             # Proportional spin: full steer at 90°, half steer at 45°.
             steer_frac            = max(-max_steer, min(max_steer, heading_err / 45.0))
             steer_ppm             = int(PPM_CENTER - steer_frac * 500)
-            self._mpc_prev_steers = []
-            self._ttr_apid.clear(); self._ttr_hpid.clear()
             return PPM_CENTER, steer_ppm, best_seg, False
 
         self._spin_target_brg = None  # spin resolved — unfreeze
@@ -1394,25 +1002,15 @@ class PathNavigator:
         v_mps        = max(target_spd, min_spd)
         throttle_ppm = int(PPM_CENTER + (v_mps / max_spd) * 500)
 
-        if self._algo == 'ttr':
-            steer_frac, ttr_v = self._ttr_steer(
-                flat, flon, cte_seg, dist_to_wp, v_mps, heading_err)
-            throttle_ppm = int(PPM_CENTER + (ttr_v / max_spd) * 500)
-            algo_mode = 'ttr'
-        elif self._algo == 'mpc' and not is_bypass:
-            steer_frac = self._mpc_steer(rlat, rlon, heading, s_nearest, v_mps)
-            algo_mode = 'mpc'
-        else:
-            # Stanley controller: δ = θ_e + arctan(k · e_cte / (v + ε))
-            stanley_ang = heading_err + math.degrees(
-                math.atan2(k * cte, max(v_mps, softening)))
-            stanley_ang = max(-90.0, min(90.0, stanley_ang))
-            steer_frac  = max(-max_steer, min(max_steer, stanley_ang / 45.0))
-            algo_mode = 'stanley'
+        # Stanley controller: δ = θ_e + arctan(k · e_cte / (v + ε))
+        stanley_ang = heading_err + math.degrees(
+            math.atan2(k * cte, max(v_mps, softening)))
+        stanley_ang = max(-90.0, min(90.0, stanley_ang))
+        steer_frac  = max(-max_steer, min(max_steer, stanley_ang / 45.0))
         self._step_info.update({
             'steer_frac': steer_frac,
-            'v_mps': v_mps if self._algo != 'ttr' else ttr_v,
-            'mode': algo_mode,
+            'v_mps': v_mps,
+            'mode': 'stanley',
         })
         steer_ppm = int(PPM_CENTER - steer_frac * 500)
 
@@ -1700,7 +1298,7 @@ def simulate(waypoints:       list[SimWaypoint],
 
     if verbose:
         print(f'\n{"─"*60}')
-        print(f'Mission analysis  ({len(effective_wps)} waypoints, algo={nav["control_algorithm"]})')
+        print(f'Mission analysis  ({len(effective_wps)} waypoints, algo=stanley)')
         tp = {**DEFAULT_TTR_PHYS, **ttr_phys}
         print(f'  physics: track={tp["track_width_m"]}m  '
               f'max_wheel={tp["max_wheel_mms"]}mm/s  '
@@ -2048,11 +1646,8 @@ if __name__ == '__main__':
     ap.add_argument('--heading',     type=float, default=None,   help='Start heading (deg N); auto = bearing to wp[0]')
     ap.add_argument('--wheelbase',   type=float, default=DEFAULT_PHYS['wheelbase'])
     ap.add_argument('--turn-scale',  type=float, default=DEFAULT_PHYS['turn_scale'])
-    ap.add_argument('--algo',        type=str,   default=None,
-                    choices=['stanley', 'mpc', 'ttr', 'afs'],
-                    help='Control algorithm (default: from rover1_params.yaml)')
     ap.add_argument('--track-width', type=float, default=DEFAULT_TTR_PHYS['track_width_m'],
-                    help='TTR track width in metres (default: 0.9)')
+                    help='Rover track width in metres (default: 0.9)')
     ap.add_argument('--obstacles',   type=str,   default=None,
                     help='JSON file with obstacle polygons [[[lat,lon],...],...]')
     ap.add_argument('--corridor',    type=str,   default=None,
@@ -2087,20 +1682,15 @@ if __name__ == '__main__':
     if obstacles:
         print(f'Loaded {len(obstacles)} obstacle polygon(s)')
 
-    nav_overrides = {}
-    if args.algo:
-        nav_overrides['control_algorithm'] = args.algo
-
     result = simulate(wps, args.lat, args.lon, args.heading,
-                      nav_params=nav_overrides,
+                      nav_params={},
                       phys_params={'wheelbase': args.wheelbase,
                                    'turn_scale': args.turn_scale,
                                    'track_width_m': args.track_width},
                       obstacles=obstacles,
                       verbose=args.debug)
 
-    active_algo = nav_overrides.get('control_algorithm', DEFAULT_NAV['control_algorithm'])
-    print(f'Algorithm: {active_algo}')
+    print(f'Algorithm: stanley')
     print(f'Complete : {result.complete}  ({result.total_steps} steps, '
           f'{result.total_steps / DEFAULT_NAV["control_rate"]:.1f} s simulated)')
     print(f'Reached  : {len(result.waypoints_reached)}/{len(wps)} waypoints')

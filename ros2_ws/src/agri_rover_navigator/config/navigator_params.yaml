@@ -59,44 +59,11 @@ navigator:
     #   e.g. rover 1.0 m wide + 0.5 m buffer → 1.0 m total edge offset.
     obstacle_clearance_m: 0.5
 
-    # ── Control algorithm ──────────────────────────────────────────────────
-    # control_algorithm: 'stanley', 'mpc', 'ttr', or 'afs'
-    #   stanley — full-path Stanley lateral controller (heading error + CTE)
-    #   mpc     — Model Predictive Control over a receding horizon; requires
-    #             scipy (pip install scipy).  Falls back to Stanley if scipy
-    #             is not installed.
-    #   ttr     — cascaded dual-PID (CTE → heading); ported from ROS1 TTR nav.
-    #             Speed reduces with CTE magnitude and decelerates near waypoints.
-    #             SIL sim uses DiffDriveState (track-width kinematics from Robot.cpp).
-    #   afs     — Always Forward Strategy: throttle always positive, scaled by CTE.
-    #             Straight segments: throttle = max(min_speed, spd×(1−|CTE|/scale)).
-    #             Turn waypoints: approach with min_speed, stop after closest approach,
-    #             spin to outgoing bearing, then resume straight.
-    #             Alarm + halt if CTE exceeds afs_cte_alarm_m.
-    control_algorithm: 'stanley'
-
-    # AFS parameters (only used when control_algorithm: 'afs')
-    # afs_cte_scale_m: CTE at which throttle decays to min_speed (linear).
-    #   At CTE=0 → full target speed.  At CTE=scale → min_speed.  Above → still min_speed.
-    #   Set smaller for more aggressive speed reduction near the edge of the path.
-    afs_cte_scale_m: 2.0
-
-    # afs_cte_alarm_m: CTE above which the rover halts and logs a critical alarm.
-    #   Should be greater than afs_cte_scale_m (otherwise rover halts before slowing).
-    #   Typical: 1.5–2× afs_cte_scale_m.
-    afs_cte_alarm_m: 3.0
-
-    # afs_approach_dist_m: distance from a turn waypoint at which AFS switches from
-    #   segment-following to direct-to-wp approach steering.  The rover drives toward
-    #   the waypoint at min_speed until it passes closest approach, then spins to the
-    #   outgoing bearing.  Set to 2–3× the rover turn radius for clean arrivals.
-    afs_approach_dist_m: 5.0
-
-    # afs_min_throttle_ppm: hard PPM floor for any forward motion command.
-    #   Prevents motor stall when CTE-proportional scaling or approach mode reduces
-    #   throttle below the motor stiction threshold.  Must be above the lowest PPM
-    #   value at which your motors reliably move.  E.g. 1550 = 50 µs above neutral.
-    afs_min_throttle_ppm: 1550
+    # ── Motor stiction floors (Stanley output) ─────────────────────────────
+    # min_throttle_ppm: hard PPM floor for any forward motion command.
+    #   Prevents motor stall when CTE-proportional scaling reduces throttle below
+    #   the motor stiction threshold.  E.g. 1550 = 50 µs above neutral.
+    min_throttle_ppm: 1550
 
     # min_steer_ppm_delta: minimum |steer_ppm − 1500| during active turning.
     #   Applied only when |heading_err| > steer_coast_angle, so proportional
@@ -106,37 +73,6 @@ navigator:
     # steer_coast_angle: |heading_err| (°) below which the steer floor is NOT
     #   applied.  Lets the rover coast to alignment naturally near target.
     steer_coast_angle: 15.0
-
-    # TTR tuning (only active when control_algorithm: 'ttr')
-    #   ttr_angle_kp/ki/kd     — heading+CTE PID gains (AnglePid)
-    #   ttr_hight_kp/ki/kd     — lateral CTE PID gains (HightPid)
-    #   ttr_max_yaw_distance   — CTE (metres) at which speed factor bottoms out (0.4×)
-    #   ttr_target_dece_dis    — distance (metres) from waypoint to start decelerating
-    ttr_angle_kp:          3.0
-    ttr_angle_ki:          0.0
-    ttr_angle_kd:          0.1
-    ttr_hight_kp:          1.5
-    ttr_hight_ki:          0.0
-    ttr_hight_kd:          0.0
-    ttr_max_yaw_distance:  3.0
-    ttr_target_dece_dis:   4.0
-
-    # MPC tuning (only active when control_algorithm: 'mpc')
-    #   mpc_horizon  — prediction horizon (number of steps).  10 @ 0.2 s = 2 s ahead.
-    #   mpc_dt       — seconds between prediction steps.  Keep >= 1/control_rate.
-    #   mpc_w_cte    — cross-track error weight.  Higher = tighter path hugging.
-    #   mpc_w_heading — heading error weight.  Higher = faster heading correction.
-    #   mpc_w_steer  — steering effort weight.  Higher = less aggressive steering.
-    #   mpc_w_dsteer — steering rate weight.  Higher = smoother steering transitions.
-    #   wheelbase_m  — effective rover wheelbase used in the kinematic prediction
-    #                  model.  Tune to match observed turn rate (smaller = tighter).
-    mpc_horizon:   10
-    mpc_dt:        0.2
-    mpc_w_cte:     2.0
-    mpc_w_heading: 1.0
-    mpc_w_steer:   0.1
-    mpc_w_dsteer:  0.05
-    wheelbase_m:   0.6
 
     # ── Inter-rover proximity safety ────────────────────────────────────────
     # peer_rover_ns: absolute ROS2 namespace of the other rover ('/rv2' or '/rv1').

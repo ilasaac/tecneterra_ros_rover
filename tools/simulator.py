@@ -486,7 +486,7 @@ def parse_args():
     p.add_argument('--max-speed',   default=2.84, type=float, metavar='M/S')
     p.add_argument('--wheelbase',   default=0.50, type=float, metavar='M')
     p.add_argument('--turn-scale',  default=0.2,  type=float, metavar='0-1',
-                   help='Turn rate scale (1.0=full differential — default, matches MPC model)')
+                   help='Turn rate scale (1.0=full differential)')
     p.add_argument('--baseline',    default=0.30, type=float, metavar='M',
                    help='Antenna separation in metres')
     p.add_argument('--alt',       default=45.0, type=float, metavar='M')

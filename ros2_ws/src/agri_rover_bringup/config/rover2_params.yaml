@@ -58,16 +58,10 @@
     obstacle_clearance_m:      0.5
     bypass_arc_radius_m:       0.5    # smoother sample distance in metres (0 = disabled)
     bypass_arc_speed_k:        0.7    # speed scaling: speed = max_speed * (1 - k * angle/180)
-    control_algorithm:         stanley
-    min_steer_ppm_delta:    300   # min |steer_ppm - 1500| during ALL turns/curves
-    steer_coast_angle:       5.0  # below this |heading_err| (°), floor not applied
-    mpc_horizon:               5
-    mpc_dt:                    0.1
-    mpc_w_cte:                 5.0
-    mpc_w_heading:             1.0
-    mpc_w_steer:               0.1
-    mpc_w_dsteer:              0.05
-    wheelbase_m:               0.6
+    # Motor stiction floors (Stanley output)
+    min_throttle_ppm:       1550   # hard PPM floor for forward motion
+    min_steer_ppm_delta:     300   # min |steer_ppm - 1500| during turns/curves
+    steer_coast_angle:       5.0   # below this |heading_err| (°), floor not applied
     # Inter-rover proximity safety — RV2 monitors RV1
     peer_rover_ns:             '/rv1'
     rover_front_corner_dist_m: 0.6
