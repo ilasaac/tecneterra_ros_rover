@@ -80,6 +80,7 @@ class GpsDriverNode(Node):
         self._vtg_heading      = None   # degrees, filled when heading_source=='vtg'
         self._lock             = threading.Lock()
         self._primary_updated  = False  # set True on each new primary GGA sentence
+        self._ubx_pvt_time     = 0.0    # time.time() of last UBX NAV-PVT message
 
         # ── Serial threads ───────────────────────────────────────────────────
         self._start_reader(primary_port, baud, is_primary=True)
@@ -271,6 +272,7 @@ class GpsDriverNode(Node):
             hacc_mm = int.from_bytes(payload[40:44], 'little')
             with self._lock:
                 self._primary['hacc_mm'] = hacc_mm
+                self._ubx_pvt_time = time.time()
 
     # ── NMEA parsing ─────────────────────────────────────────────────────────
 
@@ -333,9 +335,10 @@ class GpsDriverNode(Node):
             if not self._primary_updated:
                 return   # no new GPS sentence since last publish — skip to preserve gps_timeout
             self._primary_updated = False
-            p           = self._primary.copy()
-            s           = self._secondary.copy()
-            vtg_heading = self._vtg_heading
+            p              = self._primary.copy()
+            s              = self._secondary.copy()
+            vtg_heading    = self._vtg_heading
+            ubx_pvt_time   = self._ubx_pvt_time
 
         now = self.get_clock().now().to_msg()
 
@@ -388,9 +391,12 @@ class GpsDriverNode(Node):
         status_msg.data = FIX_QUALITY.get(p['fix'], 'UNKNOWN')
         self.status_pub.publish(status_msg)
 
-        # Horizontal accuracy from UBX NAV-PVT (-1 = not yet received)
+        # Horizontal accuracy from UBX NAV-PVT (-1 = not yet received or stale)
+        hacc_val = p.get('hacc_mm', -1)
+        if ubx_pvt_time > 0 and (time.time() - ubx_pvt_time) > 2.0:
+            hacc_val = -1  # UBX NAV-PVT stale — report unknown
         hacc_msg      = Float32()
-        hacc_msg.data = float(p.get('hacc_mm', -1))
+        hacc_msg.data = float(hacc_val)
         self.hacc_pub.publish(hacc_msg)
 
 

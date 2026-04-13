@@ -461,6 +461,7 @@ class NavigatorNode(Node):
         self._armed:     bool             = False
         self._paused:    bool             = False
         self._hacc_mm:   float            = -1.0   # UBX NAV-PVT hAcc in mm; -1 = not received
+        self._hacc_time: float           = 0.0    # time.time() of last hAcc message
 
         # Inter-rover proximity state
         self._peer_fix:       NavSatFix | None = None
@@ -772,6 +773,7 @@ class NavigatorNode(Node):
 
     def _cb_hacc(self, msg: Float32):
         self._hacc_mm = msg.data
+        self._hacc_time = time.time()
 
     def _cb_sensors(self, msg: SensorData):
         raw = msg.tank_level
@@ -1759,6 +1761,22 @@ class NavigatorNode(Node):
             self.get_logger().warn('GPS stale — halting')
             self._publish_halt()
             return
+
+        # ── GPS accuracy alarm ─────────────────────────────────────────────────
+        if self._gps_acc_alarm > 0:
+            if (self._hacc_mm > 0
+                    and self._hacc_mm > self._gps_acc_alarm):
+                self.get_logger().warn(
+                    f'GPS accuracy degraded: hAcc={self._hacc_mm:.0f} mm '
+                    f'> alarm={self._gps_acc_alarm:.0f} mm — halting')
+                self._publish_halt()
+                return
+            if (self._hacc_time > 0
+                    and (time.time() - self._hacc_time) > self._gps_timeout):
+                self.get_logger().warn(
+                    f'hAcc stale ({time.time() - self._hacc_time:.1f} s) — halting')
+                self._publish_halt()
+                return
 
         # ── Inter-rover proximity safety ──────────────────────────────────────
         if self._peer_ns:
@@ -3333,13 +3351,21 @@ class NavigatorNode(Node):
             return
 
         # ── GPS accuracy alarm ─────────────────────────────────────────────────
-        if (self._gps_acc_alarm > 0 and self._hacc_mm > 0
-                and self._hacc_mm > self._gps_acc_alarm):
-            self.get_logger().warn(
-                f'GPS accuracy degraded: hAcc={self._hacc_mm:.0f} mm '
-                f'> alarm={self._gps_acc_alarm:.0f} mm — halting')
-            self._publish_halt()
-            return
+        if self._gps_acc_alarm > 0:
+            if (self._hacc_mm > 0
+                    and self._hacc_mm > self._gps_acc_alarm):
+                self.get_logger().warn(
+                    f'GPS accuracy degraded: hAcc={self._hacc_mm:.0f} mm '
+                    f'> alarm={self._gps_acc_alarm:.0f} mm — halting')
+                self._publish_halt()
+                return
+            # Stale hAcc — if we ever received it but it stopped, halt
+            if (self._hacc_time > 0
+                    and (time.time() - self._hacc_time) > self._gps_timeout):
+                self.get_logger().warn(
+                    f'hAcc stale ({time.time() - self._hacc_time:.1f} s) — halting')
+                self._publish_halt()
+                return
 
         # ── Inter-rover proximity safety ──────────────────────────────────────
         if self._peer_ns:
