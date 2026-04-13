@@ -177,7 +177,8 @@ Key parameters (in `config/navigator_params.yaml`):
 - `min_speed: 0.3`              m/s floor (never slower regardless of waypoint speed)
 - `max_steering: 0.8`           fraction of full deflection (0.0–1.0)
 - `control_rate: 25.0`          Hz — matches RTK GPS update rate
-- `gps_timeout: 2.0`            seconds before halt
+- `gps_timeout: 2.0`            seconds before halt (applies to both `fix` and `hacc` staleness)
+- `gps_accuracy_alarm_mm: 200`  halts if hAcc > threshold OR if hAcc messages stop (stale > gps_timeout)
 - `align_threshold: 30.0`       degrees — spin-in-place only above this; normal curves move
 - `stanley_k: 1.0`              cross-track error gain (increase = tighter path hug)
 - `stanley_softening: 0.3`      m/s denominator floor (prevents div/0 at low speed)
@@ -301,6 +302,7 @@ Reads two serial ports in background threads. Publishes on every new primary GGA
 - Heading: `bearing = atan2(dlon * cos(lat_rad), dlat)` — `cos(lat)` correction is required because `secondary_pos()` scales `dlon` by `1/cos(lat)` when placing the secondary antenna; without the correction heading drifts as the rover moves and latitude changes.
 - Fix quality map: `'0'→NO_FIX, '1'→GPS, '2'→DGPS, '4'→RTK_FIX, '5'→RTK_FLT`
 - `~/fix_front` carries the same fix quality status as `~/fix` (secondary GGA is not parsed for quality; the primary quality is authoritative).
+- `~/hacc` is reset to `-1` (unknown) if the last UBX NAV-PVT is older than 2s — prevents stale accuracy being published when NMEA GGA continues but UBX stops. Navigator then halts via its own staleness check.
 
 ## bringup — launch conventions
 
