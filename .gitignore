@@ -70,3 +70,4 @@ Thumbs.db
 tools/.env.rtk
 tools/mission_logs/
 missions/*.json
+missions/lanes/

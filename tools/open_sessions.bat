@@ -8,5 +8,6 @@ set KEY=%USERPROFILE%\.ssh\agri_rover
 start wt ^
   new-tab --title "RV1-A" ssh -t -i %KEY% ilasa1@192.168.100.19 "cd ~/Desktop/ros_agri_rover && bash" ; ^
   new-tab --title "RV1-B" ssh -t -i %KEY% ilasa1@192.168.100.19 "cd ~/Desktop/ros_agri_rover && bash" ; ^
-  new-tab --title "RV2"   ssh -t -i %KEY% ilasa1@192.168.100.20 "cd ~/Desktop/ros_agri_rover && bash" ; ^
+  new-tab --title "RV2-A" ssh -t -i %KEY% ilasa1@192.168.100.20 "cd ~/Desktop/ros_agri_rover && bash" ; ^
+  new-tab --title "RV2-B" ssh -t -i %KEY% ilasa1@192.168.100.20 "cd ~/Desktop/ros_agri_rover && bash" ; ^
   new-tab --title "SIM"   ssh -t -i %KEY% ilasa1@192.168.100.22 "cd ~/Desktop/ros_agri_rover && bash"
