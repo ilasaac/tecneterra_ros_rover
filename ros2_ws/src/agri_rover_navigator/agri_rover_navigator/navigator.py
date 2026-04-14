@@ -782,6 +782,31 @@ class NavigatorNode(Node):
                 self.get_logger().warn('Corridor mission: empty path')
                 return
 
+            # Mission validator: reject arcs tighter than min_turn_radius_m.
+            # At each interior point, R = chord/(2·sin(turn_angle/2)).
+            worst_r   = float('inf')
+            worst_idx = -1
+            for i in range(1, len(path_pts) - 1):
+                a_lat, a_lon = path_pts[i - 1][0], path_pts[i - 1][1]
+                b_lat, b_lon = path_pts[i    ][0], path_pts[i    ][1]
+                c_lat, c_lon = path_pts[i + 1][0], path_pts[i + 1][1]
+                brg_in  = bearing_to(a_lat, a_lon, b_lat, b_lon)
+                brg_out = bearing_to(b_lat, b_lon, c_lat, c_lon)
+                turn_deg = abs(((brg_out - brg_in + 180) % 360) - 180)
+                if turn_deg < 1e-3:
+                    continue
+                chord_m = haversine(a_lat, a_lon, c_lat, c_lon)
+                r_m = chord_m / (2.0 * math.sin(math.radians(turn_deg / 2.0)))
+                if r_m < worst_r:
+                    worst_r, worst_idx = r_m, i
+            if worst_idx >= 0 and worst_r < self._min_turn_radius:
+                self.get_logger().error(
+                    f'Mission rejected: arc at path[{worst_idx}] has radius '
+                    f'{worst_r:.2f} m < min_turn_radius_m={self._min_turn_radius:.2f} m')
+                a = Bool(); a.data = False
+                self.armed_pub.publish(a)
+                return
+
             # Turn indices and servo state from corridors_to_path
             # Always include index 0 — rover aligns heading before driving
             self._corridor_turn_indices = {
