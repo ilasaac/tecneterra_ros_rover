@@ -106,11 +106,9 @@ _PARAM_META: dict = {
     'stanley_k':                 ('_stanley_k',            0.0,  5.0),
     'stanley_cte_scale_m':       ('_stanley_cte_scale',   0.1,  5.0),
     'stanley_cte_alarm_m':       ('_stanley_cte_alarm',   0.5, 10.0),
-    'pivot_threshold':           ('_pivot_threshold',     10.0,180.0),
-    'pivot_approach_dist':       ('_pivot_approach_dist',  0.5, 10.0),
     'align_threshold':           ('_align_thresh',        10.0, 90.0),
     'default_acceptance_radius': ('_accept_r',            0.05,  2.0),
-    'afs_min_throttle_ppm':      ('_min_throttle_ppm',   1500, 1900),
+    'min_throttle_ppm':          ('_min_throttle_ppm',   1500, 1900),
     'min_steer_ppm_delta':   ('_min_steer_delta',    0,  400),
     'steer_coast_angle':     ('_steer_coast',        0.0, 60.0),
     'gps_accuracy_alarm_mm': ('_gps_acc_alarm',     -1.0, 2000.0),
@@ -241,41 +239,13 @@ class NavigatorNode(Node):
         self.declare_parameter('stanley_softening',         0.3)
         self.declare_parameter('stanley_cte_scale_m',       1.0)   # CTE (m) at which speed halves
         self.declare_parameter('stanley_cte_alarm_m',       1.0)   # CTE (m) → disarm + halt
-        # Pivot-turn parameters:
-        #   pivot_threshold    — turn angle (degrees) above which an in-place pivot
-        #                        is performed instead of curving through the waypoint.
-        #   pivot_approach_dist — distance (metres) at which the rover switches from
-        #                        path-lookahead to direct-to-waypoint aiming and begins
-        #                        slowing to min_speed, ensuring it arrives precisely.
-        self.declare_parameter('pivot_threshold',           30.0)
-        self.declare_parameter('pivot_approach_dist',        2.0)
+        # Corridor arc turn — post-turn exit speed (m/s)
         self.declare_parameter('post_turn_speed',           0.5)
-        # Obstacle avoidance:
-        #   rover_width_m       — physical rover width; half of this is the minimum
-        #                         clearance needed to keep the rover body off obstacles.
-        #   obstacle_clearance_m — additional safety buffer on top of rover half-width.
-        #   effective clearance  = rover_width_m/2 + obstacle_clearance_m
+        # Rover geometry for the proximity check
         self.declare_parameter('rover_width_m',              1.4)
-        self.declare_parameter('obstacle_clearance_m',       0.5)
-        # Bypass arc smoothing: replace sharp bypass corners with arc interpolation.
-        # bypass_arc_radius_m  — minimum arc radius at corners (larger = smoother, wider turns)
-        # bypass_arc_speed_k   — speed scaling factor: speed = max_speed * (1 - k * angle/180)
-        #                        k=0 → no slowdown, k=1 → full slowdown on 180° turns
-        self.declare_parameter('bypass_arc_radius_m',        0.0)
-        self.declare_parameter('bypass_arc_speed_k',         0.7)
-        # Minimum segment length (metres) for pivot-turn detection.  Bearing
-        # between two points closer than this is considered unreliable (GPS noise).
-        # RTK precision is < 0.02 m so any segment > 0.3 m has a reliable bearing.
-        # Set lower than the densest recorded waypoint spacing in your missions.
-        self.declare_parameter('min_pivot_segment_m',        0.3)
-        # Lane-tag arc insertion (row<->hd transitions in tagged corridor missions).
-        # When a corridor mission has per-vertex tags ("row" | "hd"), the navigator
-        # detects each tag flip and splices in a tangent-circle arc whose radius is
-        # lane_arc_radius_m. Smaller corners (heading change < lane_arc_threshold_deg)
-        # pass through unchanged. Default radius 1.0 m matches the typical sharp-turn
-        # radius measured from the user's saved sharp_curves.json.
-        self.declare_parameter('lane_arc_radius_m',          1.0)
-        self.declare_parameter('lane_arc_threshold_deg',    15.0)
+        # Minimum corridor arc turn radius (metres). Missions with tighter arcs
+        # are rejected on load.
+        self.declare_parameter('min_turn_radius_m',          2.0)
         # Motor stiction floors (apply to all Stanley outputs):
         #   min_throttle_ppm    — hard PPM floor for any forward motion output.
         #                         Prevents motor stall when CTE scaling reduces throttle
@@ -317,18 +287,6 @@ class NavigatorNode(Node):
         self.declare_parameter('proximity_halt_m',          1.0)
         self.declare_parameter('proximity_estop_m',         0.5)
 
-        # ── Resource management parameters ───────────────────────────────────
-        self.declare_parameter('recharge_lat',      0.0)
-        self.declare_parameter('recharge_lon',      0.0)
-        self.declare_parameter('water_lat',         0.0)
-        self.declare_parameter('water_lon',         0.0)
-        self.declare_parameter('battery_low_pct',  15.0)
-        self.declare_parameter('tank_low_pct',      5.0)
-        self.declare_parameter('base_speed',        0.9)
-        self.declare_parameter('base_acceptance_m', 1.5)
-        self.declare_parameter('test_tank_pct',    -1.0)   # -1 = use real sensor
-        self.declare_parameter('test_batt_pct',    -1.0)   # -1 = use real sensor
-
         self._lookahead           = self.get_parameter('lookahead_distance').value
         self._accept_r            = self.get_parameter('default_acceptance_radius').value
         self._max_speed           = self.get_parameter('max_speed').value
@@ -341,17 +299,8 @@ class NavigatorNode(Node):
         self._stanley_softening   = self.get_parameter('stanley_softening').value
         self._stanley_cte_scale   = self.get_parameter('stanley_cte_scale_m').value
         self._stanley_cte_alarm   = self.get_parameter('stanley_cte_alarm_m').value
-        self._pivot_threshold     = self.get_parameter('pivot_threshold').value
-        self._pivot_approach_dist = self.get_parameter('pivot_approach_dist').value
-        self._post_turn_speed    = self.get_parameter('post_turn_speed').value
-        self._min_pivot_seg       = self.get_parameter('min_pivot_segment_m').value
-        self._lane_arc_radius     = self.get_parameter('lane_arc_radius_m').value
-        self._lane_arc_threshold  = self.get_parameter('lane_arc_threshold_deg').value
-        rover_width               = self.get_parameter('rover_width_m').value
-        self._clearance           = (rover_width / 2.0
-                                     + self.get_parameter('obstacle_clearance_m').value)
-        self._bypass_arc_radius   = self.get_parameter('bypass_arc_radius_m').value
-        self._bypass_arc_speed_k  = self.get_parameter('bypass_arc_speed_k').value
+        self._post_turn_speed     = self.get_parameter('post_turn_speed').value
+        self._min_turn_radius     = self.get_parameter('min_turn_radius_m').value
         self._min_throttle_ppm    = self.get_parameter('min_throttle_ppm').value
         self._min_steer_delta     = self.get_parameter('min_steer_ppm_delta').value
         self._steer_coast         = self.get_parameter('steer_coast_angle').value
@@ -368,15 +317,6 @@ class NavigatorNode(Node):
         self._prox_halt_m   = self.get_parameter('proximity_halt_m').value
         self._prox_estop_m  = self.get_parameter('proximity_estop_m').value
 
-        # Resource management values
-        self._recharge_lat    = self.get_parameter('recharge_lat').value
-        self._recharge_lon    = self.get_parameter('recharge_lon').value
-        self._water_lat       = self.get_parameter('water_lat').value
-        self._water_lon       = self.get_parameter('water_lon').value
-        self._battery_low_pct = self.get_parameter('battery_low_pct').value
-        self._tank_low_pct    = self.get_parameter('tank_low_pct').value
-        self._base_speed      = self.get_parameter('base_speed').value
-        self._base_accept     = self.get_parameter('base_acceptance_m').value
         self.get_logger().info(
             f'Rover bounding box: front_ov={self._prox_front_ov:.3f} m, '
             f'rear_ov={self._prox_rear_ov:.3f} m, half_w={self._prox_half_w:.3f} m')
@@ -405,7 +345,6 @@ class NavigatorNode(Node):
         # _path_idx : index of the next waypoint not yet reached
         self._path:            list[MissionWaypoint] = []
         self._path_s:          list[float]           = []
-        self._path_tags:       list[str]             = []  # parallel to _path: "row" | "hd" | ""
         self._path_origin_lat: float | None          = None
         self._path_origin_lon: float | None          = None
         self._path_idx:        int                   = 0
@@ -422,57 +361,18 @@ class NavigatorNode(Node):
         if self._diag_enabled:
             self._open_diag_log(self.get_parameter('diag_log_path').value)
 
-        # Obstacle avoidance state
-        # _path_original: clean copy of received mission waypoints (without bypass points).
-        #                 Immutable copy of the uploaded mission.
-        # _obstacle_polygons: raw fence polygons [(lat,lon), ...] received from mission_fence.
-        # _expanded_polygons: _obstacle_polygons each expanded by _clearance metres.
-        #   Used to check if path crosses obstacles (disarm) and for lane graph pruning.
+        # Clean copy of the received corridor-derived path (unchanged after load).
         self._path_original:     list[MissionWaypoint]             = []
-        self._obstacle_polygons: list[list[tuple[float, float]]]   = []
-        self._expanded_polygons: list[list[tuple[float, float]]]   = []
 
-        # ── Corridor mode state ──────────────────────────────────────────────
-        # When a corridor mission is loaded, the navigator converts corridors
-        # + turn arcs into a single polyline stored in _path (same as waypoints).
-        # _corridor_mode=True activates the simpler corridor control loop:
-        # pure CTE following with no waypoint-advance logic.
+        # Corridor mode state (the only mode). _corridor_mode flag kept so
+        # callers can still check it — always True once a mission loads.
         self._corridor_mode:    bool        = False
         self._corridor_widths:  list[float] = []    # half-width per path point
-        self._corridor_total_s: float       = 0.0   # total path arc-length
-        self._corridor_entered: bool        = False  # True once rover is inside corridor width
+        self._corridor_total_s: float       = 0.0
+        self._corridor_entered: bool        = False
 
-        # Hold state — rover waits at a waypoint for hold_secs before advancing.
-        self._holding:  bool  = False
-        self._hold_end: float = 0.0
-
-        # Pivot-turn state — rover spins in place to the outgoing heading before
-        # advancing past a sharp-turn waypoint.
-        self._pivoting:           bool  = False
-        self._pivot_target_hdg:   float = 0.0
-        # Closest distance observed to the current pivot waypoint during approach.
-        # Reset on each waypoint advance.  Used for overshoot detection: if the rover
-        # arcs past the waypoint without entering accept_r, fires when it starts
-        # moving away (dist > closest + accept).
-        self._pivot_closest_dist: float = float('inf')
-
-        # Spin-bearing freeze for large heading errors.
-        # Initialized here so _control_loop never hits AttributeError on first tick.
+        # Spin-bearing freeze for large heading errors at mission start.
         self._spin_target_brg:  float | None = None
-
-        # Lane graph for grid-based routing (berry fields)
-        self._lane_map = None   # LaneMap instance (from lane_graph.py)
-
-        # Resource management state machine: 'normal' → 'going_to_base' → 'at_base' → 'normal'
-        self._resource_state:  str        = 'normal'
-        self._resource_reason: str | None = None       # 'battery' | 'tank'
-        self._saved_path_original: list   = []         # snapshot of _path_original at trigger
-        self._saved_wp_idx:    int        = 0          # _path_idx at trigger (next unvisited)
-        self._saved_fence:     list       = []         # expanded polygons
-        self._battery_pct:     float | None = None     # latest battery % from real sensors
-        self._tank_pct:        float | None = None     # latest tank % from real sensors
-        self._test_tank:       float | None = None     # test-injected tank % (station_update)
-        self._test_batt:       float | None = None     # test-injected batt % (station_update)
 
         self._dt = 1.0 / self.get_parameter('control_rate').value
 
@@ -486,16 +386,12 @@ class NavigatorNode(Node):
         self.create_subscription(Float32,         'heading',       self._cb_heading,      10)
         self.create_subscription(String,          'mode',          self._cb_mode,         10)
         self.create_subscription(Bool,            'armed',         self._cb_armed,        10)
-        self.create_subscription(MissionWaypoint, 'mission',       self._cb_mission,      200)
         self.create_subscription(RCInput,         'servo_state',   self._cb_servo_state,  10)
         self.create_subscription(Bool,            'mission_clear', self._cb_mission_clear, 10)
-        self.create_subscription(String,          'mission_fence', self._cb_mission_fence, 10)
         self.create_subscription(String,          'corridor_mission', self._cb_corridor_mission, 10)
         self.create_subscription(Float32,         'hacc',          self._cb_hacc,          10)
         self.create_subscription(SensorData,      'sensors',       self._cb_sensors,       10)
         self.create_subscription(RoverStatus,     'status',        self._cb_status,        10)
-        self.create_subscription(String,          'station_update', self._cb_station_update, 10)
-        self.create_subscription(String,          'lane_map',       self._cb_lane_map,       10)
 
         # ── Inter-rover proximity subscriptions (cross-namespace, absolute paths) ──
         peer_ns = self.get_parameter('peer_rover_ns').value
@@ -516,17 +412,10 @@ class NavigatorNode(Node):
         self.rerouted_pub       = self.create_publisher(String,   'rerouted_path',   10)
         self.path_version_pub   = self.create_publisher(Int32,    'path_version',    10)
         self._path_version      = 0
-        self.reroute_pending_pub = self.create_publisher(Bool,    'reroute_pending', 10)
-        self.confirm_message_pub = self.create_publisher(String,  'confirm_message', 10)
-        self.create_subscription(Bool, 'reroute_response', self._cb_reroute_response, 10)
-        self._reroute_pending    = False
-        self._base_no_lane_pending = False  # True when reroute_pending is for no-lane base trip
         self.nav_status_pub     = self.create_publisher(String,   'nav_status',      10)
         self.center_pos_pub     = self.create_publisher(NavSatFix, 'center_pos',     10)
         self.armed_pub          = self.create_publisher(Bool,     'armed',           10)
-        self.lane_status_pub    = self.create_publisher(String,   'lane_status',     10)
         self._last_nav_status   = ''
-        self._last_lane_status  = ''
         self.create_timer(1.0, self._publish_nav_status)
         self.nav_params_pub     = self.create_publisher(String,   'nav_params',      10)
         self.create_subscription(String, 'nav_param_set', self._cb_nav_param_set, 10)
@@ -534,7 +423,6 @@ class NavigatorNode(Node):
         # Publish current params periodically so mavlink_bridge always has fresh values.
         # Also fires immediately so the first subscriber (after any node restart) gets them.
         self.create_timer(5.0, self._publish_nav_params)
-        self.create_timer(1.0, self._check_resources)
 
         # ── Services ─────────────────────────────────────────────────────────
         self.create_service(Trigger, 'pause_mission',  self._svc_pause)
@@ -564,29 +452,6 @@ class NavigatorNode(Node):
         if status != self._last_nav_status:
             self.get_logger().info(f'nav_status: {self._last_nav_status} → {status}')
             self._last_nav_status = status
-        # Lane status: nearest lane ID + type (row/headland)
-        if self._lane_map is not None and self._fix is not None:
-            try:
-                from agri_rover_navigator.lane_graph import find_nearest_lane
-                rlat, rlon = self._center_pos()
-                lid, frac = find_nearest_lane(self._lane_map, rlat, rlon)
-                if lid:
-                    lane = self._lane_map.lanes.get(lid)
-                    # Short label: R1, HD1, etc. (ID already encodes type)
-                    ls = f'{lid} ({frac:.0%})'
-                else:
-                    ls = 'none'
-            except Exception:
-                ls = 'err'
-        elif self._lane_map is not None:
-            ls = 'no GPS'
-        else:
-            ls = 'no map'
-        lm = String(); lm.data = ls
-        self.lane_status_pub.publish(lm)
-        if ls != self._last_lane_status:
-            self.get_logger().info(f'lane_status: {ls}')
-            self._last_lane_status = ls
         # Re-publish path every 5s for late-joining rosbridge clients
         self._status_tick = getattr(self, '_status_tick', 0) + 1
         if self._path and self._status_tick % 5 == 0:
@@ -686,311 +551,18 @@ class NavigatorNode(Node):
         self._hacc_time = time.time()
 
     def _cb_sensors(self, msg: SensorData):
-        raw = msg.tank_level
-        self._tank_pct = raw if raw > 0 else None
+        # Sensor telemetry not consumed by navigator (corridor-only mode).
+        pass
 
     def _cb_status(self, msg: RoverStatus):
-        raw = msg.battery_remaining
-        self._battery_pct = (raw * 100) if raw > 0 else None
-
-    def _cb_station_update(self, msg: String):
-        """Update station coordinates or test sensor values from mavlink_bridge."""
-        try:
-            data = json.loads(msg.data)
-            stype = data.get('type', '')
-            if stype == 'battery':
-                lat = float(data.get('lat', 0.0))
-                lon = float(data.get('lon', 0.0))
-                self._recharge_lat = lat
-                self._recharge_lon = lon
-                self.get_logger().info(f'[RESOURCE] Battery station: ({lat:.5f},{lon:.5f})')
-            elif stype == 'water':
-                lat = float(data.get('lat', 0.0))
-                lon = float(data.get('lon', 0.0))
-                self._water_lat = lat
-                self._water_lon = lon
-                self.get_logger().info(f'[RESOURCE] Water station: ({lat:.5f},{lon:.5f})')
-            if 'test_tank' in data:
-                self._test_tank = float(data['test_tank'])
-                self.get_logger().info(f'[TEST] tank={self._test_tank:.0f}%')
-            if 'test_batt' in data:
-                self._test_batt = float(data['test_batt'])
-                self.get_logger().info(f'[TEST] battery={self._test_batt:.0f}%')
-        except Exception as e:
-            self.get_logger().warn(f'station_update parse error: {e}')
-
-    def _cb_lane_map(self, msg: String):
-        """Receive lane map JSON and build the directed lane graph."""
-        try:
-            from agri_rover_navigator.lane_graph import (
-                lane_map_from_json, compute_all_arcs,
-            )
-            self._lane_map = lane_map_from_json(msg.data)
-            # Compute arcs and check obstacles
-            obs = [(p[0], p[1]) for poly in self._expanded_polygons
-                   for p in poly] if self._expanded_polygons else None
-            obs_polys = [[(p[0], p[1]) for p in poly]
-                         for poly in self._expanded_polygons] if self._expanded_polygons else None
-            clearance = (self.get_parameter('obstacle_clearance_m').value
-                        + self.get_parameter('rover_width_m').value / 2.0)
-            compute_all_arcs(self._lane_map, obs_polys, clearance)
-            n_lanes = len(self._lane_map.lanes)
-            n_conns = len(self._lane_map.connections)
-            n_blocked = sum(1 for c in self._lane_map.connections if c.blocked)
-            self.get_logger().info(
-                f'[LANE] Map loaded: {n_lanes} lanes, {n_conns} connections '
-                f'({n_blocked} blocked by obstacles)')
-        except Exception as e:
-            self.get_logger().warn(f'[LANE] Parse error: {e}')
+        # Rover status telemetry not consumed by navigator (corridor-only mode).
+        pass
 
     def _cb_mode(self, msg: String):
         self._mode = msg.data
 
-    def _cb_reroute_response(self, msg: Bool):
-        if not self._reroute_pending:
-            return
-        self._reroute_pending = False
-        self._base_no_lane_pending = False
-        rp = Bool(); rp.data = False
-        self.reroute_pending_pub.publish(rp)
-        if msg.data:
-            self.get_logger().info('Confirmed — resuming navigation')
-        else:
-            # User rejected direct base trip — cancel base return, restore mission
-            self.get_logger().info('Direct base trip rejected — resuming mission')
-            self._resource_state = 'normal'
-            self._path = list(self._saved_path_original)
-            self._path_original = list(self._saved_path_original)
-            self._expanded_polygons = list(self._saved_fence)
-            self._path_idx = self._saved_wp_idx
-            olat = self._path[0].latitude if self._path else 0.0
-            olon = self._path[0].longitude if self._path else 0.0
-            self._path_origin_lat = olat
-            self._path_origin_lon = olon
-            self._path_s = self._rebuild_path_s(self._path, olat, olon)
-            self._path_version += 1
-            pv = Int32(); pv.data = self._path_version
-            self.path_version_pub.publish(pv)
-            self._publish_full_path()
-
     def _cb_armed(self, msg: Bool):
-        was_armed = self._armed
         self._armed = msg.data
-        # Approach path: if arming far from WP[0], plan route and disarm
-        if (msg.data and not was_armed and self._path
-                and self._path_idx == 0 and self._fix is not None
-                and not getattr(self, '_approach_planned', False)):
-            rlat, rlon = self._center_pos()
-            wp0 = self._path[0]
-            dist = haversine(rlat, rlon, wp0.latitude, wp0.longitude)
-            if dist > 1.5:
-                self.get_logger().info(
-                    f'Rover {dist:.1f}m from WP[0] — planning approach path')
-                self._plan_approach_path(rlat, rlon)
-                return
-        # Resume from waiting point on re-arm
-        if msg.data and not was_armed and self._path_idx < len(self._path):
-            wp = self._path[self._path_idx]
-            if wp.hold_secs < 0.0:
-                self.get_logger().info(
-                    f'Re-armed at waiting point WP{wp.seq} — advancing')
-                self._advance_path()
-        # Resume from base on re-arm — only if charge levels are sufficient
-        if msg.data and not was_armed and self._resource_state == 'at_base':
-            test_tank_param = self.get_parameter('test_tank_pct').value
-            test_batt_param = self.get_parameter('test_batt_pct').value
-            batt = (test_batt_param if test_batt_param >= 0
-                    else self._test_batt if self._test_batt is not None
-                    else self._battery_pct)
-            tank = (test_tank_param if test_tank_param >= 0
-                    else self._test_tank if self._test_tank is not None
-                    else self._tank_pct)
-            batt_ok = batt is None or batt >= self._battery_low_pct
-            tank_ok = tank is None or tank >= self._tank_low_pct
-            if not batt_ok or not tank_ok:
-                reason = f'battery {batt:.0f}%' if not batt_ok else f'tank {tank:.0f}%'
-                self.get_logger().warn(
-                    f'[RESOURCE] Cannot resume — {reason} still low. '
-                    f'Refill and re-arm.')
-                self._armed = False
-                a = Bool(); a.data = False
-                self.armed_pub.publish(a)
-                cm = String()
-                cm.data = f'Cannot resume: {reason} still low. Refill and re-arm.'
-                self.confirm_message_pub.publish(cm)
-                return
-            self._resource_state = 'normal'
-            # Clear test injection so it doesn't re-trigger immediately
-            self._test_tank = None
-            self._test_batt = None
-            self.get_logger().info('[RESOURCE] Re-armed at base — resuming mission')
-
-    def _plan_approach_path(self, rover_lat: float, rover_lon: float):
-        """Plan a smooth heading-aware path from rover to WP[0].
-
-        1. Try a cubic-Bézier curve tangent to the rover's current heading
-           (avoids axis turns).  The curve arrives aligned with the first
-           mission segment.
-        2. If the smooth path crosses an obstacle, fall back to the A* grid
-           planner.
-        3. Prepend approach waypoints to the mission and disarm for review.
-        """
-        from agri_rover_navigator.grid_planner import (
-            plan_smooth_approach, plan_around_obstacles,
-        )
-        wp0 = self._path[0]
-
-        # ── headings ──────────────────────────────────────────────
-        rover_hdg = self._heading
-        # Fallback: if heading is still zero and no front antenna, use
-        # bearing from rover to WP[0] (best we can do).
-        if rover_hdg == 0.0 and (self._fix_front is None
-                                  or self._fix_front.latitude == 0.0):
-            rover_hdg = bearing_to(rover_lat, rover_lon,
-                                   wp0.latitude, wp0.longitude)
-
-        # Desired arrival heading = mission direction at WP[0].
-        # Look ahead until we find a point >= 2 m from WP[0] so the
-        # bearing is stable (consecutive recorded points can be < 0.5 m
-        # apart, giving unreliable headings).
-        goal_hdg = None
-        if len(self._path) >= 2:
-            for i in range(1, len(self._path)):
-                d = haversine(wp0.latitude, wp0.longitude,
-                              self._path[i].latitude,
-                              self._path[i].longitude)
-                if d >= 2.0:
-                    goal_hdg = bearing_to(wp0.latitude, wp0.longitude,
-                                          self._path[i].latitude,
-                                          self._path[i].longitude)
-                    break
-            if goal_hdg is None:
-                # All points within 2 m — use the last one
-                goal_hdg = bearing_to(wp0.latitude, wp0.longitude,
-                                      self._path[-1].latitude,
-                                      self._path[-1].longitude)
-        if goal_hdg is None:
-            goal_hdg = bearing_to(rover_lat, rover_lon,
-                                  wp0.latitude, wp0.longitude)
-
-        # ── 1. try smooth Bézier approach ─────────────────────────
-        planned = plan_smooth_approach(
-            start=(rover_lat, rover_lon),
-            start_heading_deg=rover_hdg,
-            goal=(wp0.latitude, wp0.longitude),
-            goal_heading_deg=goal_hdg,
-            expanded_obstacles=self._expanded_polygons,
-        )
-        if planned is not None:
-            self.get_logger().info(
-                f'Smooth approach: {len(planned)} pts, '
-                f'rover hdg {rover_hdg:.0f}° → goal hdg {goal_hdg:.0f}°')
-        else:
-            # ── 2. fall back to A* grid planner ───────────────────
-            self.get_logger().info(
-                'Smooth approach blocked by obstacle — falling back to A*')
-            planned = plan_around_obstacles(
-                start=(rover_lat, rover_lon),
-                goal=(wp0.latitude, wp0.longitude),
-                obstacles=self._obstacle_polygons,
-                clearance_m=self._clearance,
-                resolution_m=0.10,
-                padding_m=self._clearance + 2.0,
-            )
-
-        if not planned or len(planned) < 2:
-            self.get_logger().warn(
-                'Approach planning failed — proceeding without')
-            self._approach_planned = True
-            return
-
-        # ── build approach waypoints (decel ramp) ─────────────────
-        total_dist = sum(
-            haversine(planned[i][0], planned[i][1],
-                      planned[i + 1][0], planned[i + 1][1])
-            for i in range(len(planned) - 1))
-        approach_wps: list = []
-        remaining = total_dist
-        for i, (lat, lon) in enumerate(planned[:-1]):
-            frac = remaining / max(total_dist, 0.1)
-            spd = self._min_speed + (self._max_speed - self._min_speed) * frac
-            if i + 1 < len(planned):
-                remaining -= haversine(lat, lon,
-                                       planned[i + 1][0], planned[i + 1][1])
-            wp = MissionWaypoint()
-            wp.seq = -99
-            wp.latitude = lat
-            wp.longitude = lon
-            wp.speed = max(self._min_speed, spd)
-            wp.hold_secs = 0.0
-            wp.acceptance_radius = self._accept_r
-            approach_wps.append(wp)
-
-        # Check angle between approach arrival and first mission segment.
-        # With the Bézier this should be near-zero; kept as safety net.
-        if len(planned) >= 2 and len(self._path) >= 2:
-            approach_brg = bearing_to(planned[-2][0], planned[-2][1],
-                                      planned[-1][0], planned[-1][1])
-            mission_brg = bearing_to(self._path[0].latitude,
-                                     self._path[0].longitude,
-                                     self._path[1].latitude,
-                                     self._path[1].longitude)
-            angle_diff = abs((mission_brg - approach_brg + 180) % 360 - 180)
-            if angle_diff > 30.0:
-                self.get_logger().info(
-                    f'Approach→mission angle {angle_diff:.0f}° > 30° '
-                    f'— adding turn at WP[0]')
-                needs_turn_at_junction = True
-            else:
-                needs_turn_at_junction = False
-        else:
-            needs_turn_at_junction = False
-
-        # Prepend to mission
-        shift = len(approach_wps)
-        self._path = approach_wps + list(self._path)
-        self._path_origin_lat = rover_lat
-        self._path_origin_lon = rover_lon
-        self._path_s = self._rebuild_path_s(self._path, rover_lat, rover_lon)
-        # Prepend corridor widths and servo state for approach waypoints
-        # Use CTE alarm as approach width; neutral servos (no spraying during approach)
-        approach_width = self._stanley_cte_alarm
-        if self._corridor_widths:
-            self._corridor_widths = [approach_width] * shift + self._corridor_widths
-        servo_list = getattr(self, '_corridor_servo', [])
-        if servo_list:
-            self._corridor_servo = [None] * shift + servo_list
-        # Shift corridor turn indices by number of prepended approach points
-        self._corridor_turn_indices = {ti + shift for ti in self._corridor_turn_indices}
-        # Add turn at junction if angle requires pivot
-        if needs_turn_at_junction:
-            self._corridor_turn_indices.add(shift)
-        # Also update corridor total arc-length if in corridor mode
-        if self._corridor_mode and self._path_s:
-            self._corridor_total_s = self._path_s[-1]
-        self._approach_planned = True
-
-        # Validate approach waypoints are not inside any obstacle
-        if self._expanded_polygons:
-            for i, wp in enumerate(approach_wps):
-                for poly in self._expanded_polygons:
-                    if self._point_in_polygon(wp.latitude, wp.longitude, poly):
-                        self.get_logger().warn(
-                            f'Approach WP[{i}] inside obstacle — removing')
-                        wp.latitude = approach_wps[max(0, i - 1)].latitude
-                        wp.longitude = approach_wps[max(0, i - 1)].longitude
-                        break
-
-        # Publish path + run preflight sim (same as obstacle reroute pipeline)
-        self._publish_full_path()
-        self._sim_validate_path()
-
-        # Disarm — user reviews approach + sim result then arms again
-        self._armed = False
-        a = Bool(); a.data = False
-        self.armed_pub.publish(a)
-        self.get_logger().info(
-            f'Approach: {len(approach_wps)} pts to WP[0] — arm again to start')
 
     def _cb_servo_state(self, msg: RCInput):
         changed = False
@@ -1113,11 +685,9 @@ class NavigatorNode(Node):
                                'speed': round(wp.speed, 2),
                                'hold_secs': round(wp.hold_secs, 1)}
                               for wp in self._path_original],
-                'obstacles': [[(round(lat, 7), round(lon, 7)) for lat, lon in poly]
-                              for poly in self._obstacle_polygons],
                 'rerouted_path': path_data,
-                'corridor_mode': self._corridor_mode,
-                'algorithm': 'corridor' if self._corridor_mode else 'stanley',
+                'corridor_mode': True,
+                'algorithm': 'corridor',
             }
             path = os.path.join(self._run_dir, 'mission.json')
             with open(path, 'w') as f:
@@ -1156,196 +726,14 @@ class NavigatorNode(Node):
         self._path_idx               = 0
         self._path_origin_lat        = None
         self._path_origin_lon        = None
-        self._holding                = False
-        self._pivoting               = False
-        self._pivot_closest_dist     = float('inf')
         self._spin_target_brg        = None
-        self._expanded_polygons      = []
-        self._obstacle_polygons      = []
-        self._reroute_pending        = False
-        self._base_no_lane_pending   = False
-        self._approach_planned       = False
         self._servo_ch               = [1061, 1061, PPM_CENTER, PPM_CENTER]  # CH5,CH6=off CH7,CH8=neutral
         clr_msg = String(); clr_msg.data = '[]'
         self.rerouted_pub.publish(clr_msg)
         self._publish_halt()
         self.get_logger().info('Mission cleared — path + servos reset')
 
-    def _cb_mission(self, msg: MissionWaypoint):
-        """Append waypoint to path and update cumulative arc-lengths."""
-        if msg.seq == 0:
-            # New run — create timestamped directory for diag + mission
-            self._start_new_run()
-            # New mission — discard any previous path
-            self._path.clear()
-            self._path_s.clear()
-            self._path_original.clear()
-            self._path_idx        = 0
-            self._holding         = False
-            self._pivoting               = False
-            self._pivot_closest_dist     = float('inf')
-            self._spin_target_brg        = None
-            self._expanded_polygons      = []
-            self._obstacle_polygons      = []
-            self._reroute_pending        = False
-            self._base_no_lane_pending   = False
-            self._approach_planned       = False
-            # Record rover centre as path origin (start of virtual segment → wp[0]).
-            if self._fix is not None:
-                self._path_origin_lat, self._path_origin_lon = self._center_pos()
-            else:
-                self._path_origin_lat = None
-                self._path_origin_lon = None
-
-        self._path.append(msg)
-        self._path_original.append(msg)
-
-        if len(self._path) == 1:
-            # Arc-length from origin to first waypoint
-            if self._path_origin_lat is not None:
-                d = haversine(self._path_origin_lat, self._path_origin_lon,
-                              msg.latitude, msg.longitude)
-            else:
-                d = 0.0
-            self._path_s.append(d)
-        else:
-            prev = self._path[-2]
-            d    = haversine(prev.latitude, prev.longitude,
-                             msg.latitude, msg.longitude)
-            self._path_s.append(self._path_s[-1] + d)
-
-        self.get_logger().info(
-            f'WP seq={msg.seq} loaded ({msg.latitude:.7f},{msg.longitude:.7f}) '
-            f'spd={msg.speed:.2f} hold={msg.hold_secs:.1f} '
-            f'— {len(self._path)} total, path {self._path_s[-1]:.1f} m')
-
-        # Check if path crosses any obstacle polygon — disarm if so
-        if self._expanded_polygons:
-            self._check_path_obstacles()
-
-    def _collapse_spin_clusters(self):
-        """Collapse turn-marked waypoint clusters into single waypoints.
-
-        GQC marks waypoints recorded during zero-throttle turns with
-        speed = -1.  Consecutive turn-marked waypoints are replaced by a
-        single centroid waypoint.  The outgoing speed is taken from the
-        first normal waypoint after the cluster.
-        """
-        if len(self._path_original) < 3:
-            return
-        result: list[MissionWaypoint] = []
-        cluster: list[MissionWaypoint] = []
-
-        for wp in self._path_original:
-            if wp.speed < 0:
-                # Turn-marked waypoint — accumulate into cluster
-                cluster.append(wp)
-            else:
-                if cluster:
-                    # Flush turn cluster → single centroid waypoint
-                    result.append(self._merge_cluster(cluster))
-                    cluster = []
-                result.append(wp)
-        if cluster:
-            result.append(self._merge_cluster(cluster))
-
-        removed = len(self._path_original) - len(result)
-        if removed > 0:
-            self.get_logger().info(
-                f'Spin optimizer: {len(self._path_original)} → {len(result)} wps '
-                f'({removed} spin-cluster points collapsed)')
-            # Rebuild path and arc-lengths from optimized list
-            self._path_original = result
-            self._path = list(result)
-            self._path_s = self._rebuild_path_s(
-                self._path, self._path_origin_lat, self._path_origin_lon)
-            # Re-number sequences
-            for i, wp in enumerate(self._path):
-                wp.seq = i
-
     @staticmethod
-    def _merge_cluster(cluster: list[MissionWaypoint]) -> MissionWaypoint:
-        """Merge a cluster of turn-marked waypoints into one.
-
-        Uses the centroid position.  Speed = last positive speed in the cluster,
-        or 0 (navigator default) if all are turn-marked.  Hold = max hold.
-        """
-        if len(cluster) == 1:
-            wp = cluster[0]
-            if wp.speed < 0:
-                wp.speed = 0.0  # clear turn marker
-            return wp
-        lat_avg = sum(wp.latitude for wp in cluster) / len(cluster)
-        lon_avg = sum(wp.longitude for wp in cluster) / len(cluster)
-        # Use last non-zero speed (outgoing direction speed)
-        speed = 0.0
-        for wp in reversed(cluster):
-            if wp.speed > 0:
-                speed = wp.speed
-                break
-        hold = max(wp.hold_secs for wp in cluster)
-        merged = MissionWaypoint()
-        merged.seq = cluster[0].seq
-        merged.latitude = lat_avg
-        merged.longitude = lon_avg
-        merged.speed = speed
-        merged.acceptance_radius = cluster[0].acceptance_radius
-        merged.hold_secs = hold
-        return merged
-
-    def _cb_mission_fence(self, msg: String):
-        """Parse JSON fence polygons and reroute the current mission path."""
-        # Collapse turn-marked waypoints (speed=-1 from GQC recording) into
-        # single centroid waypoints before rerouting.
-        if self._path_original and not self._corridor_mode:
-            self._collapse_spin_clusters()
-
-        try:
-            data  = json.loads(msg.data)
-            polys = data.get('polygons', [])
-        except (json.JSONDecodeError, AttributeError, TypeError):
-            self.get_logger().warn('mission_fence: invalid JSON — obstacle avoidance disabled')
-            return
-
-        self._obstacle_polygons = [
-            [(float(v[0]), float(v[1])) for v in poly]
-            for poly in polys
-            if len(poly) >= 3
-        ]
-        self._expanded_polygons = [
-            self._expand_polygon(poly, self._clearance)
-            for poly in self._obstacle_polygons
-        ]
-
-        if self._obstacle_polygons:
-            total_verts = sum(len(p) for p in self._obstacle_polygons)
-            self.get_logger().info(
-                f'Obstacle fence: {len(self._obstacle_polygons)} polygon(s), '
-                f'{total_verts} verts total, '
-                f'clearance={self._clearance:.1f} m, '
-                f'path_original={len(self._path_original)} wps')
-            # Per-polygon vertex dump moved to debug level to avoid log spam
-            # (was 2 INFO lines per polygon — 40 lines for a 20-polygon mission).
-            # Re-enable with --ros-args --log-level rv2.navigator:=debug if needed.
-            for pi, poly in enumerate(self._obstacle_polygons):
-                verts_str = '  '.join(f'{lat:.7f},{lon:.7f}' for lat, lon in poly)
-                self.get_logger().debug(f'  poly[{pi}] raw ({len(poly)} verts): {verts_str}')
-                exp_str = '  '.join(f'{lat:.7f},{lon:.7f}' for lat, lon in self._expanded_polygons[pi])
-                self.get_logger().debug(f'  poly[{pi}] expanded: {exp_str}')
-
-        # Check if path crosses any obstacle — disarm if so
-        if self._obstacle_polygons and self._path_original:
-            self._check_path_obstacles()
-        elif self._obstacle_polygons:
-            self.get_logger().info(
-                'Obstacle fence loaded — will check on next waypoint')
-        else:
-            self.get_logger().info('Obstacle fence: empty (no polygons)')
-            if self._path:
-                self._publish_full_path()
-
-    # ── Services ──────────────────────────────────────────────────────────────
-
     def _svc_pause(self, _, response):
         self._paused     = True
         response.success = True
@@ -1360,166 +748,12 @@ class NavigatorNode(Node):
 
     # ── Obstacle geometry ─────────────────────────────────────────────────────
 
-    def _expand_polygon(self, polygon: list[tuple[float, float]],
-                        clearance_m: float) -> list[tuple[float, float]]:
-        """
-        Offset each polygon edge outward by clearance_m (uniform Minkowski buffer).
-
-        Each edge is moved along its outward normal, then adjacent offset edges are
-        re-intersected to find the new vertices.  This guarantees exactly clearance_m
-        perpendicular distance from every edge, unlike centroid-based expansion which
-        gives unequal offsets on non-circular polygons.
-        """
-        n = len(polygon)
-        if n < 3:
-            return list(polygon)
-
-        # Flat-earth conversion centred at polygon centroid
-        c_lat = sum(p[0] for p in polygon) / n
-        c_lon = sum(p[1] for p in polygon) / n
-        cos_lat = math.cos(math.radians(c_lat)) or 1e-9
-        m_lat   = 111_320.0
-        m_lon   = 111_320.0 * cos_lat
-
-        def to_m(lat: float, lon: float) -> tuple[float, float]:
-            return (lon - c_lon) * m_lon, (lat - c_lat) * m_lat
-
-        def to_ll(x: float, y: float) -> tuple[float, float]:
-            return c_lat + y / m_lat, c_lon + x / m_lon
-
-        pts = [to_m(lat, lon) for lat, lon in polygon]
-
-        # Signed area — positive = CCW, negative = CW
-        area2 = sum(pts[i][0] * pts[(i + 1) % n][1] -
-                    pts[(i + 1) % n][0] * pts[i][1]
-                    for i in range(n))
-        orig_abs_area = abs(area2)
-
-        def _offset(w_sign: float):
-            off: list[tuple[float, float, float, float]] = []
-            for i in range(n):
-                x1, y1 = pts[i]
-                x2, y2 = pts[(i + 1) % n]
-                dx, dy = x2 - x1, y2 - y1
-                length  = math.hypot(dx, dy) or 1e-9
-                nx, ny  = w_sign * dy / length, -w_sign * dx / length
-                ox, oy  = nx * clearance_m, ny * clearance_m
-                off.append((x1 + ox, y1 + oy, x2 + ox, y2 + oy))
-            verts: list[tuple[float, float]] = []
-            for i in range(n):
-                x1, y1, x2, y2 = off[i]
-                x3, y3, x4, y4 = off[(i + 1) % n]
-                dx1, dy1 = x2 - x1, y2 - y1
-                dx2, dy2 = x4 - x3, y4 - y3
-                denom = dx1 * dy2 - dy1 * dx2
-                if abs(denom) < 1e-9:
-                    verts.append((x2, y2))
-                else:
-                    t = ((x3 - x1) * dy2 - (y3 - y1) * dx2) / denom
-                    verts.append((x1 + t * dx1, y1 + t * dy1))
-            return verts
-
-        # Try outward expansion based on winding direction
-        w = 1.0 if area2 > 0 else -1.0
-        expanded_m = _offset(w)
-
-        # Verify expanded polygon is BIGGER — if not, flip direction
-        exp_area = abs(sum(expanded_m[i][0] * expanded_m[(i + 1) % n][1] -
-                          expanded_m[(i + 1) % n][0] * expanded_m[i][1]
-                          for i in range(n)))
-        if exp_area < orig_abs_area:
-            expanded_m = _offset(-w)
-
-        return [to_ll(x, y) for x, y in expanded_m]
-
-    def _seg_intersect_polygon(
-            self,
-            a_lat: float, a_lon: float,
-            b_lat: float, b_lon: float,
-            polygon: list[tuple[float, float]]) -> list[tuple[float, int]]:
-        """
-        Return sorted list of (t, edge_idx) where t ∈ (0, 1) is the position
-        along segment A→B at which it crosses polygon edge edge_idx.
-
-        Uses flat-earth Cartesian coordinates centred at the midpoint of A and B.
-        Valid for segments shorter than ~500 m.
-        """
-        if len(polygon) < 3:
-            return []
-        c_lat = (a_lat + b_lat) / 2.0
-        c_lon = (a_lon + b_lon) / 2.0
-        cos_lat = math.cos(math.radians(c_lat)) or 1e-9
-        m_lat = 111_320.0
-        m_lon = 111_320.0 * cos_lat
-
-        def xy(lat: float, lon: float) -> tuple[float, float]:
-            return (lon - c_lon) * m_lon, (lat - c_lat) * m_lat
-
-        ax, ay = xy(a_lat, a_lon)
-        bx, by = xy(b_lat, b_lon)
-        dx, dy = bx - ax, by - ay   # direction of A→B
-
-        hits: list[tuple[float, int]] = []
-        n = len(polygon)
-        for i in range(n):
-            cx, cy = xy(*polygon[i])
-            nx, ny = xy(*polygon[(i + 1) % n])
-            ex, ey = nx - cx, ny - cy   # direction of polygon edge i→(i+1)
-            rx, ry = cx - ax, cy - ay   # vector from A to edge start
-
-            # 2-D cross products: det = e×d, t = e×r / det, u = d×r / det
-            det = ex * dy - ey * dx
-            if abs(det) < 1e-9:
-                continue   # parallel
-            t = (ex * ry - ey * rx) / det
-            u = (dx * ry - dy * rx) / det
-            if 1e-6 < t < 1.0 - 1e-6 and 0.0 <= u <= 1.0:
-                hits.append((t, i))
-
-        hits.sort(key=lambda h: h[0])
-        return hits
-
-    def _check_path_obstacles(self):
-        """Check if the current path crosses any obstacle polygon.
-
-        If any segment intersects an expanded obstacle, log a warning and
-        disarm the rover.  No rerouting — the user must adjust the mission.
-        """
-        if not self._expanded_polygons or not self._path:
-            self.get_logger().info(
-                f'[OBSTACLE] Skip check: {len(self._expanded_polygons)} polygons, '
-                f'{len(self._path)} waypoints')
-            return
-        for i in range(len(self._path) - 1):
-            a = self._path[i]
-            b = self._path[i + 1]
-            for pi, poly in enumerate(self._expanded_polygons):
-                hits = self._seg_intersect_polygon(
-                    a.latitude, a.longitude,
-                    b.latitude, b.longitude, poly)
-                if hits:
-                    self.get_logger().error(
-                        f'[OBSTACLE] Path segment {i}→{i+1} crosses '
-                        f'obstacle polygon {pi} — disarming')
-                    self._publish_halt()
-                    self._armed = False
-                    arm_msg = Bool(); arm_msg.data = False
-                    self.armed_pub.publish(arm_msg)
-                    # Notify user
-                    cm = String()
-                    cm.data = f'Path crosses obstacle {pi} at segment {i}. Mission blocked.'
-                    self.confirm_message_pub.publish(cm)
-                    return
-        self.get_logger().info('[OBSTACLE] Path clear — no obstacle intersections')
-        self._publish_full_path()
-
     def _cb_corridor_mission(self, msg: String):
         """Parse corridor mission JSON → build polyline path for Stanley CTE following."""
         try:
             from agri_rover_navigator.corridor import (
                 corridor_mission_from_json, corridors_to_path,
                 auto_split_corridors, optimize_corridor_speeds,
-                insert_lane_arcs,
             )
 
             mission = corridor_mission_from_json(msg.data)
@@ -1527,47 +761,22 @@ class NavigatorNode(Node):
             # Save raw corridor data before any optimization
             self._raw_corridor_json = msg.data
 
-            # Detect lane tags. If any vertex of any corridor has a non-empty
-            # tag ("row" | "hd"), this is a tagged mission and we BYPASS
-            # auto_split_corridors — the user's tag boundaries are authoritative,
-            # not heading-change detection.
-            has_lane_tags = any(
-                any(t for t in c.tags) for c in mission.corridors
-            )
-
-            # Auto-split: if mission has only 1 corridor with many points
-            # AND no lane tags, it's a raw recording — split at sharp turns
-            # into multiple corridors with headland crossings.
-            if (not has_lane_tags
-                    and len(mission.corridors) == 1
+            # Auto-split: if mission has only 1 corridor with many points,
+            # it's a raw recording — split at sharp turns into multiple
+            # corridors with headland crossings.
+            if (len(mission.corridors) == 1
                     and len(mission.corridors[0].centerline) > 5):
                 c0 = mission.corridors[0]
                 mission = auto_split_corridors(
                     c0.centerline, turn_threshold_deg=70.0,
                     width=c0.width, speeds=c0.speeds,
-                    ch5s=c0.ch5, ch6s=c0.ch6, ch7s=c0.ch7, ch8s=c0.ch8,
-                    tags=c0.tags)
+                    ch5s=c0.ch5, ch6s=c0.ch6, ch7s=c0.ch7, ch8s=c0.ch8)
                 self.get_logger().info(
                     f'Auto-split: {len(c0.centerline)} points -> '
                     f'{len(mission.corridors)} corridors')
 
             path_pts = corridors_to_path(mission, default_speed=self._max_speed,
                                         post_turn_speed=self._post_turn_speed)
-
-            # Lane-tag arc insertion: at each row<->hd transition where the heading
-            # change exceeds lane_arc_threshold_deg, splice in a tangent-circle arc.
-            if has_lane_tags and path_pts:
-                before_n = len(path_pts)
-                path_pts = insert_lane_arcs(
-                    path_pts,
-                    radius_m=self._lane_arc_radius,
-                    threshold_deg=self._lane_arc_threshold,
-                )
-                added = len(path_pts) - before_n
-                if added > 0:
-                    self.get_logger().info(
-                        f'Lane arcs: inserted {added} points at row<->hd transitions '
-                        f'(R={self._lane_arc_radius:.2f} m, threshold={self._lane_arc_threshold:.0f}°)')
 
             if not path_pts:
                 self.get_logger().warn('Corridor mission: empty path')
@@ -1582,25 +791,19 @@ class NavigatorNode(Node):
 
             # New run — create timestamped directory for diag + mission
             self._start_new_run()
-            # Clear any existing waypoint mission
+            # Clear any existing mission
             self._path.clear()
             self._path_s.clear()
-            self._path_tags.clear()
             self._path_original.clear()
             self._path_idx          = 0
-            self._holding           = False
-            self._pivoting          = False
             self._spin_target_brg   = None
             self._corridor_mode     = True
             self._corridor_entered  = False
-            self._approach_planned  = False
-            self._pivot_min_dist    = None
             self._corridor_widths.clear()
 
-            # Build path from corridor polyline (7-tuple includes lane tag)
+            # Build path from corridor polyline
             for i, pt in enumerate(path_pts):
                 lat, lon, speed, width, _is_turn, _srv = pt[:6]
-                tag = pt[6] if len(pt) > 6 else ''
                 wp = MissionWaypoint()
                 wp.seq               = i
                 wp.latitude          = lat
@@ -1610,7 +813,6 @@ class NavigatorNode(Node):
                 wp.hold_secs         = 0.0
                 self._path.append(wp)
                 self._path_original.append(wp)
-                self._path_tags.append(tag)
                 self._corridor_widths.append(width)
 
             # Set origin to first point
@@ -1629,7 +831,6 @@ class NavigatorNode(Node):
                 f'{len(self._path)} path pts, {self._corridor_total_s:.1f} m total')
 
             self._publish_full_path()
-            self._sim_validate_path()
 
         except Exception as e:
             self.get_logger().error(f'Corridor mission parse error: {e}')
@@ -1739,25 +940,6 @@ class NavigatorNode(Node):
             self._corridor_entered = False
             return
 
-        # Runtime obstacle proximity — halt if rover enters any expanded polygon
-        # Publish alert only on first detection to avoid flooding GQC via rosbridge
-        if self._expanded_polygons:
-            inside_obs = False
-            for poly in self._expanded_polygons:
-                if self._point_in_polygon(rlat, rlon, poly):
-                    inside_obs = True
-                    break
-            if inside_obs:
-                self._publish_halt()
-                if not getattr(self, '_obstacle_halt_sent', False):
-                    self._obstacle_halt_sent = True
-                    self.get_logger().error('OBSTACLE PROXIMITY — rover inside safety zone, halting')
-                    m = Int32(); m.data = -3
-                    self.wp_pub.publish(m)
-                return
-            else:
-                self._obstacle_halt_sent = False
-
         # XTE telemetry
         xte_msg = Float32(); xte_msg.data = abs(cte)
         self.xte_pub.publish(xte_msg)
@@ -1798,77 +980,17 @@ class NavigatorNode(Node):
 
         target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
 
-        # Pivot at turn point: drive past it, then stop and spin when distance increases
-        if turn_idx is not None:
-            dist_to_turn = turn_s - s_nearest
-            tp = self._path[turn_idx]
-            direct_dist = haversine(rlat, rlon, tp.latitude, tp.longitude)
-            # Track closest approach to turn point
-            if not hasattr(self, '_pivot_min_dist') or self._pivot_min_dist is None:
-                self._pivot_min_dist = direct_dist
-            if direct_dist < self._pivot_min_dist:
-                self._pivot_min_dist = direct_dist
-            # Trigger: within acceptance radius AND distance is increasing (passed it)
-            passed_turn = (self._pivot_min_dist < self._accept_r
-                           and direct_dist > self._pivot_min_dist + 0.05)
-            if passed_turn:
-                # Find a point well into the next corridor for a stable bearing.
-                # Use at least 2m ahead (or the farthest available point).
-                tp = self._path[turn_idx]
-                nxt = turn_idx + 1
-                best_nxt = min(nxt, len(self._path) - 1)
-                while nxt < len(self._path):
-                    d = haversine(tp.latitude, tp.longitude,
-                                  self._path[nxt].latitude, self._path[nxt].longitude)
-                    if d > 0.1:
-                        best_nxt = nxt  # at least a distinct point
-                    if d >= 2.0:
-                        best_nxt = nxt
-                        break
-                    nxt += 1
-                next_brg = bearing_to(
-                    tp.latitude, tp.longitude,
-                    self._path[best_nxt].latitude, self._path[best_nxt].longitude)
-                pivot_err = ((next_brg - self._heading + 180) % 360) - 180
-                if abs(pivot_err) > self._hdb:
-                    # Still turning — spin in place
-                    steer_frac = max(-self._max_steer, min(self._max_steer, pivot_err / 45.0))
-                    steer_ppm = int(PPM_CENTER - steer_frac * 500)
-                    if steer_ppm != PPM_CENTER:
-                        sign = 1 if steer_ppm > PPM_CENTER else -1
-                        steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
-                                                             self._min_steer_delta)
-                    self._publish_cmd(PPM_CENTER, steer_ppm)
-                    # Log pivot spin to diag
-                    if self._diag_writer is not None:
-                        sf = (PPM_CENTER - steer_ppm) / 500.0
-                        self._diag_writer.writerow([
-                            round(time.time(), 4),
-                            round(rlat, 8), round(rlon, 8),
-                            round(self._heading, 2),
-                            round(next_brg, 2),
-                            round(pivot_err, 2),
-                            round(cte, 4),
-                            round(sf, 4),
-                            steer_ppm, PPM_CENTER,
-                            0, round(direct_dist, 3),
-                            seg_idx, 'pivot',
-                            self._fix.status.status if self._fix else -1,
-                            round(self._hacc_mm, 1),
-                        ])
-                    return
-                # Spin complete — advance past turn into new corridor
-                self._corridor_turn_indices.discard(turn_idx)
-                self._spin_target_brg = None
-                self._pivot_min_dist = None  # reset for next turn
-                self._path_idx = turn_idx + 1  # post-turn slow point
-                self._apply_corridor_servo(self._path_idx)
-                self._corridor_entered = False  # re-enter corridor grace
-                self.get_logger().info(
-                    f'PIVOT DONE: turn_idx={turn_idx} nxt={nxt} '
-                    f'new_path_idx={self._path_idx} hdg={self._heading:.1f} '
-                    f'next_brg={next_brg:.1f} remaining_turns={self._corridor_turn_indices}')
-                return  # recompute everything on next tick with new _path_idx
+        # Advance past a turn point when the rover's projected arc-length passes it.
+        # Arc-only corridors: no on-axis spin — Stanley steers through the arc and
+        # this just advances _path_idx so the next corridor becomes the active target.
+        if turn_idx is not None and s_nearest > turn_s - self._accept_r:
+            self._corridor_turn_indices.discard(turn_idx)
+            self._path_idx = turn_idx + 1
+            self._apply_corridor_servo(self._path_idx)
+            self._corridor_entered = False
+            self.get_logger().info(
+                f'TURN POINT PASSED: turn_idx={turn_idx} new_path_idx={self._path_idx} '
+                f'remaining_turns={self._corridor_turn_indices}')
 
         # Freeze target bearing during align-spin
         if self._spin_target_brg is not None:
@@ -1882,10 +1004,10 @@ class NavigatorNode(Node):
         cte_factor = max(0.0, 1.0 - abs(cte) / max(self._stanley_cte_scale, 0.01))
         v_mps = max(self._min_speed, target_spd * cte_factor)
 
-        # Decelerate approaching turn point
+        # Decelerate approaching turn point (linear ramp over last 2 × lookahead)
         if turn_s is not None:
             dist_to_turn = turn_s - s_nearest
-            approach = self._pivot_approach_dist
+            approach = max(1.0, self._lookahead * 2.0)
             if dist_to_turn < approach:
                 v_mps = max(self._min_speed, v_mps * (dist_to_turn / approach))
 
@@ -1987,19 +1109,6 @@ class NavigatorNode(Node):
         self._save_run_mission()
 
     @staticmethod
-    def _point_in_polygon(lat: float, lon: float, poly: list) -> bool:
-        """Ray-casting point-in-polygon test."""
-        inside = False
-        n = len(poly)
-        j = n - 1
-        for i in range(n):
-            yi, xi = poly[i]
-            yj, xj = poly[j]
-            if ((yi > lat) != (yj > lat)) and (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi):
-                inside = not inside
-            j = i
-        return inside
-
     def _clone_wp(self, wp: MissionWaypoint) -> MissionWaypoint:
         c = MissionWaypoint()
         c.seq = wp.seq
@@ -2011,307 +1120,6 @@ class NavigatorNode(Node):
         return c
 
     # _reroute_path removed — obstacles now disarm the rover instead of rerouting.
-
-    def _sim_validate_path(self) -> dict:
-        """Run fast offline simulation of the current path using DiffDriveState.
-
-        Calls the navigator's own geometry methods (_cte_to_seg, _point_at_s)
-        on self._path / self._path_s — no ROS2 topics, no code duplication.
-        Runs in <1s for typical missions (tight Python loop, ~1000x real-time).
-
-        Outputs sim_diag.csv in the same format as navigator_diag.csv so the
-        two can be compared directly in mission_planner.
-
-        Returns dict with max_cte, avg_cte, complete, sim_path.
-        """
-        from agri_rover_simulator.diff_drive import DiffDriveState
-
-        if not self._path or len(self._path) < 2 or not self._path_s:
-            return {'ok': False, 'reason': 'no path'}
-
-        # Init position and heading — use real rover heading if available
-        # (approach path starts at rover's current position/heading, not WP[0]→WP[1])
-        wp0 = self._path[0]
-        wp1 = self._path[1]
-        if self._heading is not None and self._fix is not None:
-            hdg = self._heading
-        else:
-            hdg = bearing_to(wp0.latitude, wp0.longitude,
-                             wp1.latitude, wp1.longitude)
-
-        baseline = 1.0  # antenna baseline metres
-        half_bm = baseline / 2.0
-        hdg_rad = math.radians(hdg)
-        cos_lat0 = math.cos(math.radians(wp0.latitude)) or 1e-9
-        rear_lat = wp0.latitude - (half_bm * math.cos(hdg_rad)) / 111320.0
-        rear_lon = wp0.longitude - (half_bm * math.sin(hdg_rad)) / (111320.0 * cos_lat0)
-
-        rover = DiffDriveState(rear_lat, rear_lon, hdg,
-                               max_steer=self._max_steer)
-
-        dt = self._dt
-        rate = 1.0 / dt
-        total_s = self._path_s[-1] if self._path_s else 0.0
-        max_steps = int(600.0 * rate)  # 10 min hard cap
-
-        # Sim-local state (does NOT touch self._path_idx etc.)
-        sim_path_idx = 0
-        sim_spin_brg = None
-        sim_pivot_min = None
-        sim_pivoting = False       # True while spinning at a turn point
-        sim_pivot_brg = 0.0        # target bearing during pivot
-        turn_indices = set(getattr(self, '_corridor_turn_indices', set()))
-        is_corridor = self._corridor_mode
-
-        max_cte = 0.0
-        cte_sum = 0.0
-        steps = 0
-        sim_trace = []
-        sim_time = 0.0
-
-        # Open diag CSV (same columns as real navigator_diag.csv)
-        sim_diag_file = None
-        sim_diag_writer = None
-        if self._run_dir:
-            try:
-                sim_diag_path = os.path.join(self._run_dir, 'sim_diag.csv')
-                sim_diag_file = open(sim_diag_path, 'w', newline='')
-                sim_diag_writer = csv.writer(sim_diag_file)
-                sim_diag_writer.writerow([
-                    't', 'lat', 'lon', 'heading',
-                    'target_brg', 'hdg_err', 'cte',
-                    'steer_frac', 'steer_ppm', 'throttle_ppm',
-                    'speed_tgt', 'dist_to_wp', 'wp_idx', 'algo', 'fix_quality', 'hacc_mm',
-                ])
-            except Exception:
-                sim_diag_writer = None
-
-        def _log(lat, lon, heading, tgt_brg, herr, cte_v, sf, sppm, tppm, spd, dist, idx, algo):
-            if sim_diag_writer is not None:
-                sim_diag_writer.writerow([
-                    round(sim_time, 4),
-                    round(lat, 8), round(lon, 8),
-                    round(heading, 2), round(tgt_brg, 2), round(herr, 2),
-                    round(cte_v, 4), round(sf, 4),
-                    sppm, tppm, round(spd, 3), round(dist, 3),
-                    idx, algo, 4, 0,  # fix_quality=RTK, hacc=0
-                ])
-
-        for _ in range(max_steps):
-            # Centre and front positions from rear antenna
-            cos_lat = math.cos(math.radians(rover.lat)) or 1e-9
-            rlat = rover.lat + (half_bm * math.cos(rover.heading_rad)) / 111320.0
-            rlon = rover.lon + (half_bm * math.sin(rover.heading_rad)) / (111320.0 * cos_lat)
-            flat = rover.lat + (baseline * math.cos(rover.heading_rad)) / 111320.0
-            flon = rover.lon + (baseline * math.sin(rover.heading_rad)) / (111320.0 * cos_lat)
-            heading = rover.heading_deg
-
-            # Nearest on path (local search from sim_path_idx, 3 segments)
-            best_s, best_seg, best_dist = 0.0, sim_path_idx, float('inf')
-            search_limit = min(sim_path_idx + (3 if is_corridor else 1), len(self._path))
-            if is_corridor:
-                for ti in sorted(turn_indices):
-                    if ti > sim_path_idx:
-                        search_limit = min(search_limit, ti)
-                        break
-            for seg_k in range(sim_path_idx, search_limit):
-                if seg_k == 0:
-                    a_lat = self._path_origin_lat or wp0.latitude
-                    a_lon = self._path_origin_lon or wp0.longitude
-                    s_a = 0.0
-                else:
-                    a_lat = self._path[seg_k - 1].latitude
-                    a_lon = self._path[seg_k - 1].longitude
-                    s_a = self._path_s[seg_k - 1]
-                b_lat = self._path[seg_k].latitude
-                b_lon = self._path[seg_k].longitude
-                s_b = self._path_s[seg_k]
-                mid = math.radians((a_lat + b_lat) / 2)
-                cl = math.cos(mid) or 1e-9
-                ml, mo = 111320.0, 111320.0 * cl
-                sy = (b_lat - a_lat) * ml
-                sx = (b_lon - a_lon) * mo
-                sl = math.hypot(sx, sy)
-                if sl < 0.01:
-                    d = haversine(rlat, rlon, b_lat, b_lon)
-                    if d < best_dist:
-                        best_dist, best_s, best_seg = d, s_b, seg_k
-                    continue
-                ry = (rlat - a_lat) * ml
-                rx = (rlon - a_lon) * mo
-                t = max(0.0, min(1.0, (rx * sx + ry * sy) / sl ** 2))
-                d = math.hypot(t * sx - rx, t * sy - ry)
-                if d < best_dist:
-                    best_dist = d
-                    best_s = s_a + t * (s_b - s_a)
-                    best_seg = seg_k
-            s_nearest = best_s
-            seg_idx = best_seg
-
-            # Mission complete? Arc-length OR proximity to last point
-            last_wp = self._path[-1]
-            d_last = haversine(rlat, rlon, last_wp.latitude, last_wp.longitude)
-            if s_nearest >= total_s - self._accept_r or d_last < self._accept_r:
-                break
-
-            # CTE (front antenna, same as real navigator)
-            cte = self._cte_to_seg(flat, flon, seg_idx)
-            abs_cte = abs(cte)
-            if abs_cte > max_cte:
-                max_cte = abs_cte
-            cte_sum += abs_cte
-            steps += 1
-
-            # Advance sim_path_idx — arc-length OR proximity
-            if seg_idx > sim_path_idx:
-                limit = len(self._path)
-                if is_corridor:
-                    for ti in sorted(turn_indices):
-                        if ti > sim_path_idx:
-                            limit = ti
-                            break
-                sim_path_idx = min(seg_idx, limit)
-            # Proximity advance: disabled — let arc-length handle it.
-            # The proximity advance was pushing sim_path_idx forward prematurely,
-            # causing CTE to be computed against the wrong segment.
-            if sim_path_idx >= len(self._path):
-                break
-
-            # Turn handling for corridors
-            turn_s = None
-            turn_idx = None
-            if is_corridor:
-                for ti in sorted(turn_indices):
-                    if ti < len(self._path_s) and self._path_s[ti] >= s_nearest - self._accept_r:
-                        turn_s = self._path_s[ti]
-                        turn_idx = ti
-                        break
-                if turn_s is not None and s_nearest > turn_s:
-                    s_nearest = turn_s
-
-            # Lookahead
-            s_limit = turn_s if turn_s is not None else total_s
-            s_look = min(s_nearest + self._lookahead, s_limit)
-            la_lat, la_lon = self._point_at_s(s_look)
-            target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
-
-            # Pivot state machine — stays in pivot mode until heading aligned
-            if sim_pivoting:
-                pivot_err = ((sim_pivot_brg - heading + 180) % 360) - 180
-                if abs(pivot_err) > self._hdb:
-                    steer_frac = max(-self._max_steer, min(self._max_steer, pivot_err / 45.0))
-                    steer_ppm = int(1500 - steer_frac * 500)
-                    _log(rlat, rlon, heading, sim_pivot_brg, pivot_err, cte,
-                         steer_frac, steer_ppm, 1500, 0, 0, seg_idx, 'sim-pivot')
-                    rover.update(1500, steer_ppm, self._max_speed, 0.6, dt)
-                    sim_time += dt
-                    continue
-                # Pivot done — heading aligned
-                sim_pivoting = False
-                _log(rlat, rlon, heading, sim_pivot_brg, pivot_err, cte,
-                     0, 1500, 1500, 0, 0, seg_idx, 'sim-pivot-done')
-                sim_time += dt
-                continue
-
-            # Pivot trigger at corridor turn
-            if turn_idx is not None:
-                tp = self._path[turn_idx]
-                direct_dist = haversine(rlat, rlon, tp.latitude, tp.longitude)
-                if sim_pivot_min is None:
-                    sim_pivot_min = direct_dist
-                if direct_dist < sim_pivot_min:
-                    sim_pivot_min = direct_dist
-                passed = (sim_pivot_min < self._accept_r
-                          and direct_dist > sim_pivot_min + 0.05)
-                if passed:
-                    # Enter pivot mode
-                    turn_indices.discard(turn_idx)
-                    sim_pivot_min = None
-                    sim_path_idx = turn_idx + 1
-                    # Compute spin target: bearing to point 2m into next corridor
-                    nxt = turn_idx + 1
-                    best_nxt = min(nxt, len(self._path) - 1)
-                    while nxt < len(self._path):
-                        d = haversine(tp.latitude, tp.longitude,
-                                      self._path[nxt].latitude, self._path[nxt].longitude)
-                        if d > 0.1:
-                            best_nxt = nxt
-                        if d >= 2.0:
-                            best_nxt = nxt
-                            break
-                        nxt += 1
-                    sim_pivot_brg = bearing_to(tp.latitude, tp.longitude,
-                                               self._path[best_nxt].latitude,
-                                               self._path[best_nxt].longitude)
-                    sim_pivoting = True
-                    rover.update(1500, 1500, self._max_speed, 0.6, dt)  # stop first
-                    sim_time += dt
-                    continue
-            heading_err = ((target_bearing - heading + 180) % 360) - 180
-
-            # Speed
-            wp = self._path[min(seg_idx, len(self._path) - 1)]
-            target_spd = wp.speed if wp.speed > 0 else self._max_speed
-            cte_factor = max(0.0, 1.0 - abs_cte / max(self._stanley_cte_scale, 0.01))
-            v_mps = max(self._min_speed, target_spd * cte_factor)
-
-            # Decel approaching turn
-            if turn_s is not None:
-                dist_to_turn = turn_s - s_nearest
-                approach = self._pivot_approach_dist
-                if dist_to_turn < approach:
-                    v_mps = max(self._min_speed, v_mps * (dist_to_turn / approach))
-
-            # No general spin in sim — pivot code handles turn rotation,
-            # Stanley handles mid-corridor heading corrections naturally.
-            sim_spin_brg = None
-
-            # Stanley steering
-            stanley_ang = heading_err + math.degrees(
-                math.atan2(self._stanley_k * cte, max(v_mps, self._stanley_softening)))
-            stanley_ang = max(-90.0, min(90.0, stanley_ang))
-            steer_frac = max(-self._max_steer, min(self._max_steer, stanley_ang / 45.0))
-
-            throttle_ppm = int(1500 + (v_mps / self._max_speed) * 500)
-            steer_ppm = int(1500 - steer_frac * 500)
-
-            _log(rlat, rlon, heading, target_bearing, heading_err, cte,
-                 steer_frac, steer_ppm, throttle_ppm, target_spd,
-                 total_s - s_nearest, seg_idx, 'sim-corridor')
-
-            rover.update(throttle_ppm, steer_ppm, self._max_speed, 0.6, dt)
-            sim_time += dt
-
-            if steps % 25 == 0:  # ~1 per sim-second
-                sim_trace.append((rlat, rlon))
-
-        if sim_diag_file is not None:
-            sim_diag_file.close()
-
-        avg_cte = cte_sum / max(steps, 1)
-        result = {
-            'ok': True,
-            'max_cte': round(max_cte, 4),
-            'avg_cte': round(avg_cte, 4),
-            'steps': steps,
-            'complete': s_nearest >= total_s - self._accept_r if steps > 0 else False,
-            'sim_path': sim_trace,
-        }
-        self.get_logger().info(
-            f'Preflight sim: {steps} steps, max_cte={max_cte:.3f}m, '
-            f'avg_cte={avg_cte:.3f}m, complete={result["complete"]}')
-
-        # Save sim trace to run directory
-        if self._run_dir:
-            try:
-                import json as _json
-                sim_path_file = os.path.join(self._run_dir, 'sim_preflight.json')
-                with open(sim_path_file, 'w') as f:
-                    _json.dump(result, f, separators=(',', ':'))
-            except Exception:
-                pass
-
-        return result
 
     def _rebuild_path_s(self, wps, origin_lat, origin_lon) -> list:
         """Rebuild cumulative arc-lengths for a waypoint list."""
@@ -2330,38 +1138,17 @@ class NavigatorNode(Node):
     # ── Full-path geometry ────────────────────────────────────────────────────
 
     def _turn_angle_at(self, idx: int) -> float:
-        """
-        Absolute heading change at waypoint _path[idx] (degrees, 0–180).
-        Returns 0 for the last waypoint (no outgoing segment).
-        Returns 0 when either adjacent segment is shorter than min_pivot_segment_m
-        — bearing between nearly-coincident points is dominated by GPS noise and
-        must not trigger pivot detection (common with closely-recorded waypoints).
-        """
+        """Absolute heading change at _path[idx] (degrees, 0–180). 0 for the last point."""
         if idx >= len(self._path) - 1:
             return 0.0
-        # Outgoing segment must be long enough for reliable bearing
-        out_len = haversine(self._path[idx].latitude,     self._path[idx].longitude,
-                            self._path[idx + 1].latitude, self._path[idx + 1].longitude)
-        if out_len < self._min_pivot_seg:
-            return 0.0
-        # Outgoing bearing: path[idx] → path[idx+1]
         hdg_out = bearing_to(self._path[idx].latitude,     self._path[idx].longitude,
                              self._path[idx + 1].latitude, self._path[idx + 1].longitude)
-        # Incoming segment
         if idx == 0:
             if self._path_origin_lat is None:
-                return 0.0
-            in_len = haversine(self._path_origin_lat, self._path_origin_lon,
-                               self._path[0].latitude, self._path[0].longitude)
-            if in_len < self._min_pivot_seg:
                 return 0.0
             hdg_in = bearing_to(self._path_origin_lat,      self._path_origin_lon,
                                 self._path[0].latitude,     self._path[0].longitude)
         else:
-            in_len = haversine(self._path[idx - 1].latitude, self._path[idx - 1].longitude,
-                               self._path[idx].latitude,     self._path[idx].longitude)
-            if in_len < self._min_pivot_seg:
-                return 0.0
             hdg_in = bearing_to(self._path[idx - 1].latitude, self._path[idx - 1].longitude,
                                 self._path[idx].latitude,     self._path[idx].longitude)
         return abs(((hdg_out - hdg_in + 180) % 360) - 180)
@@ -2446,34 +1233,6 @@ class NavigatorNode(Node):
 
         return best_s, best_seg
 
-    def _past_waypoint(self, lat: float, lon: float) -> bool:
-        """True if the rover has passed the current waypoint along the segment."""
-        seg_k = self._path_idx
-        if seg_k >= len(self._path):
-            return False
-        if seg_k == 0:
-            if self._path_origin_lat is None:
-                return False
-            a_lat, a_lon = self._path_origin_lat, self._path_origin_lon
-        else:
-            a_lat = self._path[seg_k - 1].latitude
-            a_lon = self._path[seg_k - 1].longitude
-        b_lat = self._path[seg_k].latitude
-        b_lon = self._path[seg_k].longitude
-
-        mid_lat = math.radians((a_lat + b_lat) / 2)
-        cos_lat = math.cos(mid_lat) or 1e-9
-        m_lat, m_lon = 111_320.0, 111_320.0 * cos_lat
-        seg_dy = (b_lat - a_lat) * m_lat
-        seg_dx = (b_lon - a_lon) * m_lon
-        seg_len_sq = seg_dx * seg_dx + seg_dy * seg_dy
-        if seg_len_sq < 0.01:
-            return False
-        rv_dy = (lat - a_lat) * m_lat
-        rv_dx = (lon - a_lon) * m_lon
-        t = (rv_dx * seg_dx + rv_dy * seg_dy) / seg_len_sq
-        return t >= 1.0
-
     def _cte_to_seg(self, lat: float, lon: float, seg_idx: int) -> float:
         """
         Signed cross-track error of (lat, lon) to segment seg_idx.
@@ -2545,643 +1304,40 @@ class NavigatorNode(Node):
 
         return self._path[-1].latitude, self._path[-1].longitude
 
-    # ── Waypoint advance ──────────────────────────────────────────────────────
-
-    def _advance_path(self):
-        """Publish waypoint-reached event and advance _path_idx."""
-        if self._path_idx >= len(self._path):
-            return
-        wp = self._path[self._path_idx]
-        m = Int32(); m.data = wp.seq
-        self.wp_pub.publish(m)
-        self._path_idx += 1
-        self._pivot_closest_dist = float('inf')   # reset for next waypoint
-        self._spin_target_brg    = None            # stale bearing from previous WP approach
-
-        if self._path_idx >= len(self._path):
-            if self._resource_state == 'going_to_base':
-                # Base trip complete — build resume mission and wait for re-arm
-                self._arrive_at_base()
-            else:
-                self.get_logger().info('Mission complete')
-                m = Int32(); m.data = -1
-                self.wp_pub.publish(m)
-                self._publish_halt()
-                self._armed = False
-                a = Bool(); a.data = False
-                self.armed_pub.publish(a)
-        else:
-            nxt = self._path[self._path_idx]
-            self.get_logger().info(
-                f'Waypoint {wp.seq} reached — navigating to {nxt.seq}')
-
-    # ── Resource management ──────────────────────────────────────────────────
-
-    def _check_resources(self):
-        """1 Hz: trigger base return if battery or tank falls below threshold."""
-        if self._resource_state != 'normal':
-            return
-        if not self._armed or self._mode != 'AUTONOMOUS':
-            return
-        if not self._path or self._path_idx <= 0 or self._path_idx >= len(self._path):
-            return
-
-        # Priority: ROS2 param > station_update test injection > real sensor.
-        # Separate _test_tank/_test_batt fields prevent _cb_sensors from
-        # overwriting test values (was a race: sensor stub resets to None at 1 Hz).
-        test_tank_param = self.get_parameter('test_tank_pct').value
-        test_batt_param = self.get_parameter('test_batt_pct').value
-        batt = (test_batt_param if test_batt_param >= 0
-                else self._test_batt if self._test_batt is not None
-                else self._battery_pct)
-        tank = (test_tank_param if test_tank_param >= 0
-                else self._test_tank if self._test_tank is not None
-                else self._tank_pct)
-        batt_low = self._battery_low_pct
-        tank_low = self._tank_low_pct
-
-        if batt is not None and batt < batt_low:
-            self.get_logger().warn(f'[RESOURCE] Battery {batt:.0f}% < {batt_low:.0f}%')
-            self._go_to_base('battery')
-        elif tank is not None and tank < tank_low:
-            self.get_logger().warn(f'[RESOURCE] Tank {tank:.0f}% < {tank_low:.0f}%')
-            self._go_to_base('tank')
-
-    def _go_to_base(self, reason: str):
-        """Save mission state and navigate to recharge/water station."""
-        self._resource_reason = reason
-
-        if reason == 'battery':
-            station_lat = self._recharge_lat
-            station_lon = self._recharge_lon
-            label = 'BATTERY LOW'
-        else:
-            station_lat = self._water_lat
-            station_lon = self._water_lon
-            label = 'TANK LOW'
-
-        if station_lat == 0.0 and station_lon == 0.0:
-            self.get_logger().error(
-                f'[RESOURCE] {label} but station not configured')
-            return
-
-        # Save current mission for later resume
-        self._saved_path_original = list(self._path_original)
-        self._saved_wp_idx        = self._path_idx
-        self._saved_fence         = list(self._expanded_polygons)
-        self._resource_state      = 'going_to_base'
-        self.get_logger().info(
-            f'[RESOURCE] Saved state: {len(self._saved_path_original)} wps, '
-            f'idx={self._saved_wp_idx}, '
-            f'{len(self._saved_fence)} obstacle polygon(s)')
-
-        # Build base trip: lane-graph route if available, else direct 2-WP
-        rlat, rlon = self._center_pos()
-        base_wps: list[MissionWaypoint] = []
-
-        # Tagged-path base return: if the active mission has lane tags
-        # (row/hd), continue FORWARD through the existing _path from the
-        # current index to the waypoint nearest the station. Backwards is
-        # never allowed — if the base is behind the current position the
-        # rover keeps driving forward until it reaches the nearest forward
-        # waypoint to the station. The row<->hd arcs are already in _path
-        # so they're traversed for free.
-        has_tags = (
-            len(self._path_tags) == len(self._path)
-            and any(t for t in self._path_tags)
-        )
-        if has_tags and self._path:
-            cur_idx = max(0, min(self._path_idx, len(self._path) - 1))
-            # Find waypoint at or after cur_idx that is nearest the station
-            base_idx = cur_idx
-            best_d = float('inf')
-            for i in range(cur_idx, len(self._path)):
-                wp = self._path[i]
-                d = haversine(wp.latitude, wp.longitude, station_lat, station_lon)
-                if d < best_d:
-                    best_d = d
-                    base_idx = i
-            if base_idx == cur_idx:
-                self.get_logger().info(
-                    f'[RESOURCE] Already at base waypoint (idx={base_idx}, '
-                    f'dist={best_d:.1f} m)')
-            else:
-                for new_seq, src_idx in enumerate(range(cur_idx, base_idx + 1)):
-                    src = self._path[src_idx]
-                    wp = MissionWaypoint()
-                    wp.seq               = new_seq
-                    wp.latitude          = src.latitude
-                    wp.longitude         = src.longitude
-                    wp.speed             = min(src.speed if src.speed > 0 else self._base_speed,
-                                              self._base_speed)
-                    wp.acceptance_radius = self._base_accept
-                    wp.hold_secs         = 0.0
-                    base_wps.append(wp)
-                self.get_logger().info(
-                    f'[RESOURCE] Tagged-path base trip: {len(base_wps)} waypoints '
-                    f'forward (idx {cur_idx} -> {base_idx}, '
-                    f'final dist to station {best_d:.1f} m)')
-
-        if not base_wps and self._lane_map is not None:
-            try:
-                from agri_rover_navigator.lane_graph import route_to_base
-                route = route_to_base(self._lane_map, rlat, rlon,
-                                      station_lat, station_lon)
-                if route:
-                    for i, (lat, lon, spd) in enumerate(route):
-                        wp = MissionWaypoint()
-                        wp.seq = i
-                        wp.latitude = lat
-                        wp.longitude = lon
-                        wp.speed = spd if spd > 0 else self._base_speed
-                        wp.acceptance_radius = self._base_accept
-                        wp.hold_secs = 0.0
-                        base_wps.append(wp)
-                    self.get_logger().info(
-                        f'[RESOURCE] Lane-routed base trip: {len(base_wps)} waypoints')
-            except Exception as e:
-                self.get_logger().warn(f'[RESOURCE] Lane routing failed: {e}')
-
-        # Fallback: direct 2-WP path — ask user for confirmation first
-        no_lane_fallback = False
-        if not base_wps:
-            no_lane_fallback = True
-            wp_here = MissionWaypoint()
-            wp_here.seq               = 0
-            wp_here.latitude          = rlat
-            wp_here.longitude         = rlon
-            wp_here.speed             = self._base_speed
-            wp_here.acceptance_radius = self._base_accept
-            wp_here.hold_secs         = 0.0
-
-            wp_base = MissionWaypoint()
-            wp_base.seq               = 1
-            wp_base.latitude          = station_lat
-            wp_base.longitude         = station_lon
-            wp_base.speed             = self._base_speed
-            wp_base.acceptance_radius = self._base_accept
-            wp_base.hold_secs         = 0.0
-            base_wps = [wp_here, wp_base]
-
-        # Replace current path with base trip
-        self._path.clear()
-        self._path_s.clear()
-        self._path_original.clear()
-
-        self._path_origin_lat, self._path_origin_lon = rlat, rlon
-        self._path.extend(base_wps)
-        self._path_original.extend(base_wps)
-        self._path_s = self._rebuild_path_s(self._path, rlat, rlon)
-        self._path_idx = 0
-        self._holding = False
-        self._pivoting = False
-        self._reroute_pending = False
-
-        # Restore saved obstacles — check base trip doesn't cross them
-        self._expanded_polygons = list(self._saved_fence)
-        if self._expanded_polygons:
-            self._check_path_obstacles()
-
-        # Publish status signals
-        m = Int32(); m.data = -2  # "going to base" signal
-        self.wp_pub.publish(m)
-
-        self.get_logger().warn(
-            f'[RESOURCE] {label} — navigating to base '
-            f'({station_lat:.6f},{station_lon:.6f}), '
-            f'resume from path_idx={self._saved_wp_idx}')
-
-        # Publish path version so GQC updates the map
-        self._path_version += 1
-        pv = Int32(); pv.data = self._path_version
-        self.path_version_pub.publish(pv)
-        self._publish_full_path()
-
-        # No lane map — ask user to confirm direct path to base
-        if no_lane_fallback:
-            self._base_no_lane_pending = True
-            self._reroute_pending = True
-            cm = String()
-            cm.data = f'No lane map loaded. Proceed with direct path to base? ({label})'
-            self.confirm_message_pub.publish(cm)
-            rp = Bool(); rp.data = True
-            self.reroute_pending_pub.publish(rp)
-            self._publish_halt()
-            self.get_logger().info(
-                '[RESOURCE] No lane map — waiting for user confirmation')
-
-    def _arrive_at_base(self):
-        """Base trip complete. Build resume mission, disarm, wait for re-arm."""
-        self._resource_state = 'at_base'
-        reason_label = 'battery' if self._resource_reason == 'battery' else 'tank'
-
-        # Build resume: base position -> remaining saved WPs
-        rlat, rlon = self._center_pos()
-        remaining = self._saved_path_original[self._saved_wp_idx:]
-        if not remaining:
-            self.get_logger().warn('[RESOURCE] No waypoints to resume — mission complete')
-            m = Int32(); m.data = -1
-            self.wp_pub.publish(m)
-            self._publish_halt()
-            self._resource_state = 'normal'
-            return
-
-        renumbered = []
-        seq = 0
-        # WP0 — base station (current position)
-        wp_here = MissionWaypoint()
-        wp_here.seq               = seq
-        wp_here.latitude          = rlat
-        wp_here.longitude         = rlon
-        wp_here.speed             = remaining[0].speed
-        wp_here.acceptance_radius = remaining[0].acceptance_radius
-        wp_here.hold_secs         = 0.0
-        renumbered.append(wp_here)
-        seq += 1
-
-        for orig in remaining:
-            wp = MissionWaypoint()
-            wp.seq               = seq
-            wp.latitude          = orig.latitude
-            wp.longitude         = orig.longitude
-            wp.speed             = orig.speed
-            wp.acceptance_radius = orig.acceptance_radius
-            wp.hold_secs         = orig.hold_secs
-            renumbered.append(wp)
-            seq += 1
-
-        # Install resume path (ready for when user re-arms)
-        self._path.clear()
-        self._path_s.clear()
-        self._path_original.clear()
-
-        self._path_origin_lat = rlat
-        self._path_origin_lon = rlon
-        self._path.extend(renumbered)
-        self._path_original.extend(renumbered)
-        self._path_s = self._rebuild_path_s(renumbered, rlat, rlon)
-        self._path_idx = 0
-        self._holding = False
-        self._pivoting = False
-
-        # Restore saved obstacles for path check
-        if self._saved_fence:
-            self._expanded_polygons = list(self._saved_fence)
-
-        self.get_logger().info(
-            f'[RESOURCE] At base ({reason_label}) — resume mission: '
-            f'{len(renumbered)} WPs, re-arm to continue')
-
-        # Signal mavlink_bridge: disarm + keep mission loaded
-        m = Int32(); m.data = -3  # "at base" signal
-        self.wp_pub.publish(m)
-        self._publish_halt()
-
-        # Publish path version so GQC updates map with resume route
-        self._path_version += 1
-        pv = Int32(); pv.data = self._path_version
-        self.path_version_pub.publish(pv)
-        self._publish_full_path()
-
-    # ── Control loop ──────────────────────────────────────────────────────────
+    # -- Control loop (corridor-only) ----------------------------------------
 
     def _control_loop(self):
         if self._mode != 'AUTONOMOUS' or not self._armed or self._paused:
             return
-        if self._reroute_pending:
-            self._publish_halt()
-            return
-        if self._resource_state == 'at_base':
-            self._publish_halt()
-            return
         if not self._path:
             return
-
-        # Corridor mode: simpler control loop (no waypoint advance)
-        if self._corridor_mode:
-            self._control_loop_corridor()
-            return
-
-        if self._path_idx >= len(self._path):
-            return
         if self._fix is None or (time.time() - self._fix_time) > self._gps_timeout:
-            self.get_logger().warn('GPS stale — halting')
+            self.get_logger().warn('GPS stale -- halting')
             self._publish_halt()
             return
 
-        # ── GPS accuracy alarm ─────────────────────────────────────────────────
+        # GPS accuracy alarm (hAcc + staleness)
         if self._gps_acc_alarm > 0:
-            if (self._hacc_mm > 0
-                    and self._hacc_mm > self._gps_acc_alarm):
+            if self._hacc_mm > 0 and self._hacc_mm > self._gps_acc_alarm:
                 self.get_logger().warn(
                     f'GPS accuracy degraded: hAcc={self._hacc_mm:.0f} mm '
-                    f'> alarm={self._gps_acc_alarm:.0f} mm — halting')
+                    f'> alarm={self._gps_acc_alarm:.0f} mm -- halting')
                 self._publish_halt()
                 return
-            # Stale hAcc — if we ever received it but it stopped, halt
-            if (self._hacc_time > 0
-                    and (time.time() - self._hacc_time) > self._gps_timeout):
-                self.get_logger().warn(
-                    f'hAcc stale ({time.time() - self._hacc_time:.1f} s) — halting')
+            if self._hacc_time > 0 and (time.time() - self._hacc_time) > self._gps_timeout:
+                self.get_logger().warn('hAcc stale -- halting')
                 self._publish_halt()
                 return
 
-        # ── Inter-rover proximity safety ──────────────────────────────────────
+        # Inter-rover proximity safety
         if self._peer_ns:
             self._compute_proximity()
             if self._prox_level in ('halt', 'estop'):
                 self._publish_halt()
                 return
 
-        # ── Lazy path_origin — synthesise if GPS was not ready at mission upload ─
-        # If seq=0 arrived before the first GPS fix, _path_origin_lat is None.
-        # This breaks _past_waypoint() and _nearest_on_path() for segment 0,
-        # preventing wp0 from ever being accepted via arc-length advance.
-        # Fix: place a synthetic origin 'lookahead' metres behind wp0 on the
-        # reverse of the outgoing segment bearing.  This guarantees _past_waypoint
-        # returns True when the rover is already on the far side of wp0 (e.g.
-        # rover was placed at or past wp0 before the mission was uploaded).
-        if self._path_idx == 0 and self._path_origin_lat is None and self._path:
-            first_wp = self._path[0]
-            if len(self._path) > 1:
-                out_brg = bearing_to(first_wp.latitude, first_wp.longitude,
-                                     self._path[1].latitude, self._path[1].longitude)
-            else:
-                out_brg = self._heading
-            rev_brg = (out_brg + 180.0) % 360.0
-            step_m  = self._lookahead
-            cos_lat = math.cos(math.radians(first_wp.latitude)) or 1e-9
-            self._path_origin_lat = (first_wp.latitude
-                                     + step_m * math.cos(math.radians(rev_brg)) / 111_320.0)
-            self._path_origin_lon = (first_wp.longitude
-                                     + step_m * math.sin(math.radians(rev_brg)) / (111_320.0 * cos_lat))
-            self._path_s = self._rebuild_path_s(
-                self._path, self._path_origin_lat, self._path_origin_lon)
-            self.get_logger().info(
-                f'Path origin synthesised (GPS not ready at upload): '
-                f'{self._path_origin_lat:.7f},{self._path_origin_lon:.7f} '
-                f'— {step_m:.1f} m behind wp0 on bearing {rev_brg:.0f}°')
-            if self._expanded_polygons:
-                self._check_path_obstacles()
-
-        # ── wp0 degenerate-segment skip ──────────────────────────────────────
-        # When path_origin ≈ wp0 (e.g. resume mission where both were captured
-        # at the base station), the origin→wp0 segment has near-zero length and
-        # steering degenerates even if the rover drifted a few metres via GPS.
-        # Skip wp0 if (a) the segment itself is short OR (b) the rover is close.
-        if self._path_idx == 0 and len(self._path) > 1:
-            wp0 = self._path[0]
-            ar = wp0.acceptance_radius if wp0.acceptance_radius > 0 else self._accept_r
-            # Check segment length (origin→wp0)
-            seg_len = self._path_s[0] if self._path_s else 0.0
-            # Check rover distance to wp0
-            rlat, rlon = self._center_pos()
-            d = haversine(rlat, rlon, wp0.latitude, wp0.longitude)
-            if seg_len < ar or d < ar:
-                self.get_logger().info(
-                    f'wp0 skip (seq={wp0.seq}, seg_len={seg_len:.2f}m, '
-                    f'dist={d:.2f}m, accept={ar:.2f}m) — advancing')
-                self._advance_path()
-                return
-
-        # ── Hold at waypoint ─────────────────────────────────────────────────
-        if self._holding:
-            self._publish_halt()
-            if time.monotonic() >= self._hold_end:
-                self._holding = False
-                self.get_logger().info('Hold complete — advancing')
-                self._advance_path()
-            return
-
-        # ── Pivot turn ───────────────────────────────────────────────────────
-        # Rover has reached a sharp-turn waypoint and is spinning in place to
-        # align with the outgoing segment before continuing.
-        if self._pivoting:
-            pivot_err = ((self._pivot_target_hdg - self._heading + 180) % 360) - 180
-            if abs(pivot_err) < self._hdb:
-                self._pivoting = False
-                self.get_logger().info('Pivot complete — continuing')
-                self._advance_path()
-            else:
-                # Proportional spin: full speed above 45°, linear ramp below.
-                # Always apply floor during spin — no coast zone. Throttle is neutral
-                # so there is no forward momentum; overshoot risk is negligible and the
-                # floor must be active right up to the heading_deadband exit condition.
-                steer_frac = max(-self._max_steer,
-                                 min(self._max_steer, pivot_err / 45.0))
-                steer_ppm  = int(PPM_CENTER - steer_frac * 500)
-                if steer_ppm != PPM_CENTER:
-                    sign = 1 if steer_ppm > PPM_CENTER else -1
-                    steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
-                                                        self._min_steer_delta)
-                self._publish_cmd(PPM_CENTER, steer_ppm)
-            return
-
-        wp          = self._path[self._path_idx]
-        accept      = wp.acceptance_radius if wp.acceptance_radius > 0 else self._accept_r
-        rlat, rlon  = self._center_pos()
-        flat, flon  = self._front_pos()
-
-        # Pivot detection — _turn_angle_at() works on the full path.
-        turn_angle  = self._turn_angle_at(self._path_idx)
-        needs_pivot = (turn_angle >= self._pivot_threshold
-                       and self._path_idx < len(self._path) - 1)
-
-        # ── Full-path nearest-point projection ───────────────────────────────
-        s_nearest, best_seg = self._nearest_on_path(rlat, rlon)
-        wp_s                = self._path_s[self._path_idx]
-        dist_to_wp          = haversine(rlat, rlon, wp.latitude, wp.longitude)
-
-        # ── Waypoint advance ─────────────────────────────────────────────────
-        # Track closest approach to pivot waypoint so we can detect the moment
-        # the rover arcs past it without entering accept_r (Option C).
-        if needs_pivot:
-            if dist_to_wp < self._pivot_closest_dist:
-                self._pivot_closest_dist = dist_to_wp
-
-        # Closest-approach overshoot: rover entered the approach zone (was within
-        # pivot_approach_dist), reached its nearest point, and has since moved at
-        # least accept metres further away — the arc has carried it past the turn
-        # point even though it never entered accept_r.
-        pivot_overshot = (needs_pivot
-                          and self._pivot_closest_dist < self._pivot_approach_dist
-                          and dist_to_wp > self._pivot_closest_dist + accept)
-
-        # For normal waypoints: proximity OR segment overshoot (rover passed
-        # the waypoint along the segment direction) triggers advance.
-        # Proximity guard: only fire when rover is already close — prevents
-        # TTR/MPC lookahead corner-cutting from cascading waypoint advances on
-        # dense missions (t>=1 while still far away from the waypoint).
-        # During align-spin, skip geometric advance (arc-length/past-waypoint)
-        # which gives false positives on zigzag missions where the next WP is
-        # spatially close but behind.  Distance advance (dist < accept) is always
-        # allowed — if the rover is physically at the WP, it should advance.
-        in_spin = self._spin_target_brg is not None
-        past_wp = (not needs_pivot and not in_spin
-                   and dist_to_wp < accept * 4.0
-                   and self._past_waypoint(rlat, rlon))
-        reached = dist_to_wp < accept or past_wp or pivot_overshot
-
-        if reached:
-            if wp.hold_secs < 0.0:
-                # Waiting point — signal disarm, keep mission
-                self.get_logger().info(
-                    f'Waypoint {wp.seq} reached — WAITING POINT')
-                self._publish_halt()
-                m = Int32(); m.data = -(wp.seq + 1000)
-                self.wp_pub.publish(m)
-                return
-            if wp.hold_secs > 0.0:
-                self.get_logger().info(
-                    f'Waypoint {wp.seq} reached — holding {wp.hold_secs:.1f} s')
-                self._holding  = True
-                self._hold_end = time.monotonic() + wp.hold_secs
-                self._publish_halt()
-            elif needs_pivot:
-                # Bearing from rover's ACTUAL position to the next WP (not from the
-                # waypoint itself — the rover may have triggered "reached" up to
-                # accept_r metres short, so the bearing from wp would be wrong).
-                nxt = self._path[self._path_idx + 1]
-                nxt_lat, nxt_lon = nxt.latitude, nxt.longitude
-                self._pivot_target_hdg = bearing_to(rlat, rlon, nxt_lat, nxt_lon)
-                self._pivoting        = True
-                trigger = 'overshoot' if pivot_overshot else 'proximity'
-                self.get_logger().info(
-                    f'Waypoint {wp.seq} reached ({trigger}, '
-                    f'closest={self._pivot_closest_dist:.2f}m) — '
-                    f'pivot {turn_angle:.0f}° to {self._pivot_target_hdg:.0f}°')
-                self._publish_halt()
-            else:
-                self.get_logger().info(f'Waypoint {wp.seq} reached ({dist_to_wp:.2f} m)')
-                self._advance_path()
-            return
-
-        # ── Lookahead and speed ───────────────────────────────────────────────
-        # Precision approach: when within pivot_approach_dist of a sharp-turn
-        # waypoint, aim directly at the waypoint and slow to min_speed so the
-        # rover arrives precisely instead of cutting the corner.
-        target_spd = wp.speed if wp.speed > 0 else self._max_speed
-
-        if needs_pivot:
-            # Always aim directly at the pivot waypoint — never use arc-length
-            # projection past it.  _nearest_on_path can snap ahead to the
-            # post-turn segment when the rover is close to the pivot, projecting
-            # the lookahead into the outgoing direction and triggering a premature
-            # ~180° spin before arrival.
-            la_lat = wp.latitude
-            la_lon = wp.longitude
-            if dist_to_wp < self._pivot_approach_dist:
-                # Scale speed linearly from target_spd down to min_speed
-                approach_t = dist_to_wp / self._pivot_approach_dist
-                target_spd = max(self._min_speed, target_spd * approach_t)
-        else:
-            # Clamp lookahead to not project past current WP when the next
-            # segment changes direction — prevents the projected point from
-            # swinging into a different segment and triggering spin oscillation.
-            # (pivot detection can miss this when the origin→WP0 segment is
-            # too short for reliable bearing, i.e. in_len < min_pivot_seg.)
-            s_look = min(s_nearest + self._lookahead, wp_s)
-            la_lat, la_lon = self._point_at_s(s_look)
-
-        # Periodic log (every 5 s) — helps verify rover is tracking rerouted path
-        self._log_tick += 1
-        if self._log_tick % 125 == 1:
-            self.get_logger().info(
-                f'NAV path_idx={self._path_idx}/{len(self._path)} '
-                f'lookahead=({la_lat:.7f},{la_lon:.7f}) '
-                f'rover=({rlat:.7f},{rlon:.7f})')
-
-        target_bearing = bearing_to(rlat, rlon, la_lat, la_lon)
-
-        # Freeze target bearing during spin so that the GPS antenna sweeping an
-        # arc as the rover rotates (antenna is not at the physical rotation centre)
-        # does not cause target_bearing to oscillate and produce zig-zag steer.
-        # _spin_target_brg is set on the first spin tick and cleared on exit.
-        if self._spin_target_brg is not None:
-            target_bearing = self._spin_target_brg
-
-        heading_err    = ((target_bearing - self._heading + 180) % 360) - 180
-
-        # ── CTE: front antenna projected onto current target segment ─────────
-        # Use _path_idx (current target segment) — not best_seg.  On near-straight
-        # paths _nearest_on_path can snap best_seg to a far-ahead collinear segment,
-        # destabilising the PID (especially TTR's cascaded dual-PID).
-        # Bypass waypoints: zero CTE — heading error to the bypass point is enough.
-        cte_seg = self._path_idx
-        cte = self._cte_to_seg(flat, flon, cte_seg)
-
-        # XTE telemetry
-        xte_msg      = Float32()
-        xte_msg.data = abs(cte)
-        self.xte_pub.publish(xte_msg)
-
-        # CTE safety alarm removed — user confirms mission by arming twice
-
-        if abs(heading_err) > self._align_thresh:
-            # Large error — spin in place (same for all algorithms).
-            # Freeze target bearing on first spin tick so GPS antenna arc
-            # (rover not rotating around antenna position) doesn't cause
-            # heading_err to oscillate and produce zig-zag steering.
-            if self._spin_target_brg is None:
-                self._spin_target_brg = target_bearing
-            steer_frac   = max(-self._max_steer, min(self._max_steer, heading_err / 45.0))
-            steer_ppm    = int(PPM_CENTER - steer_frac * 500)
-            # Always apply floor during align-spin — no coast zone (zero throttle,
-            # negligible overshoot risk; floor must be active up to heading_deadband).
-            if steer_ppm != PPM_CENTER:
-                sign = 1 if steer_ppm > PPM_CENTER else -1
-                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
-                                                    self._min_steer_delta)
-            throttle_ppm      = PPM_CENTER
-        else:
-            # Release frozen bearing only once within heading deadband (3°).
-            # Releasing at align_thresh (60°) means a drifted GPS centre on the next
-            # tick can produce a fresh bearing that triggers another full spin —
-            # the multi-spin oscillation seen at mission start.
-            if self._spin_target_brg is not None and abs(heading_err) < self._hdb:
-                self._spin_target_brg = None
-            # CTE-proportional speed reduction: slow down as rover drifts from path
-            cte_factor   = max(0.0, 1.0 - abs(cte) / max(self._stanley_cte_scale, 0.01))
-            v_mps        = max(self._min_speed, target_spd * cte_factor)
-            throttle_ppm = int(PPM_CENTER + (v_mps / self._max_speed) * 500)
-
-            # Stanley controller: δ = θ_e + arctan(k · e_cte / (v + ε))
-            stanley_ang = heading_err + math.degrees(
-                math.atan2(self._stanley_k * cte,
-                           max(v_mps, self._stanley_softening)))
-            stanley_ang = max(-90.0, min(90.0, stanley_ang))
-            steer_frac  = max(-self._max_steer,
-                              min(self._max_steer, stanley_ang / 45.0))
-            steer_ppm = int(PPM_CENTER - steer_frac * 500)
-            # Apply steer floor so motors overcome stiction during active corrections.
-            # Same floor as spin modes — coast zone exempts small errors near straight-ahead
-            # so we don't force unnecessary weave during fine tracking.
-            if steer_ppm != PPM_CENTER and abs(heading_err) > self._steer_coast:
-                sign = 1 if steer_ppm > PPM_CENTER else -1
-                steer_ppm = PPM_CENTER + sign * max(abs(steer_ppm - PPM_CENTER),
-                                                    self._min_steer_delta)
-
-        if self._diag_writer is not None:
-            sf = (PPM_CENTER - steer_ppm) / 500.0
-            self._diag_writer.writerow([
-                round(time.time(), 4),
-                round(rlat, 8), round(rlon, 8),
-                round(self._heading, 2),
-                round(target_bearing, 2),
-                round(heading_err, 2),
-                round(cte, 4),
-                round(sf, 4),
-                steer_ppm, throttle_ppm,
-                round(target_spd, 3),
-                round(dist_to_wp, 3),
-                self._path_idx,
-                'stanley',
-                self._fix.status.status if self._fix else -1,
-                round(self._hacc_mm, 1),
-            ])
-            self._diag_file.flush()
-
-        self._publish_cmd(throttle_ppm, steer_ppm)
+        # All missions are corridors
+        self._control_loop_corridor()
 
     # ── Output helpers ────────────────────────────────────────────────────────
 
