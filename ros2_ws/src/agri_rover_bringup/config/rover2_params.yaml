@@ -46,18 +46,9 @@
     stanley_softening:         0.3
     stanley_cte_scale_m:       1.0    # CTE (m) at which speed halves (proportional slowdown)
     stanley_cte_alarm_m:       1.0    # CTE (m) above which rover disarms (safety)
-    min_turn_radius_m:         3.0    # minimum turn radius for corridor arc turns (metres)
-    pivot_threshold:           25.0
-    pivot_approach_dist:       2.0
+    min_turn_radius_m:         2.0    # minimum arc radius for corridor headland turns (metres)
     post_turn_speed:           0.5    # m/s — speed at first point after a corridor turn
-    min_pivot_segment_m:       0.3   # min adjacent segment length to qualify for pivot detection
-    # Lane-tag arc insertion (row<->hd transitions in tagged corridor missions)
-    lane_arc_radius_m:         1.0    # tangent-circle radius at row<->hd junctions (m)
-    lane_arc_threshold_deg:    15.0   # min heading change to insert an arc (smaller corners pass through)
     rover_width_m:             1.0
-    obstacle_clearance_m:      0.5
-    bypass_arc_radius_m:       0.5    # smoother sample distance in metres (0 = disabled)
-    bypass_arc_speed_k:        0.7    # speed scaling: speed = max_speed * (1 - k * angle/180)
     # Motor stiction floors (Stanley output)
     min_throttle_ppm:       1550   # hard PPM floor for forward motion
     min_steer_ppm_delta:     300   # min |steer_ppm - 1500| during turns/curves
@@ -70,15 +61,6 @@
     proximity_slow_m:          1.5
     proximity_halt_m:          0.75
     proximity_estop_m:         0.5
-    # Resource management — set GPS coordinates of your field base stations
-    recharge_lat:      0.0
-    recharge_lon:      0.0
-    water_lat:         0.0
-    water_lon:         0.0
-    battery_low_pct:   15.0
-    tank_low_pct:      5.0
-    base_speed:        0.9
-    base_acceptance_m: 1.5
     enable_diag_log:           true
     diag_log_path:             '/tmp/navigator_diag.csv'
 
