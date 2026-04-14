@@ -1,70 +1,59 @@
 """
-agri_rover_navigator — navigator node (full-path Stanley + obstacle avoidance)
+agri_rover_navigator — Stanley corridor navigator
 
 Strategy
 --------
-The rover follows the COMPLETE uploaded path using a full-path Stanley lateral
-controller:
+Every mission is a corridor: one or more centerline polylines with a
+half-width, joined by headland arcs. The rover follows the polyline
+using a full-path Stanley lateral controller:
 
-  1. At every control tick the rover's centre position is projected onto the
-     entire remaining path (not just the current segment) to find:
-       - s_nearest  : arc-length progress along the path
-       - best_seg   : which path segment is closest
+  1. Each tick projects the rover centre (midpoint of rear + front
+     antennas) onto the remaining path to find (s_nearest, seg_idx).
+  2. Lookahead = arc-length (s_nearest + lookahead_distance), clamped
+     to the next turn point.
+  3. Stanley: δ = θ_e + arctan(k · e_cte / max(v, softening))
+     where e_cte is taken at the FRONT antenna (front-axle reference).
+  4. Speed decays linearly as the rover approaches each turn point.
+  5. Past-turn advance: when s_nearest > turn_s − accept_r, drop the
+     turn from _corridor_turn_indices and advance _path_idx. No spin.
+  6. Align-spin is only used when |heading_err| > align_threshold
+     on initial alignment; once inside the deadband, normal Stanley
+     takes over and never returns to spin.
+  7. Cross-track error (XTE) is published on ~/xte every tick.
 
-  2. The lookahead point is taken at arc-length (s_nearest + lookahead_distance)
-     on the path.  When the lookahead extends past a segment boundary it
-     naturally follows the curve into the next segment, producing smooth steering
-     through curves without the "snap-to-waypoint" artefact of single-segment
-     tracking.
-
-  3. Stanley steering: δ = θ_e + arctan(k·e_cte / (v + ε))
-     e_cte is computed from the FRONT antenna to best_seg (front-axle reference
-     as per the original Stanley paper).  This eliminates the rear-swing
-     oscillation caused by measuring CTE at the rear antenna.
-
-  4. Rover centre = midpoint(fix, fix_front) is used for arc-length progress,
-     acceptance radius, and lookahead projection.
-
-  5. A waypoint is considered reached when the rover centre is within
-     acceptance_radius of it (direct distance), OR when arc-length progress
-     has passed that waypoint's arc-length by more than acceptance_radius
-     (overshoot / corner-cut detection).
-
-  6. Stop-and-spin is reserved for large initial heading errors (> align_threshold).
-
-  7. Cross-track error (XTE) is published on the `xte` topic at every tick.
-
-Obstacle avoidance
-------------------
-When a `mission_fence` JSON message arrives (published by mavlink_bridge when
-the full mission has been received), the navigator:
-  1. Parses the fence polygons.
-  2. Expands each polygon by a uniform edge offset of rover_width_m/2 + obstacle_clearance_m.
-  3. Rebuilds `_path` from `_path_original` inserting bypass waypoints around
-     any expanded polygon that a path segment intersects.
-  4. Bypass direction (CW vs CCW around polygon boundary) is chosen to minimise
-     total detour distance.
-  5. Rerouting is pre-mission only (static obstacles).  Mid-mission rerouting
-     is not supported.
+Mission validator
+-----------------
+On corridor_mission load, the radius of every interior arc is computed
+from adjacent path points: R = chord / (2 · sin(turn_angle / 2)).
+If any R < min_turn_radius_m, the navigator publishes disarm and
+refuses the mission. This is the only pre-flight obstacle/safety check.
 
 Subscribes:
-  ~/fix          (sensor_msgs/NavSatFix)   — rear antenna position
-  ~/fix_front    (sensor_msgs/NavSatFix)   — front antenna position
-  ~/heading      (std_msgs/Float32)        — degrees from north (dual-antenna baseline)
-  ~/mode         (std_msgs/String)         — only active in AUTONOMOUS mode
-  ~/mission      (MissionWaypoint)         — waypoints arrive sequentially
-  ~/servo_state  (RCInput)                 — channels 4-7 from mavlink_bridge DO_SET_SERVO
-  ~/mission_clear (std_msgs/Bool)          — clear path on empty-mission upload
-  ~/mission_fence (std_msgs/String)        — JSON fence polygons from mavlink_bridge
+  ~/fix          (NavSatFix)           — rear antenna position
+  ~/fix_front    (NavSatFix)           — front antenna position
+  ~/heading      (Float32)             — degrees from north (baseline)
+  ~/mode         (String)              — only acts in AUTONOMOUS
+  ~/armed        (Bool)
+  ~/corridor_mission (String)          — JSON corridor mission
+  ~/mission_clear (Bool)               — clear loaded mission
+  ~/servo_state  (RCInput)             — channels 4-7 from GQC DO_SET_SERVO
+  ~/hacc         (Float32)             — UBX NAV-PVT horizontal accuracy (mm)
+  ~/sensors      (SensorData)          — currently unused
+  ~/status       (RoverStatus)         — currently unused
 
 Publishes:
-  ~/cmd_override (RCInput)                 — PPM override to rp2040_bridge
-  ~/wp_active    (std_msgs/Int32)          — seq of last reached waypoint (-1=complete)
-  ~/xte          (std_msgs/Float32)        — absolute cross-track error in metres
+  ~/cmd_override (RCInput)  — PPM override to rp2040_bridge
+  ~/wp_active    (Int32)    — seq of last reached turn point (-1=complete)
+  ~/xte          (Float32)  — absolute cross-track error in metres
+  ~/rerouted_path (String)  — path JSON for GQC / mission_planner viz
+  ~/path_version (Int32)    — monotonic counter for mission sync
+  ~/nav_status   (String)   — NA / MSL / ARM
+  ~/nav_params   (String)   — live param values JSON
+  ~/armed        (Bool)     — authoritative disarm broadcast
 
 Services:
-  ~/pause_mission  (std_srvs/Trigger)
-  ~/resume_mission (std_srvs/Trigger)
+  ~/pause_mission  (Trigger)
+  ~/resume_mission (Trigger)
 """
 
 from __future__ import annotations
@@ -74,13 +63,6 @@ import json
 import math
 import os
 import time
-
-try:
-    from scipy.optimize import minimize as _scipy_minimize
-    _SCIPY_OK = True
-except ImportError:
-    _scipy_minimize = None
-    _SCIPY_OK = False
 
 import rclpy
 from rclpy.node import Node
@@ -420,8 +402,7 @@ class NavigatorNode(Node):
         self.nav_params_pub     = self.create_publisher(String,   'nav_params',      10)
         self.create_subscription(String, 'nav_param_set', self._cb_nav_param_set, 10)
         self.add_on_set_parameters_callback(self._on_set_parameters_callback)
-        # Publish current params periodically so mavlink_bridge always has fresh values.
-        # Also fires immediately so the first subscriber (after any node restart) gets them.
+        # Publish current params periodically so late rosbridge subscribers get them.
         self.create_timer(5.0, self._publish_nav_params)
 
         # ── Services ─────────────────────────────────────────────────────────
@@ -433,7 +414,7 @@ class NavigatorNode(Node):
         self.create_timer(1.0 / rate, self._control_loop)
 
         self.get_logger().info(
-            'Navigator ready — Stanley + full-path tracking + obstacle avoidance')
+            'Navigator ready — corridor-only Stanley')
 
     # ── Live parameter tuning ─────────────────────────────────────────────────
 
@@ -458,15 +439,14 @@ class NavigatorNode(Node):
             self._publish_full_path()
 
     def _publish_nav_params(self):
-        """Publish all exposed parameters as a JSON dict so mavlink_bridge can respond
-        to PARAM_REQUEST_LIST.  Called every 5 s and on every param change."""
+        """Publish all exposed parameters as a JSON dict for GQC live tuning."""
         data = {k: float(getattr(self, meta[0])) for k, meta in _PARAM_META.items()}
         msg = String()
         msg.data = json.dumps(data, separators=(',', ':'))
         self.nav_params_pub.publish(msg)
 
     def _cb_nav_param_set(self, msg: String):
-        """Apply a live parameter change forwarded by mavlink_bridge from GQC PARAM_SET."""
+        """Apply a live parameter change from GQC via rosbridge."""
         try:
             req   = json.loads(msg.data)
             name  = req['name']
@@ -927,8 +907,8 @@ class NavigatorNode(Node):
             m = Int32(); m.data = -1
             self.wp_pub.publish(m)
             self._publish_halt()
-            # Auto-disarm (navigator owns lifecycle — no mavlink_bridge dependency)
-            # Mode is NOT published here — it comes from rp2040_bridge (CH9 switch)
+            # Auto-disarm — navigator owns lifecycle on mission completion.
+            # Mode is NOT published here; it comes from rp2040_bridge (CH9 switch).
             self._armed = False
             a = Bool(); a.data = False
             self.armed_pub.publish(a)
@@ -1105,14 +1085,13 @@ class NavigatorNode(Node):
         Format: [[lat, lon, bypass, speed, hold_secs], ...]
         Used for the GQC mission overlay and run-folder save.
 
-        Burst guard: skips a publish if the content is identical to the last
-        one AND the previous publish was less than 1 s ago. This collapses
-        the well-known double-publish during a mission upload (one from
-        _cb_corridor_mission, one from _cb_mission_fence -> _check_path_obstacles)
-        into a single WebSocket message — important on the SIYI MK32 whose
-        WiFi stack can drop the association under bursty rosbridge load.
-        Late-joining clients are still served because the 5 s nav_status
-        timer republish bypasses the cooldown after 1 s elapses.
+        Burst guard: skips a publish if content is identical to the last
+        AND the previous publish was less than 1 s ago. Collapses
+        rapid re-emissions during mission upload into a single WebSocket
+        message — important on the SIYI MK32 whose WiFi stack can drop the
+        association under bursty rosbridge load. Late-joining clients are
+        still served by the 5 s nav_status timer republish once the 1 s
+        cooldown elapses.
         """
         path_data = [
             [round(wp.latitude, 7), round(wp.longitude, 7),
@@ -1143,8 +1122,6 @@ class NavigatorNode(Node):
         c.hold_secs = wp.hold_secs
         c.acceptance_radius = wp.acceptance_radius
         return c
-
-    # _reroute_path removed — obstacles now disarm the rover instead of rerouting.
 
     def _rebuild_path_s(self, wps, origin_lat, origin_lon) -> list:
         """Rebuild cumulative arc-lengths for a waypoint list."""
